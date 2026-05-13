@@ -63,11 +63,12 @@ class FundFlowService:
 
     async def pull_north_flow(self) -> None:
         df = await asyncio.to_thread(
-            ak.stock_hsgt_north_net_flow_in_em, symbol="北上",
+            ak.stock_hsgt_hist_em, symbol="北向资金",
         )
         row = df.iloc[-1]
         ts = _parse_ts(str(row["日期"]))
-        total = _num(row.get("当日资金流入")) or 0.0
+        # 优先 当日成交净买额,后备 当日资金流入
+        total = _num(row.get("当日成交净买额")) or _num(row.get("当日资金流入")) or 0.0
         await self.repo.save_north_flow(FundFlowSnapshot(
             subject="north", kind="north", ts=ts,
             hgt_net=total * 0.6,

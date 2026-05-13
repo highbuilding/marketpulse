@@ -17,7 +17,8 @@ _SYMBOL_FLOW_DF = pd.DataFrame([
 ])
 
 _NORTH_DF = pd.DataFrame([
-    {"日期": "2026-05-13", "当日资金流入": 8e8, "当日余额": 2e9, "历史累计净买额": 1e12},
+    {"日期": "2026-05-13", "当日成交净买额": 8e8, "当日资金流入": 5e8,
+     "当日余额": 2e9, "历史累计净买额": 1e12},
 ])
 
 
@@ -43,7 +44,7 @@ async def test_pull_symbol_flow(svc):
 
 @pytest.mark.asyncio
 async def test_pull_north_flow(svc):
-    with patch("core.services.fund_flow_service.ak.stock_hsgt_north_net_flow_in_em",
+    with patch("core.services.fund_flow_service.ak.stock_hsgt_hist_em",
                return_value=_NORTH_DF):
         await svc.pull_north_flow()
     rows = await svc.query_north(
