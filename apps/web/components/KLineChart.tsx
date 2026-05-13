@@ -10,6 +10,11 @@ export interface KLineChartProps {
   height?: number
 }
 
+function toChartTime(iso: string): number {
+  // ISO 是 UTC,加 8h 让 lightweight-charts 按 UTC 渲染显示成北京时间
+  return (new Date(iso).getTime() / 1000) + 8 * 3600
+}
+
 export function KLineChart({ bars, height = 400 }: KLineChartProps) {
   const ref = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -36,11 +41,11 @@ export function KLineChart({ bars, height = 400 }: KLineChartProps) {
     volume.priceScale().applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } })
 
     const candleData: CandlestickData[] = bars.map((b) => ({
-      time: (new Date(b.ts).getTime() / 1000) as any,
+      time: toChartTime(b.ts) as any,
       open: b.open, high: b.high, low: b.low, close: b.close,
     }))
     const volData: HistogramData[] = bars.map((b) => ({
-      time: (new Date(b.ts).getTime() / 1000) as any,
+      time: toChartTime(b.ts) as any,
       value: b.volume,
       color: b.close >= b.open ? '#22c55e44' : '#ef444444',
     }))

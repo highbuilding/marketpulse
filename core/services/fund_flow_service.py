@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import akshare as ak
 import structlog
@@ -11,6 +12,8 @@ from core.persistence.fund_flow_repo import FundFlowRepo
 
 log = structlog.get_logger(__name__)
 
+_CN_TZ = ZoneInfo("Asia/Shanghai")
+
 
 def _split_symbol(symbol: str) -> tuple[str, str]:
     code, mkt = symbol.split(".")
@@ -18,9 +21,12 @@ def _split_symbol(symbol: str) -> tuple[str, str]:
 
 
 def _parse_ts(s: str) -> datetime:
+    """sina/akshare 返回北京时间,转 UTC 存库。"""
     if " " in s:
-        return datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
-    return datetime.fromisoformat(s + "T00:00:00+00:00")
+        naive = datetime.fromisoformat(s)
+    else:
+        naive = datetime.fromisoformat(s + "T00:00:00")
+    return naive.replace(tzinfo=_CN_TZ).astimezone(timezone.utc)
 
 
 def _num(v) -> float | None:

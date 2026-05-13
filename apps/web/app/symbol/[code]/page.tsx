@@ -41,9 +41,13 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
   )
   const todayBars = useMemo(() => {
     if (!data || interval !== '1m' || data.bars.length === 0) return data?.bars ?? []
-    // 取最后一个日期的所有 bars
-    const lastDate = data.bars[data.bars.length - 1].ts.slice(0, 10)
-    return data.bars.filter((b) => b.ts.startsWith(lastDate))
+    // 取最后一根 bar 的北京时间日期,过滤同一交易日
+    const lastBar = data.bars[data.bars.length - 1]
+    const lastDate = new Date(lastBar.ts).toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' })
+    return data.bars.filter((b) => {
+      const bDate = new Date(b.ts).toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' })
+      return bDate === lastDate
+    })
   }, [data, interval])
 
   const prevClose = useMemo(() => {

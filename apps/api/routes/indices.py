@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import akshare as ak
 import structlog
@@ -15,6 +16,9 @@ from pydantic import BaseModel
 
 log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api/indices", tags=["indices"])
+
+_CN_TZ = ZoneInfo("Asia/Shanghai")
+_HK_TZ = ZoneInfo("Asia/Hong_Kong")
 
 
 class MinutePoint(BaseModel):
@@ -65,25 +69,28 @@ async def index_minute(symbol: str, days: int = Query(1, ge=1, le=30)) -> IndexM
 
 async def _ashare_index_5min(symbol: str, name: str, days: int) -> IndexMinuteResponse:
     sina_code = _to_sina_a(symbol)
-    # 改用 1min 拿当日完整曲线;非当日仍可用 5min 做退化
     period = "1" if days == 1 else "5"
     df = await asyncio.to_thread(ak.stock_zh_a_minute, symbol=sina_code, period=period, adjust="")
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days + 1)
+    cutoff_utc = datetime.now(timezone.utc) - timedelta(days=days + 1)
     points: list[MinutePoint] = []
     for _, row in df.iterrows():
-        day_str = str(row["day"]).replace(" ", "T") + "+00:00"
-        ts = datetime.fromisoformat(day_str)
-        if ts < cutoff:
+        naive = datetime.fromisoformat(str(row["day"]).replace(" ", "T"))
+        ts = naive.replace(tzinfo=_CN_TZ).astimezone(timezone.utc)
+        if ts < cutoff_utc:
             continue
         points.append(MinutePoint(
             ts=ts.isoformat(),
             close=float(row["close"]),
             volume=int(float(row["volume"])),
         ))
-    # 取最近一个交易日(按日期分组,取最后一组)
     if days == 1 and points:
-        last_date = points[-1].ts[:10]
-        points = [p for p in points if p.ts.startswith(last_date)]
+        # 取最近一个交易日(按北京时间日期)
+        last_date_cn = points[-1].ts  # iso UTC
+        last_date_cn_obj = datetime.fromisoformat(last_date_cn).astimezone(_CN_TZ).date()
+        points = [
+            p for p in points
+            if datetime.fromisoformat(p.ts).astimezone(_CN_TZ).date() == last_date_cn_obj
+        ]
     granularity = f"{period}m"
     return IndexMinuteResponse(symbol=symbol, name=name, granularity=granularity, points=points)
 
@@ -91,17 +98,18 @@ async def _ashare_index_5min(symbol: str, name: str, days: int) -> IndexMinuteRe
 async def _hk_index_daily(symbol: str, name: str, days: int) -> IndexMinuteResponse:
     label = _to_hk_label(symbol)
     df = await asyncio.to_thread(ak.stock_hk_index_daily_sina, symbol=label)
-    # 取最后 N 天
     df_tail = df.tail(days)
     points: list[MinutePoint] = []
     for _, row in df_tail.iterrows():
         d = row["date"]
-        # d 可能是 date / str / Timestamp
-        if hasattr(d, "isoformat"):
-            ts = datetime.combine(d if not hasattr(d, "date") else d.date(),
-                                   datetime.min.time(), tzinfo=timezone.utc)
+        if hasattr(d, "date"):  # pandas Timestamp
+            d_obj = d.date()
+        elif hasattr(d, "isoformat") and not isinstance(d, str):  # date
+            d_obj = d
         else:
-            ts = datetime.fromisoformat(f"{d}T00:00:00+00:00")
+            d_obj = datetime.fromisoformat(str(d)).date()
+        # 港股日期 → 当地午夜 → UTC
+        ts = datetime.combine(d_obj, datetime.min.time(), tzinfo=_HK_TZ).astimezone(timezone.utc)
         points.append(MinutePoint(
             ts=ts.isoformat(),
             close=float(row["close"]),

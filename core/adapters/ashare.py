@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Callable
+from zoneinfo import ZoneInfo
 
 import akshare as ak
 import requests
@@ -13,6 +14,8 @@ from core.adapters.base import AdapterError, CircuitBreaker
 from core.domain.models import Bar, HealthStatus, Quote
 
 log = structlog.get_logger(__name__)
+
+_CN_TZ = ZoneInfo("Asia/Shanghai")
 
 
 _SINA_BASE = "https://hq.sinajs.cn/list="
@@ -143,7 +146,7 @@ class AShareAdapter:
         )
         out: list[Bar] = []
         for _, row in df.iterrows():
-            ts = datetime.combine(row["date"], datetime.min.time(), tzinfo=timezone.utc)
+            ts = datetime.combine(row["date"], datetime.min.time(), tzinfo=_CN_TZ).astimezone(timezone.utc)
             out.append(Bar(
                 market="ashare",
                 symbol=symbol,
@@ -167,10 +170,12 @@ class AShareAdapter:
         out: list[Bar] = []
         interval = f"{freq}m"
         for _, row in df.iterrows():
-            day_str = str(row["day"]).replace(" ", "T") + "+00:00"
+            # sina 返回北京时间 "2026-05-13 14:55:00",标 +08:00 后转 UTC
+            naive = datetime.fromisoformat(str(row["day"]).replace(" ", "T"))
+            ts = naive.replace(tzinfo=_CN_TZ).astimezone(timezone.utc)
             out.append(Bar(
                 market="ashare", symbol=symbol,
-                ts=datetime.fromisoformat(day_str),
+                ts=ts,
                 open=Decimal(str(row["open"])),
                 high=Decimal(str(row["high"])),
                 low=Decimal(str(row["low"])),

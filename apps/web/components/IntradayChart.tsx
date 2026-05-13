@@ -31,6 +31,11 @@ function computeVwap(bars: BarDTO[]): VWAPPoint[] {
   return out
 }
 
+function toChartTime(iso: string): number {
+  // ISO 是 UTC,加 8h 偏移让 lightweight-charts 按 UTC 渲染时显示为北京时间
+  return (new Date(iso).getTime() / 1000) + 8 * 3600
+}
+
 export function IntradayChart({ bars, height = 380, prevClose }: IntradayChartProps) {
   const ref = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -48,28 +53,25 @@ export function IntradayChart({ bars, height = 380, prevClose }: IntradayChartPr
     })
     chartRef.current = chart
 
-    // 主图:close 折线(白色)
     const priceSeries = chart.addLineSeries({
       color: '#f5f5f5', lineWidth: 2,
       priceLineVisible: false,
     })
     const priceData: LineData[] = bars.map((b) => ({
-      time: (new Date(b.ts).getTime() / 1000) as any,
+      time: toChartTime(b.ts) as any,
       value: b.close,
     }))
     priceSeries.setData(priceData)
 
-    // 均价线(VWAP),黄色
     const vwapSeries = chart.addLineSeries({
       color: '#fbbf24', lineWidth: 1, lineStyle: LineStyle.Solid,
       priceLineVisible: false,
     })
     vwapSeries.setData(vwap.map((p) => ({
-      time: (new Date(p.ts).getTime() / 1000) as any,
+      time: toChartTime(p.ts) as any,
       value: p.vwap,
     })))
 
-    // 昨收 reference 横线(红/绿背景判定基准)
     if (prevClose != null && prevClose > 0) {
       priceSeries.createPriceLine({
         price: prevClose,
@@ -81,7 +83,6 @@ export function IntradayChart({ bars, height = 380, prevClose }: IntradayChartPr
       })
     }
 
-    // 副图:成交量柱状
     const volSeries = chart.addHistogramSeries({
       priceFormat: { type: 'volume' },
       priceScaleId: '',
@@ -91,7 +92,7 @@ export function IntradayChart({ bars, height = 380, prevClose }: IntradayChartPr
       scaleMargins: { top: 0.75, bottom: 0 },
     })
     const volData: HistogramData[] = bars.map((b) => ({
-      time: (new Date(b.ts).getTime() / 1000) as any,
+      time: toChartTime(b.ts) as any,
       value: b.volume,
       color: prevClose != null && b.close >= prevClose ? '#ef444466' : '#22c55e66',
     }))

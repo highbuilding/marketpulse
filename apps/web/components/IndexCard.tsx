@@ -27,7 +27,8 @@ function MiniChart({ points, color }: { points: { ts: string; close: number }[];
       color, lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
     })
     const data: LineData[] = points.map((p) => ({
-      time: (new Date(p.ts).getTime() / 1000) as any,
+      // +8h 让北京时间正确显示
+      time: ((new Date(p.ts).getTime() / 1000) + 8 * 3600) as any,
       value: p.close,
     }))
     series.setData(data)

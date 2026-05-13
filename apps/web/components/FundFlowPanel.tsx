@@ -4,6 +4,12 @@ import useSWR from 'swr'
 
 import { fetchSymbolFundFlow } from '@/lib/symbol_api'
 
+function fmtDate(iso: string): string {
+  // UTC iso → 本地日期(浏览器时区,A 股用户通常 +08)
+  const d = new Date(iso)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 function fmt(v: number | null): string {
   if (v == null) return '—'
   const abs = Math.abs(v)
@@ -40,7 +46,7 @@ export function FundFlowPanel({ symbol }: { symbol: string }) {
           <tbody>
             {data.rows.slice(-15).reverse().map((r) => (
               <tr key={r.ts} className="border-t border-neutral-800">
-                <td className="py-1 font-mono">{r.ts.slice(0, 10)}</td>
+                <td className="py-1 font-mono">{fmtDate(r.ts)}</td>
                 <td className={`text-right tabular-nums ${(r.main_net ?? 0) >= 0 ? 'text-red-400' : 'text-green-400'}`}>{fmt(r.main_net)}</td>
                 <td className="text-right tabular-nums">{fmt(r.super_large_net)}</td>
                 <td className="text-right tabular-nums">{fmt(r.large_net)}</td>
