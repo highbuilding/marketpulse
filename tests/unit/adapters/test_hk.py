@@ -1,38 +1,48 @@
-from datetime import datetime, timezone
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-import pandas as pd
 import pytest
 
-from core.adapters.hk import HKAdapter
+from core.adapters.hk import HKAdapter, _to_sina_code
 
 
-@pytest.fixture
-def mock_hk_spot_df():
-    return pd.DataFrame([
-        {"代码": "00700", "名称": "腾讯控股", "最新价": 380.0, "涨跌幅": 0.8, "成交量": 5000},
-        {"代码": "09988", "名称": "阿里巴巴-W", "最新价": 78.5, "涨跌幅": -1.2, "成交量": 7000},
-    ])
+_SINA_HK = (
+    'var hq_str_hk00700="TENCENT,腾讯控股,456.000,457.200,465.800,454.000,'
+    '462.800,5.600,1.225,462.60001,462.79999,11090343806,24078954,0.000,0.000,'
+    '683.000,454.000,2026/05/13,15:57";\n'
+    'var hq_str_hkHSI="HSI,恒生指数,26369.990,26347.910,26458.900,26220.120,'
+    '26376.990,29.080,0.110,0.00000,0.00000,267583167,14489879943,0.000,0.000,'
+    '28056.100,22668.350,2026/05/13,16:02";\n'
+)
+
+
+def test_to_sina_code():
+    assert _to_sina_code("00700.HK") == "hk00700"
+    assert _to_sina_code("HSI.HK") == "hkHSI"
 
 
 @pytest.mark.asyncio
-async def test_fetch_snapshot_primary(mock_hk_spot_df):
-    with patch("core.adapters.hk.ak.stock_hk_spot_em", return_value=mock_hk_spot_df):
-        adapter = HKAdapter()
-        quotes = await adapter.fetch_snapshot(["00700.HK", "09988.HK"])
-    assert len(quotes) == 2
-    assert all(q.market == "hk" for q in quotes)
+async def test_fetch_snapshot_parses_sina():
+    adapter = HKAdapter()
+    fake = MagicMock()
+    fake.text = _SINA_HK
+    fake.encoding = "gbk"
+    fake.raise_for_status = MagicMock()
+    with patch.object(adapter._session, "get", return_value=fake):
+        quotes = await adapter.fetch_snapshot(["00700.HK", "HSI.HK"])
+    symbols = {q.symbol for q in quotes}
+    assert "00700.HK" in symbols and "HSI.HK" in symbols
     tencent = next(q for q in quotes if q.symbol == "00700.HK")
-    assert tencent.price == Decimal("380.0")
-    assert tencent.source == "akshare"
+    assert tencent.price == Decimal("462.8000")
+    assert tencent.change_pct == pytest.approx(1.225, abs=0.01)
+    assert tencent.source == "sina"
 
 
 @pytest.mark.asyncio
 async def test_fetch_snapshot_falls_back_to_yfinance():
-    with patch("core.adapters.hk.ak.stock_hk_spot_em", side_effect=RuntimeError("blocked")), \
-         patch("core.adapters.hk.HKAdapter._fetch_snapshot_yfinance") as mock_yf:
+    adapter = HKAdapter()
+    with patch.object(adapter._session, "get", side_effect=RuntimeError("blocked")), \
+         patch.object(adapter, "_fetch_snapshot_yfinance") as mock_yf:
         mock_yf.return_value = []
-        adapter = HKAdapter()
         await adapter.fetch_snapshot(["00700.HK"])
     assert mock_yf.called

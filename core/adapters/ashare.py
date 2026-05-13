@@ -6,12 +6,16 @@ from decimal import Decimal
 from typing import Callable
 
 import akshare as ak
+import requests
 import structlog
 
 from core.adapters.base import AdapterError, CircuitBreaker
 from core.domain.models import Bar, HealthStatus, Quote
 
 log = structlog.get_logger(__name__)
+
+
+_SINA_BASE = "https://hq.sinajs.cn/list="
 
 
 def _normalize_symbol(code: str) -> str:
@@ -26,45 +30,78 @@ def _denormalize(symbol: str) -> str:
     return symbol.split(".")[0]
 
 
+def _to_sina_code(symbol: str) -> str:
+    if "." not in symbol:
+        return _to_sina_code(_normalize_symbol(symbol))
+    code, mkt = symbol.split(".")
+    return f"{mkt.lower()}{code}"
+
+
 class AShareAdapter:
     market = "ashare"
     name = "ashare"
 
     def __init__(self) -> None:
         self.primary_cb = CircuitBreaker(fail_threshold=3, reset_after_s=300)
+        self._session = requests.Session()
+        self._session.trust_env = False
+        self._session.proxies = {}
+        self._session.headers.update({
+            "Referer": "https://finance.sina.com.cn/",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        })
 
     async def fetch_snapshot(self, symbols: list[str]) -> list[Quote]:
-        wanted = {_denormalize(s) for s in symbols}
         if self.primary_cb.can_execute():
             try:
-                quotes = await asyncio.to_thread(self._fetch_snapshot_akshare, wanted)
+                quotes = await asyncio.to_thread(self._fetch_snapshot_sina, symbols)
                 self.primary_cb.record_success()
                 return quotes
             except Exception as e:
                 self.primary_cb.record_failure()
                 log.warning("ashare.primary_failed", error=str(e))
+        wanted = {_denormalize(s) for s in symbols}
         try:
             return await asyncio.to_thread(self._fetch_snapshot_mootdx, wanted)
         except Exception as e:
             raise AdapterError(f"both primary and backup failed: {e}", source="ashare") from e
 
-    def _fetch_snapshot_akshare(self, wanted: set[str]) -> list[Quote]:
-        df = ak.stock_zh_a_spot_em()
+    def _fetch_snapshot_sina(self, symbols: list[str]) -> list[Quote]:
+        codes = ",".join(_to_sina_code(s) for s in symbols)
+        url = _SINA_BASE + codes
+        r = self._session.get(url, timeout=5)
+        r.encoding = "gbk"
+        r.raise_for_status()
         now = datetime.now(timezone.utc)
         out: list[Quote] = []
-        for _, row in df.iterrows():
-            code = str(row["代码"])
-            if code not in wanted:
+        for line in r.text.splitlines():
+            # var hq_str_sh600519="贵州茅台,open,prev_close,now,high,low,...";
+            if 'hq_str_' not in line or '="' not in line:
                 continue
-            price = Decimal(str(row["最新价"]))
+            sina_code = line.split('hq_str_')[1].split('=')[0]  # e.g. "sh600519"
+            payload = line.split('="', 1)[1].rstrip('";\n')
+            parts = payload.split(",")
+            if len(parts) < 6:
+                continue
+            symbol = f"{sina_code[2:]}.{sina_code[:2].upper()}"
+            try:
+                prev_close = float(parts[2])
+                price = float(parts[3])
+                volume = int(float(parts[8])) if len(parts) > 8 else 0
+            except (ValueError, IndexError):
+                continue
+            if price == 0:
+                continue
+            change_pct = (price - prev_close) / prev_close * 100 if prev_close else 0.0
             out.append(Quote(
                 market="ashare",
-                symbol=_normalize_symbol(code),
+                symbol=symbol,
                 ts=now,
-                price=price,
-                change_pct=float(row["涨跌幅"]),
-                volume=int(row["成交量"]),
-                source="akshare",
+                price=Decimal(f"{price:.4f}"),
+                change_pct=change_pct,
+                volume=volume,
+                source="sina",
             ))
         return out
 
@@ -125,7 +162,8 @@ class AShareAdapter:
         if not self.primary_cb.can_execute():
             return HealthStatus(name="ashare", state="degraded", detail="primary circuit open")
         try:
-            await asyncio.to_thread(ak.stock_zh_index_spot_em, symbol="沪深重要指数")
+            r = await asyncio.to_thread(self._session.get, _SINA_BASE + "sh000001", timeout=3)
+            r.raise_for_status()
             return HealthStatus(name="ashare", state="ok")
         except Exception as e:
             return HealthStatus(name="ashare", state="down", detail=str(e))
