@@ -100,6 +100,6 @@ export interface IndexMinutePoint {
 export interface IndexMinuteResponse {
   symbol: string
   name: string
-  granularity: '5m' | '1d'
+  granularity: '1m' | '5m' | '1d'
   points: IndexMinutePoint[]
 }

@@ -1,5 +1,6 @@
 'use client'
 
+import { useRouter } from 'next/navigation'
 import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 
@@ -22,6 +23,23 @@ const INTERVALS: { key: Interval; label: string }[] = [
 export default function SymbolPage({ params }: { params: { code: string } }) {
   const symbol = decodeURIComponent(params.code)
   const [interval, setInterval] = useState<Interval>('1m')
+  const router = useRouter()
+
+  // 判断是否指数 (000xxx.SH / 399xxx.SZ),指数不显示资金流面板
+  const isIndex = useMemo(() => {
+    const [code, mkt] = symbol.split('.')
+    if (mkt === 'SH' && code.startsWith('000')) return true
+    if (mkt === 'SZ' && code.startsWith('399')) return true
+    return false
+  }, [symbol])
+
+  const goBack = () => {
+    if (typeof window !== 'undefined' && window.history.length > 1) {
+      router.back()
+    } else {
+      router.push('/market')
+    }
+  }
 
   const { data: profile } = useSWR(`profile:${symbol}`, () => fetchSymbolProfile(symbol))
 
@@ -68,7 +86,7 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
             <span className="text-xs text-neutral-500 uppercase">{profile.market}</span>
           )}
         </div>
-        <a href="/market" className="text-xs text-neutral-400 hover:text-neutral-200">← 市场</a>
+        <button onClick={goBack} className="text-xs text-neutral-400 hover:text-neutral-200">← 返回</button>
       </header>
 
       <section className="rounded-lg border border-neutral-800 bg-neutral-950 p-4">
@@ -103,7 +121,7 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
         )}
       </section>
 
-      <FundFlowPanel symbol={symbol} />
+      {!isIndex && <FundFlowPanel symbol={symbol} />}
     </main>
   )
 }

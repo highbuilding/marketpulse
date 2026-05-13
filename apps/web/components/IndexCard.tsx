@@ -70,7 +70,10 @@ export function IndexCard({ symbol }: { symbol: string }) {
   const color = up ? '#22c55e' : '#ef4444'
 
   return (
-    <section className="rounded-lg border border-neutral-800 bg-neutral-950 p-4">
+    <a
+      href={`/symbol/${encodeURIComponent(symbol)}`}
+      className="block rounded-lg border border-neutral-800 bg-neutral-950 p-4 hover:border-neutral-600 transition-colors"
+    >
       <div className="flex items-baseline justify-between mb-2">
         <div>
           <div className="text-sm text-neutral-400">{data?.name || '加载中'}</div>
@@ -92,8 +95,8 @@ export function IndexCard({ symbol }: { symbol: string }) {
         <p className="text-xs text-neutral-500" style={{ height: 80 }}>无分时数据</p>
       )}
       <div className="text-[10px] text-neutral-600 mt-1">
-        {data?.granularity === '5m' ? '当日 5 分钟' : '近 30 日日线'}
+        {data?.granularity === '5m' || data?.granularity === '1m' ? '当日分时' : '近 30 日日线'}
       </div>
-    </section>
+    </a>
   )
 }

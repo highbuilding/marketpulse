@@ -1,11 +1,17 @@
 'use client'
 
+import { useRouter } from 'next/navigation'
 import useSWR from 'swr'
 
 import { fetchSectorConstituents } from '@/lib/sector_api'
 
 export default function SectorPage({ params }: { params: { name: string } }) {
   const name = decodeURIComponent(params.name)
+  const router = useRouter()
+  const goBack = () => {
+    if (typeof window !== 'undefined' && window.history.length > 1) router.back()
+    else router.push('/market')
+  }
   const { data, error, isLoading } = useSWR(
     `sector:${name}`, () => fetchSectorConstituents(name),
   )
@@ -14,7 +20,7 @@ export default function SectorPage({ params }: { params: { name: string } }) {
     <main className="p-6 max-w-7xl mx-auto space-y-4">
       <header className="flex items-baseline justify-between">
         <h1 className="text-2xl font-bold">{name}</h1>
-        <a href="/dashboard" className="text-xs text-neutral-400 hover:text-neutral-200">← Dashboard</a>
+        <button onClick={goBack} className="text-xs text-neutral-400 hover:text-neutral-200">← 返回</button>
       </header>
 
       <section className="rounded-lg border border-neutral-800 bg-neutral-950 p-4">
