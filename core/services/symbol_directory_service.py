@@ -41,15 +41,9 @@ class SymbolDirectoryService:
         await self.repo.upsert_many(_INDEX_SEEDS)
 
     async def refresh_ashare(self) -> int:
-        """全量 A 股 code+name,走 sina(stock_zh_a_spot)约 17s / ~5500 只。"""
+        """A 股 + ETF code+name,sina 通道."""
         df = await asyncio.to_thread(ak.stock_zh_a_spot)
-        items = [
-            (_normalize_ashare(str(row["代码"]).split("sh")[-1].split("sz")[-1].split("bj")[-1]),
-             str(row["名称"]).strip(), "ashare")
-            for _, row in df.iterrows()
-        ]
-        # 原 "代码" 列已经带 "sh600519" 前缀,我们要剥离再 normalize
-        normalized = []
+        normalized: list[tuple[str, str, str]] = []
         for _, row in df.iterrows():
             sina_code = str(row["代码"])
             if sina_code[:2].lower() in {"sh", "sz", "bj"}:
@@ -59,6 +53,19 @@ class SymbolDirectoryService:
             else:
                 symbol = _normalize_ashare(sina_code)
             normalized.append((symbol, str(row["名称"]).strip(), "ashare"))
+
+        # ETF 也走 sina
+        try:
+            etf_df = await asyncio.to_thread(ak.fund_etf_category_sina, symbol="ETF基金")
+            for _, row in etf_df.iterrows():
+                sina_code = str(row["代码"])
+                if sina_code[:2].lower() in {"sh", "sz"}:
+                    mkt = sina_code[:2].upper()
+                    code = sina_code[2:]
+                    normalized.append((f"{code}.{mkt}", str(row["名称"]).strip(), "etf"))
+        except Exception as e:  # noqa: BLE001
+            log.warning("directory.etf_refresh_failed", error=str(e))
+
         n = await self.repo.upsert_many(normalized)
         log.info("symbol_directory.refreshed", count=n)
         return n

@@ -65,7 +65,9 @@ async def index_minute(symbol: str, days: int = Query(1, ge=1, le=30)) -> IndexM
 
 async def _ashare_index_5min(symbol: str, name: str, days: int) -> IndexMinuteResponse:
     sina_code = _to_sina_a(symbol)
-    df = await asyncio.to_thread(ak.stock_zh_a_minute, symbol=sina_code, period="5", adjust="")
+    # 改用 1min 拿当日完整曲线;非当日仍可用 5min 做退化
+    period = "1" if days == 1 else "5"
+    df = await asyncio.to_thread(ak.stock_zh_a_minute, symbol=sina_code, period=period, adjust="")
     cutoff = datetime.now(timezone.utc) - timedelta(days=days + 1)
     points: list[MinutePoint] = []
     for _, row in df.iterrows():
@@ -82,7 +84,8 @@ async def _ashare_index_5min(symbol: str, name: str, days: int) -> IndexMinuteRe
     if days == 1 and points:
         last_date = points[-1].ts[:10]
         points = [p for p in points if p.ts.startswith(last_date)]
-    return IndexMinuteResponse(symbol=symbol, name=name, granularity="5m", points=points)
+    granularity = f"{period}m"
+    return IndexMinuteResponse(symbol=symbol, name=name, granularity=granularity, points=points)
 
 
 async def _hk_index_daily(symbol: str, name: str, days: int) -> IndexMinuteResponse:

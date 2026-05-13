@@ -48,12 +48,15 @@ class KLineService:
     async def _get_intraday(
         self, symbol: str, interval: str, start: datetime, end: datetime,
     ) -> list[Bar]:
-        cached = self.repo.fetch_history("ashare", symbol, start, end, interval=interval)
-        if cached:
-            return cached
+        # 1m 分时不缓存:总是拿最新;其他 intraday 走 cache
+        if interval != "1m":
+            cached = self.repo.fetch_history("ashare", symbol, start, end, interval=interval)
+            if cached:
+                return cached
         freq = interval.replace("m", "")
         bars = await self.adapter.fetch_intraday(symbol, freq=freq)
-        self.repo.insert_bars(bars)
+        if interval != "1m":
+            self.repo.insert_bars(bars)
         return [b for b in bars if start <= b.ts <= end]
 
 

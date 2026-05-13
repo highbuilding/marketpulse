@@ -32,12 +32,19 @@ async def test_refresh_ashare_normalizes_codes(svc):
         {"代码": "sz000858", "名称": "五 粮 液"},
         {"代码": "bj920469", "名称": "富恒新材"},
     ])
-    with patch("core.services.symbol_directory_service.ak.stock_zh_a_spot", return_value=df):
+    etf_df = pd.DataFrame([
+        {"代码": "sh510300", "名称": "沪深300ETF华泰柏瑞"},
+        {"代码": "sz159915", "名称": "创业板ETF"},
+    ])
+    with patch("core.services.symbol_directory_service.ak.stock_zh_a_spot", return_value=df), \
+         patch("core.services.symbol_directory_service.ak.fund_etf_category_sina", return_value=etf_df):
         n = await svc.refresh_ashare()
-    assert n == 3
+    assert n == 5
     assert await svc.get_name("600519.SH") == "贵州茅台"
     assert await svc.get_name("000858.SZ") == "五 粮 液"
     assert await svc.get_name("920469.BJ") == "富恒新材"
+    assert await svc.get_name("510300.SH") == "沪深300ETF华泰柏瑞"
+    assert await svc.get_name("159915.SZ") == "创业板ETF"
 
 
 @pytest.mark.asyncio
@@ -47,7 +54,9 @@ async def test_search_by_name_or_symbol(svc):
         {"代码": "sz000858", "名称": "五 粮 液"},
         {"代码": "sh603288", "名称": "海天味业"},
     ])
-    with patch("core.services.symbol_directory_service.ak.stock_zh_a_spot", return_value=df):
+    etf_df = pd.DataFrame([])
+    with patch("core.services.symbol_directory_service.ak.stock_zh_a_spot", return_value=df), \
+         patch("core.services.symbol_directory_service.ak.fund_etf_category_sina", return_value=etf_df):
         await svc.refresh_ashare()
     # 搜代码前缀
     results = await svc.search("600", limit=5)

@@ -1,34 +1,56 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 
+import { IntradayChart } from '@/components/IntradayChart'
 import { KLineChart } from '@/components/KLineChart'
 import { FundFlowPanel } from '@/components/FundFlowPanel'
 import { fetchBars, fetchSymbolProfile } from '@/lib/symbol_api'
 import type { Interval } from '@/lib/types'
 
 const INTERVALS: { key: Interval; label: string }[] = [
+  { key: '1m', label: '分时' },
+  { key: '5m', label: '5分' },
+  { key: '15m', label: '15分' },
+  { key: '60m', label: '60分' },
   { key: '1d', label: '日线' },
   { key: '1wk', label: '周线' },
   { key: '1mo', label: '月线' },
-  { key: '60m', label: '60分' },
-  { key: '15m', label: '15分' },
-  { key: '5m', label: '5分' },
 ]
 
 export default function SymbolPage({ params }: { params: { code: string } }) {
   const symbol = decodeURIComponent(params.code)
-  const [interval, setInterval] = useState<Interval>('1d')
+  const [interval, setInterval] = useState<Interval>('1m')
 
   const { data: profile } = useSWR(`profile:${symbol}`, () => fetchSymbolProfile(symbol))
 
   const isIntraday = ['1m', '5m', '15m', '30m', '60m'].includes(interval)
+  const days = interval === '1m' ? 1 : isIntraday ? 5 : 365
+
   const { data, error, isLoading } = useSWR(
-    `bars:${symbol}:${interval}`,
-    () => fetchBars(symbol, interval, isIntraday ? 5 : 365),
-    { refreshInterval: 60_000 },
+    `bars:${symbol}:${interval}:${days}`,
+    () => fetchBars(symbol, interval, days),
+    { refreshInterval: interval === '1m' ? 30_000 : 60_000 },
   )
+
+  // 分时模式:拉日线最后一根作 prevClose,只展示当日
+  const { data: daily } = useSWR(
+    interval === '1m' ? `bars:${symbol}:1d:5` : null,
+    () => fetchBars(symbol, '1d', 5),
+  )
+  const todayBars = useMemo(() => {
+    if (!data || interval !== '1m' || data.bars.length === 0) return data?.bars ?? []
+    // 取最后一个日期的所有 bars
+    const lastDate = data.bars[data.bars.length - 1].ts.slice(0, 10)
+    return data.bars.filter((b) => b.ts.startsWith(lastDate))
+  }, [data, interval])
+
+  const prevClose = useMemo(() => {
+    if (!daily || daily.bars.length < 2) return null
+    // 倒数第二根日线作昨收(最后一根可能就是今日实时不准)
+    return daily.bars[daily.bars.length - 2]?.close ?? daily.bars[daily.bars.length - 1]?.close
+  }, [daily])
 
   return (
     <main className="p-6 max-w-7xl mx-auto space-y-4">
@@ -36,6 +58,9 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
         <div className="flex items-baseline gap-4">
           <h1 className="text-2xl font-bold">{profile?.name ?? '—'}</h1>
           <span className="text-lg font-mono text-neutral-400">{symbol}</span>
+          {profile?.market && (
+            <span className="text-xs text-neutral-500 uppercase">{profile.market}</span>
+          )}
         </div>
         <a href="/market" className="text-xs text-neutral-400 hover:text-neutral-200">← 市场</a>
       </header>
@@ -52,11 +77,23 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
             </button>
           ))}
         </div>
-        {isLoading && <p className="text-sm text-neutral-500">加载 K 线…</p>}
+        {isLoading && <p className="text-sm text-neutral-500">加载中…</p>}
         {error && <p className="text-sm text-red-400">加载失败:{String(error)}</p>}
-        {data && data.bars.length > 0 && <KLineChart bars={data.bars} height={420} />}
-        {data && data.bars.length === 0 && (
-          <p className="text-sm text-yellow-400">无数据。请先 <code>make warmup</code> 或者本周期还未抓取。</p>
+
+        {/* 分时模式 */}
+        {interval === '1m' && data && todayBars.length > 0 && (
+          <IntradayChart bars={todayBars} prevClose={prevClose} height={420} />
+        )}
+        {interval === '1m' && data && todayBars.length === 0 && (
+          <p className="text-sm text-yellow-400">当日无分时数据(可能未开盘或源不通)。</p>
+        )}
+
+        {/* 其他周期:K 线 */}
+        {interval !== '1m' && data && data.bars.length > 0 && (
+          <KLineChart bars={data.bars} height={420} />
+        )}
+        {interval !== '1m' && data && data.bars.length === 0 && (
+          <p className="text-sm text-yellow-400">无数据。请先 <code>make warmup</code> 或本周期还未抓取。</p>
         )}
       </section>
 
