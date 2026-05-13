@@ -27,3 +27,6 @@ web-install:
 
 clean:
 	rm -rf .venv apps/web/node_modules apps/web/.next data/*.duckdb data/*.db
+
+warmup:
+	. .venv/bin/activate && NO_PROXY='*' python -m apps.warmup --from-watchlist --days 365
