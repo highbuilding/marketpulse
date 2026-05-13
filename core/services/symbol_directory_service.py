@@ -6,6 +6,7 @@ import akshare as ak
 import structlog
 
 from core.persistence.symbol_directory_repo import SymbolDirectoryRepo
+from core.services._locks import mini_racer_lock
 
 log = structlog.get_logger(__name__)
 
@@ -41,8 +42,9 @@ class SymbolDirectoryService:
         await self.repo.upsert_many(_INDEX_SEEDS)
 
     async def refresh_ashare(self) -> int:
-        """A 股 + ETF code+name,sina 通道."""
-        df = await asyncio.to_thread(ak.stock_zh_a_spot)
+        """A 股 + ETF code+name,sina 通道。"""
+        async with mini_racer_lock:
+            df = await asyncio.to_thread(ak.stock_zh_a_spot)
         normalized: list[tuple[str, str, str]] = []
         for _, row in df.iterrows():
             sina_code = str(row["代码"])
@@ -54,9 +56,10 @@ class SymbolDirectoryService:
                 symbol = _normalize_ashare(sina_code)
             normalized.append((symbol, str(row["名称"]).strip(), "ashare"))
 
-        # ETF 也走 sina
+        # ETF 走 sina;mini_racer 必须串行
         try:
-            etf_df = await asyncio.to_thread(ak.fund_etf_category_sina, symbol="ETF基金")
+            async with mini_racer_lock:
+                etf_df = await asyncio.to_thread(ak.fund_etf_category_sina, symbol="ETF基金")
             for _, row in etf_df.iterrows():
                 sina_code = str(row["代码"])
                 if sina_code[:2].lower() in {"sh", "sz"}:

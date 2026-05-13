@@ -23,7 +23,9 @@ log = structlog.get_logger(__name__)
 
 
 async def _async_refresh_directory(svc) -> None:
+    # 延迟 5s 启动,避免和 scheduler 其他用 mini_racer 的 job 同时初始化导致 C 层崩溃
     try:
+        await asyncio.sleep(5)
         n = await svc.refresh_ashare()
         log.info("directory.bootstrapped", count=n)
     except Exception as e:  # noqa: BLE001

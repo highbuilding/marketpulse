@@ -112,3 +112,134 @@ async def test_fetch_intraday_5min():
     assert len(bars) == 1
     assert bars[0].interval == "5m"
     assert bars[0].close == Decimal("1350.5")
+
+
+# ============== _classify 多标的回归 ==============
+
+from core.adapters.ashare import _classify
+
+
+@pytest.mark.parametrize("symbol,expected", [
+    # 个股
+    ("600519.SH", "stock"),  # 贵州茅台
+    ("600004.SH", "stock"),  # 白云机场 ← 回归 bug
+    ("000858.SZ", "stock"),  # 五粮液
+    ("300750.SZ", "stock"),  # 宁德时代
+    ("002594.SZ", "stock"),  # 比亚迪
+    ("688981.SH", "stock"),  # 中芯国际
+    ("920469.BJ", "stock"),  # 富恒新材(北交所)
+    # ETF (SH)
+    ("510300.SH", "etf"),   # 沪深300ETF
+    ("510500.SH", "etf"),   # 中证500ETF
+    ("588000.SH", "etf"),   # 科创50ETF
+    ("513050.SH", "etf"),   # 中概互联网ETF
+    # ETF (SZ)
+    ("159915.SZ", "etf"),   # 创业板ETF
+    ("159949.SZ", "etf"),   # 创业板50ETF
+    ("159995.SZ", "etf"),   # 半导体ETF
+    # 指数
+    ("000001.SH", "index"),  # 上证指数
+    ("000300.SH", "index"),  # 沪深300
+    ("000688.SH", "index"),  # 科创50指数
+    ("000905.SH", "index"),  # 中证500指数
+    ("399001.SZ", "index"),  # 深证成指
+    ("399006.SZ", "index"),  # 创业板指
+])
+def test_classify_various_symbols(symbol, expected):
+    assert _classify(symbol) == expected, f"{symbol} should be {expected}"
+
+
+# ============== fetch_history 多源分发(stock / etf / index)==============
+
+import pandas as pd
+from datetime import date as _date
+
+_STOCK_DAILY_DF = pd.DataFrame([
+    {"date": _date(2020, 1, 2), "open": 10.0, "high": 10.5, "low": 9.8,
+     "close": 10.3, "volume": 1_000_000},
+    {"date": _date(2026, 5, 13), "open": 18.0, "high": 18.5, "low": 17.5,
+     "close": 18.2, "volume": 2_000_000},
+])
+
+_ETF_DAILY_DF = pd.DataFrame([
+    {"date": _date(2020, 1, 2), "open": 3.0, "high": 3.1, "low": 2.95,
+     "close": 3.05, "volume": 1_000_000_000},
+    {"date": _date(2026, 5, 13), "open": 4.9, "high": 5.0, "low": 4.85,
+     "close": 4.95, "volume": 2_000_000_000},
+])
+
+_INDEX_DAILY_DF = pd.DataFrame([
+    {"date": _date(2020, 1, 2), "open": 3050, "high": 3080, "low": 3040,
+     "close": 3070, "volume": 100_000_000},
+    {"date": _date(2026, 5, 13), "open": 4190, "high": 4245, "low": 4190,
+     "close": 4242.57, "volume": 700_000_000},
+])
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_stock_routes_to_stock_zh_a_daily():
+    adapter = AShareAdapter()
+    with patch("core.adapters.ashare.ak.stock_zh_a_daily", return_value=_STOCK_DAILY_DF) as m, \
+         patch("core.adapters.ashare.ak.fund_etf_hist_sina", side_effect=AssertionError("should not be called")), \
+         patch("core.adapters.ashare.ak.stock_zh_index_daily", side_effect=AssertionError("should not be called")):
+        bars = await adapter.fetch_history(
+            "600004.SH",  # 白云机场
+            datetime(2020, 1, 1, tzinfo=timezone.utc),
+            datetime(2026, 12, 31, tzinfo=timezone.utc),
+        )
+    m.assert_called_once()
+    assert len(bars) == 2
+    assert bars[0].close == Decimal("10.3")
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_etf_routes_to_fund_etf_hist_sina():
+    adapter = AShareAdapter()
+    with patch("core.adapters.ashare.ak.fund_etf_hist_sina", return_value=_ETF_DAILY_DF) as m, \
+         patch("core.adapters.ashare.ak.stock_zh_a_daily", side_effect=AssertionError("should not be called")), \
+         patch("core.adapters.ashare.ak.stock_zh_index_daily", side_effect=AssertionError("should not be called")):
+        bars = await adapter.fetch_history(
+            "510300.SH",  # 沪深300ETF
+            datetime(2020, 1, 1, tzinfo=timezone.utc),
+            datetime(2026, 12, 31, tzinfo=timezone.utc),
+        )
+    m.assert_called_once_with(symbol="sh510300")
+    assert len(bars) == 2
+    assert bars[0].close == Decimal("3.05")
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_index_routes_to_stock_zh_index_daily():
+    adapter = AShareAdapter()
+    with patch("core.adapters.ashare.ak.stock_zh_index_daily", return_value=_INDEX_DAILY_DF) as m, \
+         patch("core.adapters.ashare.ak.stock_zh_a_daily", side_effect=AssertionError("should not be called")), \
+         patch("core.adapters.ashare.ak.fund_etf_hist_sina", side_effect=AssertionError("should not be called")):
+        bars = await adapter.fetch_history(
+            "000001.SH",  # 上证指数
+            datetime(2020, 1, 1, tzinfo=timezone.utc),
+            datetime(2026, 12, 31, tzinfo=timezone.utc),
+        )
+    m.assert_called_once_with(symbol="sh000001")
+    assert len(bars) == 2
+    assert bars[0].close == Decimal("3070")
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_etf_filters_by_date_range():
+    """ETF 接口返回全部历史(从 2012 起),需要按 [start, end] 后置过滤。"""
+    big_df = pd.DataFrame([
+        {"date": _date(2015, 1, 1), "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1},
+        {"date": _date(2020, 6, 1), "open": 2, "high": 2, "low": 2, "close": 2, "volume": 2},
+        {"date": _date(2026, 5, 13), "open": 5, "high": 5, "low": 5, "close": 5, "volume": 5},
+    ])
+    adapter = AShareAdapter()
+    with patch("core.adapters.ashare.ak.fund_etf_hist_sina", return_value=big_df):
+        bars = await adapter.fetch_history(
+            "510300.SH",
+            datetime(2020, 1, 1, tzinfo=timezone.utc),
+            datetime(2026, 6, 1, tzinfo=timezone.utc),
+        )
+    # 应该只剩 2020-06-01 和 2026-05-13,2015-01-01 被过滤掉
+    assert len(bars) == 2
+    assert bars[0].close == Decimal("2")
+    assert bars[1].close == Decimal("5")

@@ -39,24 +39,53 @@ class KLineService:
 
     async def _get_daily(self, symbol: str, start: datetime, end: datetime) -> list[Bar]:
         cached = self.repo.fetch_history("ashare", symbol, start, end, interval="1d")
-        if cached:
+        # 只有当缓存覆盖了请求窗口才命中,否则重拉
+        if cached and self._covers(cached, start, end):
             return cached
         bars = await self.adapter.fetch_history(symbol, start, end)
         self.repo.insert_bars(bars)
         return bars
 
+    @staticmethod
+    def _covers(bars: list[Bar], start: datetime, end: datetime) -> bool:
+        """缓存是否真正覆盖 [start, end] 请求窗口。
+
+        判断标准:**缓存末点足够新**,且**缓存起点要么比 start 早,要么很接近 start**。
+        - tail_ok: last >= end - 4 天 (容许周末 + 1 个假期)
+        - head_ok: first <= start + 1 天 (允许首交易日 vs start 差 1 天)
+
+        例外:**当 cache span 已经"足够长"(>= 请求窗口的 80%)**,即使 first 比 start 晚也算覆盖
+        (这处理 IPO 标的:start=2020 但股票 2023 才上市)。
+        """
+        if not bars:
+            return False
+        first = bars[0].ts
+        last = bars[-1].ts
+        from datetime import timedelta
+        tail_ok = last >= end - timedelta(days=4)
+        if not tail_ok:
+            return False
+        head_close_enough = first <= start + timedelta(days=1)
+        if head_close_enough:
+            return True
+        # IPO 例外:cache span 覆盖了请求窗口的 80% 以上
+        req_span = (end - start).total_seconds()
+        cache_span = (last - first).total_seconds()
+        return req_span > 0 and cache_span / req_span >= 0.8
+
     async def _get_intraday(
         self, symbol: str, interval: str, start: datetime, end: datetime,
     ) -> list[Bar]:
-        # 1m 分时不缓存:总是拿最新;其他 intraday 走 cache
-        if interval != "1m":
-            cached = self.repo.fetch_history("ashare", symbol, start, end, interval=interval)
-            if cached:
-                return cached
+        # 1m 不缓存,总是拿最新
+        if interval == "1m":
+            bars = await self.adapter.fetch_intraday(symbol, freq="1")
+            return [b for b in bars if start <= b.ts <= end]
+        cached = self.repo.fetch_history("ashare", symbol, start, end, interval=interval)
+        if cached and self._covers(cached, start, end):
+            return cached
         freq = interval.replace("m", "")
         bars = await self.adapter.fetch_intraday(symbol, freq=freq)
-        if interval != "1m":
-            self.repo.insert_bars(bars)
+        self.repo.insert_bars(bars)
         return [b for b in bars if start <= b.ts <= end]
 
 

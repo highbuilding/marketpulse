@@ -13,6 +13,8 @@ import akshare as ak
 import requests
 import structlog
 
+from core.services._locks import mini_racer_lock
+
 log = structlog.get_logger(__name__)
 
 
@@ -120,7 +122,8 @@ class MarketQueryService:
         return out
 
     async def sectors_ashare(self) -> list[SectorRow]:
-        return await asyncio.to_thread(self._sectors_ashare_sync)
+        async with mini_racer_lock:
+            return await asyncio.to_thread(self._sectors_ashare_sync)
 
     def _sectors_ashare_sync(self) -> list[SectorRow]:
         df = ak.stock_sector_spot(indicator="新浪行业")

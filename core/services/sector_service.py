@@ -7,6 +7,7 @@ import structlog
 
 from core.domain.models import Sector
 from core.persistence.sector_repo import SectorRepo
+from core.services._locks import mini_racer_lock
 
 log = structlog.get_logger(__name__)
 
@@ -25,13 +26,15 @@ class SectorService:
         self.repo = repo
 
     async def refresh_sector(self, label: str, display_name: str) -> int:
-        df = await asyncio.to_thread(ak.stock_sector_detail, sector=label)
+        async with mini_racer_lock:
+            df = await asyncio.to_thread(ak.stock_sector_detail, sector=label)
         symbols = [_to_symbol(str(c)) for c in df["代码"].tolist()]
         await self.repo.upsert_sector(display_name, "sina", symbols)
         return len(symbols)
 
     async def refresh_all_sina(self) -> int:
-        spot = await asyncio.to_thread(ak.stock_sector_spot, indicator="新浪行业")
+        async with mini_racer_lock:
+            spot = await asyncio.to_thread(ak.stock_sector_spot, indicator="新浪行业")
         total = 0
         for _, row in spot.iterrows():
             label = str(row["label"])
