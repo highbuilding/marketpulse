@@ -1,7 +1,8 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 
 from core.adapters.ashare import AShareAdapter, _to_sina_code
@@ -74,3 +75,40 @@ async def test_health_reports_ok_when_sina_responds():
         h = await adapter.health()
     assert h.state == "ok"
     assert h.name == "ashare"
+
+
+_DAILY_DF = pd.DataFrame([
+    {"date": date(2026, 5, 12), "open": 1340.0, "high": 1360.0, "low": 1330.0,
+     "close": 1354.55, "volume": 5_000_000},
+    {"date": date(2026, 5, 13), "open": 1354.5, "high": 1358.6, "low": 1338.0,
+     "close": 1344.09, "volume": 5_696_787},
+])
+
+_5MIN_DF = pd.DataFrame([
+    {"day": "2026-05-13 09:35:00", "open": 1350.0, "high": 1351.0, "low": 1349.0,
+     "close": 1350.5, "volume": 100_000},
+])
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_uses_sina_daily():
+    adapter = AShareAdapter()
+    with patch("core.adapters.ashare.ak.stock_zh_a_daily", return_value=_DAILY_DF):
+        bars = await adapter.fetch_history(
+            "600519.SH",
+            datetime(2026, 5, 1, tzinfo=timezone.utc),
+            datetime(2026, 5, 14, tzinfo=timezone.utc),
+        )
+    assert len(bars) == 2
+    assert bars[1].close == Decimal("1344.09")
+    assert bars[1].interval == "1d"
+
+
+@pytest.mark.asyncio
+async def test_fetch_intraday_5min():
+    adapter = AShareAdapter()
+    with patch("core.adapters.ashare.ak.stock_zh_a_minute", return_value=_5MIN_DF):
+        bars = await adapter.fetch_intraday("600519.SH", freq="5")
+    assert len(bars) == 1
+    assert bars[0].interval == "5m"
+    assert bars[0].close == Decimal("1350.5")

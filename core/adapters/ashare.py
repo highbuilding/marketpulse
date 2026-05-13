@@ -133,28 +133,50 @@ class AShareAdapter:
         raise NotImplementedError("use scheduler polling for ashare")
 
     async def fetch_history(self, symbol: str, start: datetime, end: datetime) -> list[Bar]:
-        code = _denormalize(symbol)
+        sina_code = _to_sina_code(symbol)
         df = await asyncio.to_thread(
-            ak.stock_zh_a_hist,
-            symbol=code,
-            period="daily",
+            ak.stock_zh_a_daily,
+            symbol=sina_code,
             start_date=start.strftime("%Y%m%d"),
             end_date=end.strftime("%Y%m%d"),
             adjust="qfq",
         )
         out: list[Bar] = []
         for _, row in df.iterrows():
-            ts = datetime.combine(row["日期"], datetime.min.time(), tzinfo=timezone.utc)
+            ts = datetime.combine(row["date"], datetime.min.time(), tzinfo=timezone.utc)
             out.append(Bar(
                 market="ashare",
                 symbol=symbol,
                 ts=ts,
-                open=Decimal(str(row["开盘"])),
-                high=Decimal(str(row["最高"])),
-                low=Decimal(str(row["最低"])),
-                close=Decimal(str(row["收盘"])),
-                volume=int(row["成交量"]),
+                open=Decimal(str(row["open"])),
+                high=Decimal(str(row["high"])),
+                low=Decimal(str(row["low"])),
+                close=Decimal(str(row["close"])),
+                volume=int(row["volume"]),
                 interval="1d",
+            ))
+        return out
+
+    async def fetch_intraday(self, symbol: str, freq: str = "5") -> list[Bar]:
+        """freq: '1'/'5'/'15'/'30'/'60' min。"""
+        sina_code = _to_sina_code(symbol)
+        df = await asyncio.to_thread(
+            ak.stock_zh_a_minute,
+            symbol=sina_code, period=freq, adjust="qfq",
+        )
+        out: list[Bar] = []
+        interval = f"{freq}m"
+        for _, row in df.iterrows():
+            day_str = str(row["day"]).replace(" ", "T") + "+00:00"
+            out.append(Bar(
+                market="ashare", symbol=symbol,
+                ts=datetime.fromisoformat(day_str),
+                open=Decimal(str(row["open"])),
+                high=Decimal(str(row["high"])),
+                low=Decimal(str(row["low"])),
+                close=Decimal(str(row["close"])),
+                volume=int(float(row["volume"])),
+                interval=interval,
             ))
         return out
 
