@@ -11,10 +11,12 @@ from core.persistence.duckdb_repo import BarRepo
 from core.persistence.fund_flow_repo import FundFlowRepo
 from core.persistence.sector_repo import SectorRepo
 from core.persistence.sqlite_repo import StateRepo
+from core.persistence.symbol_directory_repo import SymbolDirectoryRepo
 from core.persistence.watchlist_repo import WatchlistRepo
 from core.services.fund_flow_service import FundFlowService
 from core.services.kline_service import KLineService
 from core.services.sector_service import SectorService
+from core.services.symbol_directory_service import SymbolDirectoryService
 from core.services.watchlist_service import WatchlistService
 
 
@@ -78,3 +80,13 @@ def get_fund_flow_repo() -> FundFlowRepo:
 @lru_cache(maxsize=1)
 def get_fund_flow_service() -> FundFlowService:
     return FundFlowService(get_fund_flow_repo())
+
+
+@lru_cache(maxsize=1)
+def get_symbol_directory_repo() -> SymbolDirectoryRepo:
+    return SymbolDirectoryRepo(str(_DATA / "state.db"))
+
+
+@lru_cache(maxsize=1)
+def get_symbol_directory_service() -> SymbolDirectoryService:
+    return SymbolDirectoryService(get_symbol_directory_repo())

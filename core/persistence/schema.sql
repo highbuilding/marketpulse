@@ -76,3 +76,13 @@ CREATE TABLE IF NOT EXISTS fund_flow_north (
   sgt_net REAL,
   total_net REAL
 );
+
+-- Plan 2.1: symbol directory (code + name)
+CREATE TABLE IF NOT EXISTS symbol_directory (
+  symbol TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  market TEXT NOT NULL,
+  updated_at TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_symbol_name ON symbol_directory(name);

@@ -5,9 +5,12 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from apps.api.deps import get_fund_flow_service, get_kline_service
+from apps.api.deps import (
+    get_fund_flow_service, get_kline_service, get_symbol_directory_service,
+)
 from core.services.fund_flow_service import FundFlowService
 from core.services.kline_service import KLineService
+from core.services.symbol_directory_service import SymbolDirectoryService
 
 router = APIRouter(prefix="/api/symbols", tags=["symbols"])
 
@@ -41,6 +44,50 @@ class FundFlowRowDTO(BaseModel):
 class FundFlowResponse(BaseModel):
     symbol: str
     rows: list[FundFlowRowDTO]
+
+
+class ProfileResponse(BaseModel):
+    symbol: str
+    name: str | None
+    market: str | None
+
+
+class SearchHit(BaseModel):
+    symbol: str
+    name: str
+    market: str
+
+
+class SearchResponse(BaseModel):
+    query: str
+    hits: list[SearchHit]
+
+
+@router.get("/search", response_model=SearchResponse)
+async def search(
+    q: str = Query(..., min_length=1, max_length=50),
+    limit: int = Query(20, ge=1, le=50),
+    svc: SymbolDirectoryService = Depends(get_symbol_directory_service),
+) -> SearchResponse:
+    hits = await svc.search(q, limit)
+    return SearchResponse(query=q, hits=[
+        SearchHit(symbol=s, name=n, market=m) for s, n, m in hits
+    ])
+
+
+@router.get("/{symbol}/profile", response_model=ProfileResponse)
+async def profile(
+    symbol: str,
+    svc: SymbolDirectoryService = Depends(get_symbol_directory_service),
+) -> ProfileResponse:
+    name = await svc.get_name(symbol)
+    # market 推断:简单从后缀拿
+    market = None
+    if symbol.endswith((".SH", ".SZ", ".BJ")):
+        market = "ashare"
+    elif symbol.endswith(".HK"):
+        market = "hk"
+    return ProfileResponse(symbol=symbol, name=name, market=market)
 
 
 @router.get("/{symbol}/bars", response_model=BarsResponse)
