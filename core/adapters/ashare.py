@@ -40,6 +40,23 @@ def _to_sina_code(symbol: str) -> str:
     return f"{mkt.lower()}{code}"
 
 
+def _classify(symbol: str) -> str:
+    """归类 'etf' / 'index' / 'stock'。symbol 形如 600519.SH / 510300.SH / 000001.SH / 000001.SZ。"""
+    code, mkt = symbol.split(".")
+    mkt = mkt.upper()
+    # 指数:SH 段的 000xxx 是上证指数族;SZ 段的 399xxx 是深证指数族
+    if mkt == "SH" and code.startswith("000"):
+        return "index"
+    if mkt == "SZ" and code.startswith("399"):
+        return "index"
+    # ETF
+    if mkt == "SH" and code.startswith(("5", "11")):
+        return "etf"
+    if mkt == "SZ" and code.startswith("159"):
+        return "etf"
+    return "stock"
+
+
 class AShareAdapter:
     market = "ashare"
     name = "ashare"
@@ -137,13 +154,22 @@ class AShareAdapter:
 
     async def fetch_history(self, symbol: str, start: datetime, end: datetime) -> list[Bar]:
         sina_code = _to_sina_code(symbol)
-        df = await asyncio.to_thread(
-            ak.stock_zh_a_daily,
-            symbol=sina_code,
-            start_date=start.strftime("%Y%m%d"),
-            end_date=end.strftime("%Y%m%d"),
-            adjust="qfq",
-        )
+        sd = start.strftime("%Y%m%d")
+        ed = end.strftime("%Y%m%d")
+
+        kind = _classify(symbol)
+        if kind == "etf":
+            df = await asyncio.to_thread(ak.fund_etf_hist_sina, symbol=sina_code)
+            df = df[(df["date"] >= start.date()) & (df["date"] <= end.date())]
+        elif kind == "index":
+            df = await asyncio.to_thread(ak.stock_zh_index_daily, symbol=sina_code)
+            df = df[(df["date"] >= start.date()) & (df["date"] <= end.date())]
+        else:
+            df = await asyncio.to_thread(
+                ak.stock_zh_a_daily,
+                symbol=sina_code, start_date=sd, end_date=ed, adjust="qfq",
+            )
+
         out: list[Bar] = []
         for _, row in df.iterrows():
             ts = datetime.combine(row["date"], datetime.min.time(), tzinfo=_CN_TZ).astimezone(timezone.utc)

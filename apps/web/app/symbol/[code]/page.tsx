@@ -26,7 +26,9 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
   const { data: profile } = useSWR(`profile:${symbol}`, () => fetchSymbolProfile(symbol))
 
   const isIntraday = ['1m', '5m', '15m', '30m', '60m'].includes(interval)
-  const days = interval === '1m' ? 1 : isIntraday ? 5 : 365
+  // 日/周/月线:从 2020-01-01 至今,确保至少覆盖 6 年
+  const daysSinceY2020 = Math.ceil((Date.now() - new Date('2020-01-01').getTime()) / 86_400_000)
+  const days = interval === '1m' ? 1 : isIntraday ? 5 : daysSinceY2020
 
   const { data, error, isLoading } = useSWR(
     `bars:${symbol}:${interval}:${days}`,
