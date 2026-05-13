@@ -78,3 +78,28 @@ export interface Watchlist {
   is_archived: boolean
   created_at: string
 }
+
+export interface SymbolProfile {
+  symbol: string
+  name: string | null
+  market: string | null
+}
+
+export interface SearchHit {
+  symbol: string
+  name: string
+  market: string
+}
+
+export interface IndexMinutePoint {
+  ts: string
+  close: number
+  volume: number
+}
+
+export interface IndexMinuteResponse {
+  symbol: string
+  name: string
+  granularity: '5m' | '1d'
+  points: IndexMinutePoint[]
+}

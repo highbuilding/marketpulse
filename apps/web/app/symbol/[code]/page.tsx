@@ -5,7 +5,7 @@ import useSWR from 'swr'
 
 import { KLineChart } from '@/components/KLineChart'
 import { FundFlowPanel } from '@/components/FundFlowPanel'
-import { fetchBars } from '@/lib/symbol_api'
+import { fetchBars, fetchSymbolProfile } from '@/lib/symbol_api'
 import type { Interval } from '@/lib/types'
 
 const INTERVALS: { key: Interval; label: string }[] = [
@@ -21,6 +21,8 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
   const symbol = decodeURIComponent(params.code)
   const [interval, setInterval] = useState<Interval>('1d')
 
+  const { data: profile } = useSWR(`profile:${symbol}`, () => fetchSymbolProfile(symbol))
+
   const isIntraday = ['1m', '5m', '15m', '30m', '60m'].includes(interval)
   const { data, error, isLoading } = useSWR(
     `bars:${symbol}:${interval}`,
@@ -31,11 +33,11 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
   return (
     <main className="p-6 max-w-7xl mx-auto space-y-4">
       <header className="flex items-baseline justify-between">
-        <div>
-          <h1 className="text-2xl font-bold font-mono">{symbol}</h1>
-          <p className="text-xs text-neutral-500 mt-1">A 股个股详情</p>
+        <div className="flex items-baseline gap-4">
+          <h1 className="text-2xl font-bold">{profile?.name ?? '—'}</h1>
+          <span className="text-lg font-mono text-neutral-400">{symbol}</span>
         </div>
-        <a href="/dashboard" className="text-xs text-neutral-400 hover:text-neutral-200">← 返回 Dashboard</a>
+        <a href="/market" className="text-xs text-neutral-400 hover:text-neutral-200">← 市场</a>
       </header>
 
       <section className="rounded-lg border border-neutral-800 bg-neutral-950 p-4">

@@ -1,11 +1,27 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import useSWR, { mutate } from 'swr'
 
+import { SymbolSearch } from '@/components/SymbolSearch'
 import {
   addWatchlistSymbol, listWatchlists, listWatchlistSymbols, removeWatchlistSymbol,
 } from '@/lib/watchlist_api'
+import { fetchSymbolProfile } from '@/lib/symbol_api'
+
+function SymbolRow({ symbol, onRemove }: { symbol: string; onRemove: (s: string) => void }) {
+  const { data } = useSWR(`profile:${symbol}`, () => fetchSymbolProfile(symbol))
+  return (
+    <li className="flex justify-between items-center py-2 border-b border-neutral-800">
+      <a href={`/symbol/${encodeURIComponent(symbol)}`}
+         className="flex items-baseline gap-3 hover:text-blue-400">
+        <span className="font-mono text-sm">{symbol}</span>
+        <span className="text-sm text-neutral-300">{data?.name ?? '—'}</span>
+      </a>
+      <button onClick={() => onRemove(symbol)} className="text-xs text-red-400 hover:text-red-300">移除</button>
+    </li>
+  )
+}
 
 export default function WatchlistPage() {
   const { data: lists } = useSWR('wls', listWatchlists)
@@ -17,12 +33,9 @@ export default function WatchlistPage() {
     () => listWatchlistSymbols(currentId!),
   )
 
-  const [newSym, setNewSym] = useState('')
-
-  async function onAdd() {
-    if (!currentId || !newSym.trim()) return
-    await addWatchlistSymbol(currentId, newSym.trim().toUpperCase())
-    setNewSym('')
+  async function onAdd(hitSymbol: string) {
+    if (!currentId) return
+    await addWatchlistSymbol(currentId, hitSymbol)
     mutate(`wl:${currentId}`)
   }
 
@@ -36,7 +49,7 @@ export default function WatchlistPage() {
     <main className="p-6 max-w-7xl mx-auto space-y-4">
       <header className="flex items-baseline justify-between">
         <h1 className="text-2xl font-bold">我的关注</h1>
-        <a href="/dashboard" className="text-xs text-neutral-400 hover:text-neutral-200">← Dashboard</a>
+        <a href="/market" className="text-xs text-neutral-400 hover:text-neutral-200">← 市场</a>
       </header>
 
       <div className="flex gap-2">
@@ -51,28 +64,15 @@ export default function WatchlistPage() {
         ))}
       </div>
 
-      <div className="flex gap-2 items-center">
-        <input
-          value={newSym}
-          onChange={(e) => setNewSym(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') onAdd() }}
-          placeholder="600519.SH"
-          className="bg-neutral-900 border border-neutral-700 text-sm rounded px-2 py-1 font-mono text-white"
-        />
-        <button onClick={onAdd} className="bg-blue-600 text-white text-sm rounded px-3 py-1">
-          加入
-        </button>
-      </div>
+      <SymbolSearch
+        placeholder="搜索代码或名称(如 600519 / 茅台)"
+        onSelect={(hit) => onAdd(hit.symbol)}
+      />
 
       <section className="rounded-lg border border-neutral-800 bg-neutral-950 p-4">
         {items && items.symbols.length === 0 && <p className="text-sm text-neutral-500">空</p>}
-        <ul className="space-y-1">
-          {items?.symbols.map((s) => (
-            <li key={s} className="flex justify-between items-center py-1 border-b border-neutral-800">
-              <a href={`/symbol/${encodeURIComponent(s)}`} className="font-mono hover:text-blue-400">{s}</a>
-              <button onClick={() => onRemove(s)} className="text-xs text-red-400 hover:text-red-300">移除</button>
-            </li>
-          ))}
+        <ul>
+          {items?.symbols.map((s) => <SymbolRow key={s} symbol={s} onRemove={onRemove} />)}
         </ul>
       </section>
     </main>
