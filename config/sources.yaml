@@ -1,0 +1,17 @@
+markets:
+  ashare:
+    enabled: true
+    default_universe: ["000858.SZ", "600519.SH", "300750.SZ"]
+    index_symbols: ["000001.SH", "399001.SZ", "000300.SH"]
+  hk:
+    enabled: true
+    default_universe: ["00700.HK", "09988.HK", "03690.HK"]
+    index_symbols: ["HSI.HK", "HSCEI.HK"]
+  us:
+    enabled: true
+    default_universe: ["AAPL", "MSFT", "NVDA", "GOOGL", "TSLA"]
+    index_symbols: ["^GSPC", "^IXIC", "^DJI"]
+  crypto:
+    enabled: true
+    default_universe: ["BTC-USDT", "ETH-USDT", "BNB-USDT", "SOL-USDT"]
+    index_symbols: ["BTC-USDT"]
