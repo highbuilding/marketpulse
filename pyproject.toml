@@ -1,0 +1,53 @@
+[project]
+name = "marketpulse"
+version = "0.1.0"
+description = "Local web platform for monitoring A/HK/US/Crypto markets"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "apscheduler>=3.10",
+    "duckdb>=1.1",
+    "aiosqlite>=0.20",
+    "akshare>=1.15",
+    "mootdx>=0.11",
+    "yfinance>=1.0",
+    "curl-cffi>=0.7",
+    "alpaca-py>=0.33",
+    "websockets>=13",
+    "httpx>=0.25",
+    "structlog>=24.4",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "pyyaml>=6.0",
+    "tenacity>=8.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-mock>=3.14",
+    "respx>=0.21",
+    "ruff>=0.7",
+    "mypy>=1.13",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "integration: hit real HTTP endpoints, skipped in CI",
+]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["core*", "apps*"]

@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+data/*.duckdb
+data/*.db
+data/*.db-journal
+logs/
+.env
+apps/web/node_modules/
+apps/web/.next/
+apps/web/out/
+apps/web/test-results/
+.DS_Store
