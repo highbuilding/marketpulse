@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from apps.api.deps import get_bar_repo, get_quote_cache, get_registry, get_state_repo
-from apps.api.routes import health, markets
+from apps.api.routes import health, market_extras, markets
 from apps.api.ws import ticks
 from core.scheduler.scheduler import build_scheduler
 
@@ -40,4 +40,5 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(markets.router)
+app.include_router(market_extras.router)
 app.include_router(ticks.router)
