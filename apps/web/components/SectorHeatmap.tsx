@@ -50,10 +50,11 @@ export function SectorHeatmap() {
             .slice()
             .sort((a, b) => b.change_pct - a.change_pct)
             .map((s) => (
-              <div
+              <a
                 key={s.name}
+                href={`/sector/${encodeURIComponent(s.name)}`}
                 className={clsx(
-                  'rounded p-2 text-white text-xs flex flex-col justify-between',
+                  'rounded p-2 text-white text-xs flex flex-col justify-between hover:opacity-80',
                   bgFor(s.change_pct),
                 )}
                 title={`领涨:${s.leader_name} ${s.leader_change_pct.toFixed(2)}% / 公司家数:${s.company_count}`}
@@ -62,7 +63,7 @@ export function SectorHeatmap() {
                 <div className="tabular-nums font-mono">
                   {s.change_pct >= 0 ? '+' : ''}{s.change_pct.toFixed(2)}%
                 </div>
-              </div>
+              </a>
             ))}
         </div>
       )}
