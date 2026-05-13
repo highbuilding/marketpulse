@@ -6,10 +6,13 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from apps.api.deps import get_bar_repo, get_quote_cache, get_registry, get_state_repo
+from apps.api.deps import (
+    get_bar_repo, get_fund_flow_service, get_quote_cache, get_registry,
+    get_sector_service, get_state_repo, get_watchlist_service,
+)
 from apps.api.routes import health, market_extras, markets, north_flow, sectors, symbols, watchlists
 from apps.api.ws import ticks
-from core.scheduler.scheduler import build_scheduler
+from core.scheduler.scheduler import attach_fundamentals_jobs, build_scheduler
 
 log = structlog.get_logger(__name__)
 
@@ -18,11 +21,21 @@ log = structlog.get_logger(__name__)
 async def lifespan(app: FastAPI):
     state_repo = get_state_repo()
     await state_repo.init()
+
+    # Plan 2: bootstrap default watchlist
+    await get_watchlist_service().bootstrap_default()
+
     registry = get_registry()
     cache = get_quote_cache()
     bar_repo = get_bar_repo()
 
     sched = build_scheduler(registry, cache, bar_repo)
+    attach_fundamentals_jobs(
+        sched,
+        fund_flow=get_fund_flow_service(),
+        watchlist=get_watchlist_service(),
+        sector=get_sector_service(),
+    )
     sched.start()
     log.info("app.started", markets=registry.markets())
     try:
