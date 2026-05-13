@@ -55,3 +55,50 @@ def test_quote_rejects_negative_price():
             market="us", symbol="X", ts=datetime.now(timezone.utc),
             price=Decimal("-1"), change_pct=0, volume=0, source="test",
         )
+
+
+from core.domain.models import (
+    FundFlowSnapshot, Sector, SectorConstituent, Watchlist, WatchlistItem,
+)
+
+
+def test_watchlist_default_archived_false():
+    w = Watchlist(id=1, name="我的关注", is_archived=False,
+                  created_at=datetime.now(timezone.utc))
+    assert w.name == "我的关注"
+    assert w.is_archived is False
+
+
+def test_watchlist_item_keys():
+    item = WatchlistItem(watchlist_id=1, symbol="000858.SZ",
+                          added_at=datetime.now(timezone.utc))
+    assert item.symbol == "000858.SZ"
+
+
+def test_sector_constituent():
+    s = SectorConstituent(sector_name="玻璃行业", symbol="600660.SH")
+    assert s.sector_name == "玻璃行业"
+
+
+def test_fund_flow_snapshot_symbol_kind():
+    f = FundFlowSnapshot(
+        subject="600519.SH", kind="symbol",
+        ts=datetime.now(timezone.utc),
+        main_net=1_000_000.0, super_large_net=800_000.0,
+    )
+    assert f.kind == "symbol" and f.main_net == 1_000_000.0
+
+
+def test_fund_flow_snapshot_north_kind():
+    f = FundFlowSnapshot(
+        subject="north", kind="north",
+        ts=datetime.now(timezone.utc),
+        hgt_net=5e8, sgt_net=3e8,
+    )
+    assert f.kind == "north"
+
+
+def test_sector_basic():
+    s = Sector(name="玻璃行业", classification="sina",
+               updated_at=datetime.now(timezone.utc))
+    assert s.name == "玻璃行业"

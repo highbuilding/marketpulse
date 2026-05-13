@@ -51,3 +51,47 @@ class HealthStatus:
     detail: str | None = None
     def is_ok(self) -> bool:
         return self.state == "ok"
+
+
+@dataclass(frozen=True, slots=True)
+class Watchlist:
+    id: int
+    name: str
+    is_archived: bool
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class WatchlistItem:
+    watchlist_id: int
+    symbol: str
+    added_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class Sector:
+    name: str
+    classification: str
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class SectorConstituent:
+    sector_name: str
+    symbol: str
+
+
+@dataclass(frozen=True, slots=True)
+class FundFlowSnapshot:
+    """一次时间点的资金流,subject 可以是 symbol、sector_name 或 'north'。"""
+    subject: str
+    kind: Literal["symbol", "sector", "north"]
+    ts: datetime
+    main_net: float | None = None
+    super_large_net: float | None = None
+    large_net: float | None = None
+    medium_net: float | None = None
+    small_net: float | None = None
+    pct_change: float | None = None
+    hgt_net: float | None = None
+    sgt_net: float | None = None
