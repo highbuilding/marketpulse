@@ -1,16 +1,17 @@
 # MarketPulse 设计文档
 
-- **日期**:2026-05-13
-- **版本**:v1 draft
-- **状态**:草案(待审阅)
+- **日期**:2026-05-13(原)/ v1.1 更新于 2026-05-13
+- **版本**:v1.1
+- **状态**:Plan 1 已交付,Plan 2(基建夯实)进行中
 
 ## 0. 目标与范围
 
 MarketPulse 是一个本地运行的 Web 行情监控分析平台,覆盖 A 股、港股、美股、Web3(Crypto)四个市场,为个人投研决策提供:
 
-1. **大盘分析**:四市场统一概览(指数、成分涨跌、热力图、资金面)
-2. **重要事件提醒 + 影响面分析**:实时抓取事件源,LLM 判定影响范围/方向/置信度,推送到前端
-3. **安全买入信号**:多因子加权 + 硬过滤一票否决,每市场产出 Top-10 候选
+1. **基建数据底盘**(Plan 2 重点):历史 K 线、板块成分、自定义关注、资金流 —— 后续因子/事件都依赖这一层
+2. **大盘分析**:四市场统一概览(指数、成分涨跌、热力图、资金面)
+3. **重要事件提醒 + 影响面分析**:实时抓取事件源,LLM 判定影响范围/方向/置信度,推送到前端
+4. **安全买入信号**:多因子加权 + 硬过滤一票否决,每市场产出 Top-10 候选
 
 参考 [stockanalysis.com](https://stockanalysis.com) 的信息架构,但重点放在"事件驱动 + 多市场横向对比",而不是做它的中文翻版。
 
@@ -20,15 +21,18 @@ MarketPulse 是一个本地运行的 Web 行情监控分析平台,覆盖 A 股�
 - 免费优先:所有主源都使用免费层(akshare/yfinance/Binance WS 等)
 - 时效性:Crypto 亚秒级,A/HK/US 10s 级,事件 30s–1min
 - 单机可跑:一条 `make dev` 起来,缺任何源都能优雅降级
+- 国内可用:A 股/港股优先 sina 通道,避开东财直连问题
 
 ### V1 明确不做的事
 
-- ❌ 个股详情页(v2)
 - ❌ 预测复盘(v2)
 - ❌ 交易执行 / 模拟持仓
 - ❌ 用户 / 权限系统
 - ❌ 回测框架
 - ❌ 高可用 / 多实例 / 告警通知
+- ❌ ML 选股(XGBoost / LSTM 等)
+
+> 注:个股详情页原列入 V1 不做,**Plan 2 将其纳入基建范围**。
 
 ---
 
@@ -49,6 +53,7 @@ MarketPulse 是一个本地运行的 Web 行情监控分析平台,覆盖 A 股�
 
 ### 1.3 V1 验收标准
 
+- **V1-A0**(Plan 2 基建):A 股个股 K 线(日/周/月+分时)可查,板块成分入库,自定义关注列表 CRUD,资金流时间序列(个股/板块/北向)有数据
 - **V1-A1**:Dashboard 一屏展示 4 市场大盘指数、TOP 涨跌、行业/板块热力图
 - **V1-A2**:事件流实时推送,每条带 LLM 影响面卡片(范围/方向/置信度/理由)
 - **V1-A3**:每市场产出每日 Top-10 安全买入候选,点开看得到因子拆解和推荐理由链
@@ -58,7 +63,7 @@ MarketPulse 是一个本地运行的 Web 行情监控分析平台,覆盖 A 股�
 
 ## 2. 组件划分
 
-7 个有独立职责的模块,每个可单独测试/替换。
+11 个有独立职责的模块,每个可单独测试/替换。Plan 1 交付前 7 个;Plan 2 增加 §2.9–§2.12 四个基建组件。
 
 ### 2.1 Market Adapters(行情适配层)
 
@@ -145,6 +150,45 @@ Frontend -> API Layer -> Factor Engine / Event Pipeline -> Market Adapters -> Pe
 ```
 
 LLM 换模型不影响因子引擎;换数据源只改 adapter;前端可独立 mock API 调试。
+
+### 2.9 KLine Service(K 线服务,Plan 2 新增)
+
+A 股个股历史 K 线的统一访问层。
+
+- 输入:`(symbol, interval, start, end)`
+- 输出:`list[Bar]`
+- 取数顺序:**DuckDB → 缺口检测 → 调 Adapter `fetch_history` 补齐 → 回写 DuckDB**
+- 周线/月线在 backend 由日线 `pandas.resample('W'/'M')` 实时聚合,不重复落库
+- 分时数据(1/5/15/30/60min):按需拉取,落 DuckDB,15 天后过期清理
+- `warmup` CLI:`python -m apps.warmup symbols.txt --days=365` 批量回填
+
+### 2.10 Sector Service(板块服务,Plan 2 新增)
+
+新浪行业的板块成分管理。
+
+- 数据源:`ak.stock_sector_detail(sector="...")` 拉单个板块成分股
+- 落库:SQLite `sectors` + `sector_constituents` 两表
+- 刷新:每日 9:25(开盘前)全量刷新一次
+- API:`GET /api/sectors`、`GET /api/sectors/{name}/constituents`
+
+### 2.11 Watchlist Service(自定义关注,Plan 2 新增)
+
+用户自定义关注列表。
+
+- 模型:`Watchlist(id, name, is_archived, created_at)` + `WatchlistItem(watchlist_id, symbol, added_at)`
+- API:列表 CRUD + 加票/移票,详见 §2.6
+- 行为:关注列表里的票自动并入 Scheduler 10s tick 范围(动态 universe)
+- 默认:首启自动创建"我的关注"列表,可重命名,软删保留
+
+### 2.12 FundFlow Service(资金流服务,Plan 2 新增)
+
+三类资金流的拉取与时间序列存储。
+
+- **个股资金流**:30min 拉一次全市场前 N(`stock_individual_fund_flow_rank`),收盘后全量
+- **板块资金流**:5min 一次(`stock_sector_fund_flow_rank` / sina 备源)
+- **北向资金**:1min 一次(`stock_hsgt_north_net_flow_in_em`)
+- 落 SQLite `fund_flow_symbol` / `fund_flow_sector` / `fund_flow_north` 三表
+- 历史保留:**北向 30 天 / 板块 90 天 / 个股 30 天**,定时清理
 
 ---
 
@@ -264,6 +308,58 @@ make dev
 ```
 
 任何一步失败都不阻塞后续 —— 例如 Alpaca key 没配,就禁用美股 tab 并在 UI 上标灰,其他市场照常。
+
+### 3.6 路径 D:个股详情 / K 线(Plan 2 新增,按需拉取)
+
+```
+前端 /symbol/000858.SZ
+         │
+         ▼ GET /api/symbols/000858.SZ/bars?interval=1d&days=365
+[KLineService]
+         │
+         ├─ 1. DuckDB 命中?  ─── 是 ─→ 返回
+         │
+         └─ 否 / 缺口
+               │
+               ▼
+         [Adapter.fetch_history] (akshare sina_hist / 备源 TDX)
+               │
+               ▼
+         [回写 DuckDB bars 表]
+               │
+               ▼
+         返回合并后的序列
+```
+
+周/月:前端请求 `interval=1wk`/`1mo`,后端拉日线 resample。
+分时:请求 `interval=5m`,直接 adapter 拉当日或近 5 日,落库 15 天过期。
+
+### 3.7 路径 E:资金流采集(Plan 2 新增)
+
+```
+[Scheduler 分级 tick]
+  ├─ 北向 1min     → fetch_hsgt_north_net_flow → fund_flow_north
+  ├─ 板块 5min     → fetch_sector_fund_flow   → fund_flow_sector
+  ├─ 个股 30min    → fetch_symbol_fund_flow    → fund_flow_symbol
+  └─ 每日 15:30    → 全市场个股资金流一次性快照(收盘后)
+```
+
+前端通过 `GET /api/symbols/{sym}/fund_flow`、`GET /api/sectors/{name}/fund_flow`、`GET /api/north_flow` 查询。
+
+### 3.8 路径 F:板块成分刷新(Plan 2 新增)
+
+```
+[Scheduler 每日 09:25 一次]
+         │
+         ▼
+  [遍历 49 个新浪行业]
+         │
+         ▼
+  [ak.stock_sector_detail(sector=...)]
+         │
+         ▼
+  [sectors + sector_constituents 全量覆盖写]
+```
 
 ---
 
@@ -727,23 +823,119 @@ ollama                 # 本地 LLM 客户端
 openai                 # 云端兼容
 jieba
 feedparser             # RSS
+pandas                 # K 线 resample
+tqdm                   # warmup 进度条
 ```
+
+前端新增(Plan 2):`@tanstack/react-table`、`lucide-react`、`cmdk`(配 shadcn/ui Command)。
+
+### 7.4 Plan 2 新增 DB Schema
+
+SQLite(`state.db`)追加:
+
+```sql
+-- 自定义关注
+CREATE TABLE watchlists (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  is_archived INTEGER DEFAULT 0,
+  created_at TIMESTAMP NOT NULL
+);
+
+CREATE TABLE watchlist_items (
+  watchlist_id INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  added_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (watchlist_id, symbol),
+  FOREIGN KEY (watchlist_id) REFERENCES watchlists(id)
+);
+
+-- 板块成分
+CREATE TABLE sectors (
+  name TEXT PRIMARY KEY,           -- 如 "玻璃行业"
+  classification TEXT NOT NULL,    -- "sina"
+  updated_at TIMESTAMP NOT NULL
+);
+
+CREATE TABLE sector_constituents (
+  sector_name TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  PRIMARY KEY (sector_name, symbol)
+);
+
+-- 资金流时间序列
+CREATE TABLE fund_flow_symbol (
+  symbol TEXT NOT NULL,
+  ts TIMESTAMP NOT NULL,
+  main_net REAL,
+  super_large_net REAL,
+  large_net REAL,
+  medium_net REAL,
+  small_net REAL,
+  PRIMARY KEY (symbol, ts)
+);
+
+CREATE TABLE fund_flow_sector (
+  sector_name TEXT NOT NULL,
+  ts TIMESTAMP NOT NULL,
+  main_net REAL,
+  pct_change REAL,
+  PRIMARY KEY (sector_name, ts)
+);
+
+CREATE TABLE fund_flow_north (
+  ts TIMESTAMP PRIMARY KEY,
+  hgt_net REAL,
+  sgt_net REAL,
+  total_net REAL
+);
+```
+
+DuckDB `bars` 表不变,但 `interval` 字段会新增 `1wk` / `1mo` / `1m` / `5m` / `15m` / `30m` / `60m` 值。
 
 ---
 
 ## 8. 路线图
 
-### V1(本次实现范围)
+### Plan 1(已交付)
 
-- 4 个市场 Adapters + 备源
-- 大盘 dashboard / 事件流 / Top-10 候选 / 设置页
-- LLM 影响面 + 规则降级
-- 多因子 + 一票否决
-- `make dev` 一键启动
+- 4 个市场 Adapters + 备源,A/HK 切 sina
+- `/dashboard` 四市场卡片 + TOP 涨跌 + 行业热力图
+- `make dev` 一键启动 + 优雅降级
+- 39 单测 + 4 集成测试,5 服务层单测(V1-A1 扩展)
+- **覆盖验收**:V1-A1 + V1-A4
 
-### V2(下一轮)
+### Plan 2(进行中:基建夯实,只做 A 股)
 
-- 个股详情页(K 线 + 财务 + 事件时间线)
+- 历史 K 线服务(日/周/月 + 分时按需)
+- 板块成分入库(新浪行业 49 个)
+- 自定义关注列表 CRUD + 动态 universe
+- 资金流采集(个股/板块/北向)+ 时间序列
+- 个股详情页 `/symbol/{code}`(信息条 + K 线 + 资金流)
+- 板块详情页 `/sector/{name}`(成分股 + 资金流)
+- `/watchlist` 和 `/settings` 页(列表管理)
+- `python -m apps.warmup` CLI 首次回填
+- **覆盖验收**:V1-A0
+
+### Plan 3(事件管道,原 Plan 2)
+
+- 事件 Collectors:财联社/同花顺/SEC 8-K/GDELT/CryptoPanic/港交所披露易
+- Rule Pre-filter + 实体识别
+- LLM Impact Analyzer(本地 Ollama + 云端兼容)
+- 降级策略 + 成本控制
+- `/events` 页 + WS 推送
+- **覆盖验收**:V1-A2
+
+### Plan 4(因子 + 买入候选,原 Plan 3)
+
+- Factor Engine(value/momentum/event/risk)
+- 硬过滤 + 一票否决
+- `/candidates` 页 + reason_chain
+- WS `/ws/candidates` 广播
+- **覆盖验收**:V1-A3
+
+### V2(下一轮,Plan 4 之后)
+
 - 预测复盘:历史信号回测、命中率统计
 - 告警通知:邮件 / TG / Webhook
 - 简易回测框架(基于 vectorbt 或自研)
