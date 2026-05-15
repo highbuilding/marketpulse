@@ -12,6 +12,43 @@
 
 ---
 
+## 📊 完成状态总览 _(2026-05-15)_
+
+**整体:已交付 ✅** — 20/21 Task 完成,1 项跳过。
+
+| Task | 状态 | 备注 |
+|------|------|------|
+| 1. 项目骨架 + Python 工程初始化 | ✅ | `pyproject.toml` / `Makefile` / `.env.example` |
+| 2. 领域模型 (Quote/Bar/Fundamental/HealthStatus) | ✅ | `core/domain/models.py` |
+| 3. Adapter Protocol + 熔断器 | ✅ | `core/adapters/base.py::MarketAdapter / CircuitBreaker` |
+| 4. A 股 Adapter (akshare + mootdx) | ✅ | `core/adapters/ashare.py`(后续 Plan 2 + Plan 2.5 多次扩展) |
+| 5. 港股 Adapter (akshare + yfinance) | ✅ | `core/adapters/hk.py` |
+| 6. 美股 Adapter (Alpaca + yfinance) | ✅ | `core/adapters/us.py` |
+| 7. Crypto Adapter (Binance WS + CoinGecko) | ✅ | `core/adapters/crypto.py` |
+| 8. Adapter Registry + sources.yaml | ✅ | `core/adapters/registry.py` |
+| 9. Quote 内存缓存 + TTL | ✅ | `core/cache/quote_cache.py` |
+| 10. SQLite 状态仓储 + schema | ✅ | `core/persistence/sqlite_repo.py` + `schema.sql`(Plan 2.5 已开 WAL) |
+| 11. DuckDB 历史 K 线仓储 | ✅ | `core/persistence/duckdb_repo.py` |
+| 12. Scheduler tick + flush | ✅ | `core/scheduler/jobs.py` + `scheduler.py`(Plan 2.5 接入 watchlist) |
+| 13. FastAPI 入口 + DI | ✅ | `apps/api/main.py` + `deps.py` |
+| 14. `/api/health` | ✅ | `apps/api/routes/health.py` |
+| 15. `/api/markets/{market}/overview` | ✅ | `apps/api/routes/markets.py` |
+| 16. WS `/ws/ticks` 骨架 | ✅ | `apps/api/ws/ticks.py`(完整推送留 Plan 3) |
+| 17. Next.js 工程初始化 | ✅ | `apps/web/{package.json,tsconfig.json,...}` |
+| 18. 前端 API 客户端 + 类型 | ✅ | `apps/web/lib/api.ts` + `types.ts`(后续多次扩展) |
+| 19. Dashboard 页面 + 组件 | ✅ | `apps/web/app/dashboard/page.tsx`(也即 `/market`)+ MarketCard/HealthBadge |
+| 20. E2E 冒烟 (Playwright) | ⏭️ **跳过** | 用 Plan 2 Task 22 的 `curl` 多页面冒烟替代 |
+| 21. `make dev` 集成冒烟 + 收尾 | ✅ | `make dev` 已可用(已去 `--reload`,见 [[project-mini-racer-lock]]) |
+
+**已知偏差**:
+- 路由路径从 `/dashboard` 改为 `/market`(后续 commit `d3f52b5`)
+- `make dev` 去掉了 `--reload`(commit `05538cb`),原因见 `docs/TODO.md` 和 [[project-mini-racer-lock]]
+- Playwright 一直没引入,后续若加 CI(`docs/TODO.md` 高价值/低代价项)会同步把 E2E 补上
+
+具体每个 Task 内详细 step 的 checkbox **未跟随**,代码可作为 ground truth。
+
+---
+
 ## File Structure
 
 本 Plan 创建以下文件(完整骨架,后续 Plan 2/3 会扩展):

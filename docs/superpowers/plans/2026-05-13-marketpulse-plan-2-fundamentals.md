@@ -14,6 +14,67 @@
 
 ---
 
+## 📊 完成状态总览 _(2026-05-15)_
+
+**整体:已交付 ✅** — 22/22 Task 完成。Plan 2 范围全部落地,迭代中又新增了 **Plan 2.5(CD 信号扫描)**,见底部"Plan 2.5 扩展"节。
+
+| Task | 状态 | 备注 |
+|------|------|------|
+| 1. Domain 模型扩展 | ✅ | `core/domain/models.py::Watchlist/Sector/FundFlowSnapshot` |
+| 2. SQLite Schema 扩展 | ✅ | `core/persistence/schema.sql` 6 张表(watchlists/items/sectors/constituents/fund_flow_*) |
+| 3. WatchlistRepo | ✅ | `core/persistence/watchlist_repo.py` |
+| 4. SectorRepo | ✅ | `core/persistence/sector_repo.py` |
+| 5. FundFlowRepo | ✅ | `core/persistence/fund_flow_repo.py` |
+| 6. AShareAdapter.fetch_history | ✅ | `core/adapters/ashare.py`(ETF→fund_etf_hist_sina / index→stock_zh_index_daily 分流) |
+| 7. KLineService | ✅ | `core/services/kline_service.py` 含周线/月线 resample + 4h 重采样 |
+| 8. WatchlistService | ✅ | `core/services/watchlist_service.py` |
+| 9. SectorService | ✅ | `core/services/sector_service.py` |
+| 10. FundFlowService | ✅ | `core/services/fund_flow_service.py` |
+| 11. Symbols API | ✅ | `apps/api/routes/symbols.py`(含 `/bars` `/fund_flow` `/profile` `/quote` `/profiles` 批量) |
+| 12. Sectors API | ✅ | `apps/api/routes/sectors.py` |
+| 13. Watchlists API | ✅ | `apps/api/routes/watchlists.py`(Plan 2.5 加了 add 后 BackgroundTask 首扫) |
+| 14. North Flow API | ✅ | `apps/api/routes/north_flow.py` |
+| 15. Scheduler 基建 jobs | ✅ | `core/scheduler/scheduler.py::attach_fundamentals_jobs`(north / symbols / sectors / purge) |
+| 16. `warmup` CLI | ✅ | `apps/warmup.py` + `make warmup` |
+| 17. 前端类型 + API client 扩展 | ✅ | `apps/web/lib/{symbol_api,watchlist_api,sector_api,cd_signals_api}.ts` |
+| 18. KLineChart 组件 | ✅ | `apps/web/components/KLineChart.tsx`(信号 markers 留 Plan 2.5) |
+| 19. 个股详情页 `/symbol/[code]` | ✅ | `apps/web/app/symbol/[code]/page.tsx`(信息条/K 线/资金流/CD 信号) |
+| 20. 关注列表页 `/watchlist` | ✅ | `apps/web/app/watchlist/page.tsx`(行内价格涨跌幅成交量 + 聚合信号事件流) |
+| 21. 板块详情页 `/sector/[name]` | ✅ | `apps/web/app/sector/[name]/page.tsx` |
+| 22. 端到端冒烟 + 收尾 | ✅ | curl 多次冒烟 3 页全 200,worker 健康 |
+
+具体每个 Task 内详细 step 的 checkbox **未跟随**,代码可作为 ground truth。
+
+---
+
+## 🆕 Plan 2.5 扩展(2026-05-15,超出原计划范围)
+
+不在原 Plan 2 描述里,迭代中基于已有 KLine/Adapter 链路实现的 **CD 抄底/卖出信号** 端到端能力,以及配套的架构清理。
+
+**新功能**:
+- `core/indicators/cd.py`:CD 指标公式实现(MACD 多重背离,翻译自 `docs/third_Indicator/CD.ftindex`)
+- `core/services/signal_service.py` + `core/persistence/signal_repo.py`:扫描 → 入库(UNIQUE 幂等)
+- `core/scheduler/signal_jobs.py`:交易日 BJT 10:00-15:30 cron 自动扫 15m/30m/60m/4h/1d
+- 端点:`GET /api/cd-signals` / `/by-symbol/{}` / `/watchlist-events` / `POST /scan` / `POST /{id}/ack`
+- 前端:详情页 `CDSignalPanel`(4 tab 按需扫描);关注页 `WatchlistSignalsPanel`(5 tab 聚合事件流,按 BJT 自然日切"当天/历史")
+
+**配套架构优化**:
+- `core/integrations/akshare.py::ak_call`:**所有 ak.* 调用单一入口**(锁+结构化日志,根治 mini_racer 崩溃)
+- `core/domain/intervals.py`:`INTERVAL_CONFIG` 单一事实源(lookback / bars_per_day / 是否信号 / 是否 crypto-only)
+- `core/persistence/sqlite_repo.py`:`PRAGMA journal_mode=WAL` 启动期开启
+- `core/scheduler/jobs.py::tick_snapshot_once`:接 watchlist_service,用户加的任意标的也拉 quote
+- `apps/api/routes/symbols.py`:`/profiles` 批量接口消除前端 N+1
+- 前端:`components/SignalsTable.tsx` 公共表格 + `lib/signal_time.ts` 时间格式化(1d 减 8h 还原收盘当日)
+
+**记忆 / 文档**:
+- [[project-mini-racer-lock]] — ak_call 强制使用约束
+- [[ref-todo-doc]] — 指向 `docs/TODO.md`
+- `docs/TODO.md` — 已识别但未实施的优化点(CI / ErrorBoundary / 1d normalize / 子进程隔离 / 富途对账测试)
+
+---
+
+
+
 ## File Structure
 
 新增文件(共 ~40 个),按层组织:

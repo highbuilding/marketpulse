@@ -897,15 +897,17 @@ DuckDB `bars` 表不变,但 `interval` 字段会新增 `1wk` / `1mo` / `1m` / `5
 
 ## 8. 路线图
 
-### Plan 1(已交付)
+### Plan 1(已交付 ✅)
 
 - 4 个市场 Adapters + 备源,A/HK 切 sina
-- `/dashboard` 四市场卡片 + TOP 涨跌 + 行业热力图
+- `/market`(原 `/dashboard`)四市场卡片 + TOP 涨跌 + 行业热力图
 - `make dev` 一键启动 + 优雅降级
 - 39 单测 + 4 集成测试,5 服务层单测(V1-A1 扩展)
 - **覆盖验收**:V1-A1 + V1-A4
+- **状态详见**:`docs/superpowers/plans/2026-05-13-marketpulse-plan-1-skeleton-dashboard.md` 顶部
+- **未做项**:Task 20(Playwright E2E)— 跳过,Plan 2 Task 22 用 curl 冒烟替代
 
-### Plan 2(进行中:基建夯实,只做 A 股)
+### Plan 2(已交付 ✅,只做 A 股)
 
 - 历史 K 线服务(日/周/月 + 分时按需)
 - 板块成分入库(新浪行业 49 个)
@@ -913,9 +915,24 @@ DuckDB `bars` 表不变,但 `interval` 字段会新增 `1wk` / `1mo` / `1m` / `5
 - 资金流采集(个股/板块/北向)+ 时间序列
 - 个股详情页 `/symbol/{code}`(信息条 + K 线 + 资金流)
 - 板块详情页 `/sector/{name}`(成分股 + 资金流)
-- `/watchlist` 和 `/settings` 页(列表管理)
+- `/watchlist` 页(列表管理 + 行内价格涨跌幅成交量)
 - `python -m apps.warmup` CLI 首次回填
 - **覆盖验收**:V1-A0
+- **状态详见**:`docs/superpowers/plans/2026-05-13-marketpulse-plan-2-fundamentals.md` 顶部
+
+### Plan 2.5(超出原计划,已交付 ✅):指标信号扫描
+
+不在原 Plan 2 范围内,迭代中新增 — 基于 Plan 2 的 KLine/Adapter 链路,扩展 CD 抄底/卖出信号:
+
+- `core/indicators/cd.py`:CD 指标公式(MACD 多重背离,源:`docs/third_Indicator/CD.ftindex`)
+- `core/services/signal_service.py` + `core/persistence/signal_repo.py`:扫描 → upsert(UNIQUE 幂等)
+- `core/scheduler/signal_jobs.py`:交易日 cron 自动扫 15m/30m/60m/4h/1d
+- `core/integrations/akshare.py::ak_call`:所有 akshare 调用单一入口(锁+日志,根治 mini_racer 崩溃)
+- `core/domain/intervals.py`:INTERVAL_CONFIG 单一事实源
+- 端点:`GET /api/cd-signals` / `GET /by-symbol/{}` / `GET /watchlist-events` / `POST /scan` / `POST /ack`
+- UI:详情页 `CDSignalPanel`(4 tab 按需扫描);关注页 `WatchlistSignalsPanel`(5 tab 聚合事件流,当天/历史切分)
+- **配套架构优化**:SQLite WAL、INTERVAL_CONFIG 集中、批量 profile 接口、tick 接入 watchlist
+- **未实施清单**:`docs/TODO.md`(CI / ErrorBoundary / 1d normalize / ak 子进程隔离 / 富途对账测试 等)
 
 ### Plan 3(事件管道,原 Plan 2)
 
