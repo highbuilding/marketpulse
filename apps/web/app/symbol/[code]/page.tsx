@@ -5,20 +5,24 @@ import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 
 import { IntradayChart } from '@/components/IntradayChart'
-import { KLineChart } from '@/components/KLineChart'
+import { KLineChart, type SignalMarker } from '@/components/KLineChart'
 import { FundFlowPanel } from '@/components/FundFlowPanel'
+import { CDSignalPanel } from '@/components/CDSignalPanel'
 import { fetchBars, fetchSymbolProfile } from '@/lib/symbol_api'
+import { listCDSignalsBySymbol } from '@/lib/cd_signals_api'
+import { CD_MARKER_INTERVALS, klineTabsForMarket } from '@/lib/intervals'
 import type { Interval } from '@/lib/types'
 
-const INTERVALS: { key: Interval; label: string }[] = [
-  { key: '1m', label: '分时' },
-  { key: '5m', label: '5分' },
-  { key: '15m', label: '15分' },
-  { key: '60m', label: '60分' },
-  { key: '1d', label: '日线' },
-  { key: '1wk', label: '周线' },
-  { key: '1mo', label: '月线' },
-]
+// A 股交易时段(北京时间):09:30–11:30 / 13:00–15:00,周一至周五
+function isAshareTradingNow(): boolean {
+  const now = new Date()
+  const beijing = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }))
+  const day = beijing.getDay()
+  if (day === 0 || day === 6) return false
+  const minutes = beijing.getHours() * 60 + beijing.getMinutes()
+  return (minutes >= 9 * 60 + 30 && minutes <= 11 * 60 + 30)
+    || (minutes >= 13 * 60 && minutes <= 15 * 60)
+}
 
 export default function SymbolPage({ params }: { params: { code: string } }) {
   const symbol = decodeURIComponent(params.code)
@@ -42,17 +46,40 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
   }
 
   const { data: profile } = useSWR(`profile:${symbol}`, () => fetchSymbolProfile(symbol))
+  const intervalTabs = useMemo(
+    () => klineTabsForMarket(profile?.market ?? null),
+    [profile?.market],
+  )
 
   const isIntraday = ['1m', '5m', '15m', '30m', '60m'].includes(interval)
-  // 日/周/月线:从 2020-01-01 至今,确保至少覆盖 6 年
+  // 日/周/月线 + 4h:从 2020-01-01 至今,确保至少覆盖 6 年(60m 重采样源也要跨足够长的窗口)
   const daysSinceY2020 = Math.ceil((Date.now() - new Date('2020-01-01').getTime()) / 86_400_000)
   const days = interval === '1m' ? 1 : isIntraday ? 5 : daysSinceY2020
 
   const { data, error, isLoading } = useSWR(
     `bars:${symbol}:${interval}:${days}`,
     () => fetchBars(symbol, interval, days),
-    { refreshInterval: interval === '1m' ? 30_000 : 60_000 },
+    {
+      refreshInterval: () => {
+        if (interval === '1m') return isAshareTradingNow() ? 10_000 : 0
+        if (isIntraday) return 60_000
+        return 0
+      },
+      revalidateOnFocus: interval === '1m',
+    },
   )
+
+  // CD 信号(只对 60m/4h/1d 有意义),用于在 KLineChart 上叠 markers
+  const signalInterval = CD_MARKER_INTERVALS.has(interval) ? interval : null
+  const { data: signalsResp } = useSWR(
+    signalInterval ? `cd:${symbol}:${signalInterval}` : null,
+    () => listCDSignalsBySymbol(symbol, signalInterval ? [signalInterval] : undefined),
+    { refreshInterval: 60_000 },
+  )
+  const markers: SignalMarker[] = useMemo(() => {
+    if (!signalsResp) return []
+    return signalsResp.signals.map((s) => ({ ts: s.bar_ts, signal_type: s.signal_type }))
+  }, [signalsResp])
 
   // 分时模式:拉日线最后一根作 prevClose,只展示当日
   const { data: daily } = useSWR(
@@ -91,7 +118,7 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
 
       <section className="rounded-lg border border-neutral-800 bg-neutral-950 p-4">
         <div className="flex gap-1 mb-3">
-          {INTERVALS.map((iv) => (
+          {intervalTabs.map((iv) => (
             <button
               key={iv.key}
               onClick={() => setInterval(iv.key)}
@@ -114,7 +141,12 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
 
         {/* 其他周期:K 线 */}
         {interval !== '1m' && data && data.bars.length > 0 && (
-          <KLineChart bars={data.bars} height={420} />
+          <KLineChart
+            bars={data.bars}
+            interval={interval}
+            height={420}
+            signals={signalInterval ? markers : undefined}
+          />
         )}
         {interval !== '1m' && data && data.bars.length === 0 && (
           <p className="text-sm text-yellow-400">无数据。请先 <code>make warmup</code> 或本周期还未抓取。</p>
@@ -122,6 +154,7 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
       </section>
 
       {!isIndex && <FundFlowPanel symbol={symbol} />}
+      <CDSignalPanel symbol={symbol} />
     </main>
   )
 }

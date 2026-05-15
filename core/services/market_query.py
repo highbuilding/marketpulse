@@ -9,11 +9,10 @@ import json
 from dataclasses import dataclass
 from typing import Literal
 
-import akshare as ak
 import requests
 import structlog
 
-from core.services._locks import mini_racer_lock
+from core.integrations.akshare import ak_call
 
 log = structlog.get_logger(__name__)
 
@@ -122,11 +121,8 @@ class MarketQueryService:
         return out
 
     async def sectors_ashare(self) -> list[SectorRow]:
-        async with mini_racer_lock:
-            return await asyncio.to_thread(self._sectors_ashare_sync)
-
-    def _sectors_ashare_sync(self) -> list[SectorRow]:
-        df = ak.stock_sector_spot(indicator="新浪行业")
+        df = await ak_call("stock_sector_spot", indicator="新浪行业",
+                           caller="market_query.sectors_ashare")
         out: list[SectorRow] = []
         for _, row in df.iterrows():
             try:

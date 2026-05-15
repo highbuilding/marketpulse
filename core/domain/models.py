@@ -95,3 +95,18 @@ class FundFlowSnapshot:
     pct_change: float | None = None
     hgt_net: float | None = None
     sgt_net: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class IndicatorSignal:
+    """指标信号事件(目前 indicator='CD', 后续可扩展 TT/NX)。"""
+    symbol: str
+    interval: str            # '60m' | '4h' | '1d'
+    indicator: str           # 'CD'
+    signal_type: Literal["buy", "sell"]
+    bar_ts: datetime
+    detected_at: datetime
+    price: float
+    d_value: float | None = None
+    acknowledged: bool = False
+    id: int | None = None

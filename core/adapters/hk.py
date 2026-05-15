@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Callable
 
-import akshare as ak
 import requests
 import structlog
 import yfinance as yf
@@ -98,25 +97,6 @@ class HKAdapter:
                 change_pct=change_pct,
                 volume=volume,
                 source="sina",
-            ))
-        return out
-
-    def _fetch_snapshot_akshare(self, wanted: set[str]) -> list[Quote]:
-        df = ak.stock_hk_spot_em()
-        now = datetime.now(timezone.utc)
-        out: list[Quote] = []
-        for _, row in df.iterrows():
-            code = str(row["代码"]).zfill(5)
-            if code not in wanted:
-                continue
-            out.append(Quote(
-                market="hk",
-                symbol=f"{code}.HK",
-                ts=now,
-                price=Decimal(str(row["最新价"])),
-                change_pct=float(row["涨跌幅"]),
-                volume=int(row["成交量"]),
-                source="akshare",
             ))
         return out
 

@@ -6,12 +6,13 @@ from decimal import Decimal
 from typing import Callable
 from zoneinfo import ZoneInfo
 
-import akshare as ak
+import pandas as pd
 import requests
 import structlog
 
 from core.adapters.base import AdapterError, CircuitBreaker
 from core.domain.models import Bar, HealthStatus, Quote
+from core.integrations.akshare import ak_call
 
 log = structlog.get_logger(__name__)
 
@@ -158,16 +159,20 @@ class AShareAdapter:
         ed = end.strftime("%Y%m%d")
 
         kind = _classify(symbol)
+        # akshare 这几个接口内部用 mini_racer 解 sina JS, ak_call 统一加锁
         if kind == "etf":
-            df = await asyncio.to_thread(ak.fund_etf_hist_sina, symbol=sina_code)
+            df = await ak_call("fund_etf_hist_sina", symbol=sina_code,
+                               caller=f"ashare.fetch_history:{symbol}:etf")
             df = df[(df["date"] >= start.date()) & (df["date"] <= end.date())]
         elif kind == "index":
-            df = await asyncio.to_thread(ak.stock_zh_index_daily, symbol=sina_code)
+            df = await ak_call("stock_zh_index_daily", symbol=sina_code,
+                               caller=f"ashare.fetch_history:{symbol}:index")
             df = df[(df["date"] >= start.date()) & (df["date"] <= end.date())]
         else:
-            df = await asyncio.to_thread(
-                ak.stock_zh_a_daily,
+            df = await ak_call(
+                "stock_zh_a_daily",
                 symbol=sina_code, start_date=sd, end_date=ed, adjust="qfq",
+                caller=f"ashare.fetch_history:{symbol}:stock",
             )
 
         out: list[Bar] = []
@@ -189,13 +194,16 @@ class AShareAdapter:
     async def fetch_intraday(self, symbol: str, freq: str = "5") -> list[Bar]:
         """freq: '1'/'5'/'15'/'30'/'60' min。"""
         sina_code = _to_sina_code(symbol)
-        df = await asyncio.to_thread(
-            ak.stock_zh_a_minute,
+        df = await ak_call(
+            "stock_zh_a_minute",
             symbol=sina_code, period=freq, adjust="qfq",
+            caller=f"ashare.fetch_intraday:{symbol}:{freq}m",
         )
         out: list[Bar] = []
         interval = f"{freq}m"
         for _, row in df.iterrows():
+            if pd.isna(row["open"]) or pd.isna(row["high"]) or pd.isna(row["low"]) or pd.isna(row["close"]):
+                continue
             # sina 返回北京时间 "2026-05-13 14:55:00",标 +08:00 后转 UTC
             naive = datetime.fromisoformat(str(row["day"]).replace(" ", "T"))
             ts = naive.replace(tzinfo=_CN_TZ).astimezone(timezone.utc)

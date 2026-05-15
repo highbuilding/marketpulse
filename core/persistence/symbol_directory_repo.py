@@ -40,6 +40,19 @@ class SymbolDirectoryRepo:
             row = await cur.fetchone()
         return row["name"] if row else None
 
+    async def get_names(self, symbols: list[str]) -> dict[str, str]:
+        """批量查 name, 缺失的不在返回 dict 里。"""
+        if not symbols:
+            return {}
+        placeholders = ",".join("?" * len(symbols))
+        async with self._connect() as db:
+            cur = await db.execute(
+                f"SELECT symbol, name FROM symbol_directory WHERE symbol IN ({placeholders})",
+                symbols,
+            )
+            rows = await cur.fetchall()
+        return {r["symbol"]: r["name"] for r in rows}
+
     async def search(self, query: str, limit: int = 20) -> list[tuple[str, str, str]]:
         """模糊搜索:matched on symbol prefix OR name substring."""
         q = query.strip()

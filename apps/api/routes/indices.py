@@ -5,14 +5,14 @@ A 股指数:走 ak.stock_zh_a_minute(period=5) 拿当日 5 分钟线
 """
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-import akshare as ak
 import structlog
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
+
+from core.integrations.akshare import ak_call
 
 log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api/indices", tags=["indices"])
@@ -70,7 +70,10 @@ async def index_minute(symbol: str, days: int = Query(1, ge=1, le=30)) -> IndexM
 async def _ashare_index_5min(symbol: str, name: str, days: int) -> IndexMinuteResponse:
     sina_code = _to_sina_a(symbol)
     period = "1" if days == 1 else "5"
-    df = await asyncio.to_thread(ak.stock_zh_a_minute, symbol=sina_code, period=period, adjust="")
+    df = await ak_call(
+        "stock_zh_a_minute", symbol=sina_code, period=period, adjust="",
+        caller=f"indices.ashare_5min:{symbol}",
+    )
     cutoff_utc = datetime.now(timezone.utc) - timedelta(days=days + 1)
     points: list[MinutePoint] = []
     for _, row in df.iterrows():
@@ -97,7 +100,10 @@ async def _ashare_index_5min(symbol: str, name: str, days: int) -> IndexMinuteRe
 
 async def _hk_index_daily(symbol: str, name: str, days: int) -> IndexMinuteResponse:
     label = _to_hk_label(symbol)
-    df = await asyncio.to_thread(ak.stock_hk_index_daily_sina, symbol=label)
+    df = await ak_call(
+        "stock_hk_index_daily_sina", symbol=label,
+        caller=f"indices.hk_daily:{symbol}",
+    )
     df_tail = df.tail(days)
     points: list[MinutePoint] = []
     for _, row in df_tail.iterrows():

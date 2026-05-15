@@ -219,3 +219,88 @@ async def test_get_intraday_1m_never_caches():
     )
     adapter.fetch_intraday.assert_called_once_with("X", freq="1")
     repo.insert_bars.assert_not_called()
+
+
+# ---------- 4h 重采样 ----------
+
+@pytest.mark.asyncio
+async def test_get_bars_4h_groups_four_60m_bars():
+    """A 股一天 4 根 60m -> 1 根 4h, 用最后一根 ts。"""
+    from decimal import Decimal as D
+
+    def _bar60(i: int, close: float) -> Bar:
+        ts = datetime(2026, 5, 12, 2, 30, tzinfo=timezone.utc) + timedelta(hours=i)
+        return Bar(
+            market="ashare", symbol="600519.SH", ts=ts,
+            open=D(str(close - 0.5)), high=D(str(close + 1.0)),
+            low=D(str(close - 1.0)), close=D(str(close)),
+            volume=100 + i, interval="60m",
+        )
+
+    sixty = [_bar60(i, 100.0 + i) for i in range(8)]  # 8 根 = 2 个 4h
+    repo = MagicMock()
+    repo.fetch_history.return_value = []  # 强制走 adapter
+    adapter = MagicMock()
+    adapter.fetch_intraday = AsyncMock(return_value=sixty)
+    svc = KLineService(repo, adapter)
+
+    bars = await svc.get_bars(
+        "600519.SH", interval="4h",
+        start=sixty[0].ts, end=sixty[-1].ts,
+    )
+
+    assert len(bars) == 2
+    first, second = bars
+    assert first.interval == "4h"
+    assert first.open == D("99.5")             # bar0.open
+    assert first.close == D("103.0")            # bar3.close
+    assert first.high == D("104.0")             # max(bar0..bar3 high) = bar3.high
+    assert first.low == D("99.0")               # bar0.low
+    assert first.volume == 100 + 101 + 102 + 103
+    assert first.ts == sixty[3].ts             # 末根 ts
+
+    assert second.open == D("103.5")            # bar4.open
+    assert second.close == D("107.0")
+    assert second.ts == sixty[7].ts
+
+
+@pytest.mark.asyncio
+async def test_get_bars_4h_drops_incomplete_trailing_group():
+    """不足 4 根的尾段直接丢弃, 避免半截 4h bar 污染指标计算。"""
+    from decimal import Decimal as D
+
+    def _bar60(i: int) -> Bar:
+        ts = datetime(2026, 5, 12, 2, 30, tzinfo=timezone.utc) + timedelta(hours=i)
+        return Bar(
+            market="ashare", symbol="X", ts=ts,
+            open=D("10"), high=D("11"), low=D("9"), close=D("10"),
+            volume=1, interval="60m",
+        )
+
+    repo = MagicMock()
+    repo.fetch_history.return_value = []
+    adapter = MagicMock()
+    adapter.fetch_intraday = AsyncMock(return_value=[_bar60(i) for i in range(6)])  # 1 完整 + 2 残
+    svc = KLineService(repo, adapter)
+
+    bars = await svc.get_bars(
+        "X", interval="4h",
+        start=datetime(2026, 5, 12, tzinfo=timezone.utc),
+        end=datetime(2026, 5, 13, tzinfo=timezone.utc),
+    )
+    assert len(bars) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_bars_4h_empty_source_returns_empty():
+    repo = MagicMock()
+    repo.fetch_history.return_value = []
+    adapter = MagicMock()
+    adapter.fetch_intraday = AsyncMock(return_value=[])
+    svc = KLineService(repo, adapter)
+    bars = await svc.get_bars(
+        "X", interval="4h",
+        start=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        end=datetime(2026, 5, 12, tzinfo=timezone.utc),
+    )
+    assert bars == []

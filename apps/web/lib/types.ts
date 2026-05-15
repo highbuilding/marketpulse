@@ -29,7 +29,7 @@ export interface HealthResponse {
   adapters: Record<Market, AdapterHealth>
 }
 
-export type Interval = '1d' | '1wk' | '1mo' | '1m' | '5m' | '15m' | '30m' | '60m'
+export type Interval = '1d' | '1wk' | '1mo' | '1m' | '5m' | '15m' | '30m' | '60m' | '4h'
 
 export interface BarDTO {
   ts: string
@@ -82,13 +82,36 @@ export interface Watchlist {
 export interface SymbolProfile {
   symbol: string
   name: string | null
-  market: string | null
+  market: Market | null
+}
+
+export interface SymbolQuote {
+  symbol: string
+  price: number | null
+  change_pct: number | null
+  volume: number | null
+  ts: string | null
 }
 
 export interface SearchHit {
   symbol: string
   name: string
-  market: string
+  market: Market
+}
+
+export type AnySignalInterval = '15m' | '30m' | '60m' | '4h' | '1d'
+export type DetailSignalInterval = '15m' | '30m' | '60m' | '1d'
+
+export interface CDSignalDTO {
+  id: number
+  symbol: string
+  interval: AnySignalInterval
+  signal_type: 'buy' | 'sell'
+  bar_ts: string
+  detected_at: string
+  price: number
+  d_value: number | null
+  acknowledged: boolean
 }
 
 export interface IndexMinutePoint {

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-import akshare as ak
 import structlog
 
 from core.domain.models import FundFlowSnapshot
+from core.integrations.akshare import ak_call
 from core.persistence.fund_flow_repo import FundFlowRepo
 
 log = structlog.get_logger(__name__)
@@ -44,8 +43,9 @@ class FundFlowService:
 
     async def pull_symbol_flow(self, symbol: str) -> int:
         code, mkt = _split_symbol(symbol)
-        df = await asyncio.to_thread(
-            ak.stock_individual_fund_flow, stock=code, market=mkt,
+        df = await ak_call(
+            "stock_individual_fund_flow", stock=code, market=mkt,
+            caller=f"fund_flow.pull_symbol:{symbol}",
         )
         snapshots: list[FundFlowSnapshot] = []
         for _, row in df.iterrows():
@@ -68,8 +68,9 @@ class FundFlowService:
         return await self.repo.query_symbol_flow(symbol, start, end)
 
     async def pull_north_flow(self) -> None:
-        df = await asyncio.to_thread(
-            ak.stock_hsgt_hist_em, symbol="北向资金",
+        df = await ak_call(
+            "stock_hsgt_hist_em", symbol="北向资金",
+            caller="fund_flow.pull_north",
         )
         row = df.iloc[-1]
         ts = _parse_ts(str(row["日期"]))

@@ -6,15 +6,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from apps.api.deps import (
-    get_fund_flow_service, get_kline_service, get_symbol_directory_service,
+    get_fund_flow_service, get_kline_service, get_quote_cache, get_symbol_directory_service,
 )
+from core.cache.quote_cache import QuoteCache
+from core.domain.intervals import KLINE_INTERVALS
 from core.services.fund_flow_service import FundFlowService
 from core.services.kline_service import KLineService
 from core.services.symbol_directory_service import SymbolDirectoryService
 
 router = APIRouter(prefix="/api/symbols", tags=["symbols"])
-
-_VALID_INTERVALS = {"1d", "1wk", "1mo", "1m", "5m", "15m", "30m", "60m"}
 
 
 class BarDTO(BaseModel):
@@ -52,6 +52,18 @@ class ProfileResponse(BaseModel):
     market: str | None
 
 
+class ProfilesResponse(BaseModel):
+    profiles: list[ProfileResponse]
+
+
+class QuoteResponse(BaseModel):
+    symbol: str
+    price: float | None
+    change_pct: float | None
+    volume: int | None
+    ts: str | None
+
+
 class SearchHit(BaseModel):
     symbol: str
     name: str
@@ -75,19 +87,55 @@ async def search(
     ])
 
 
+def _infer_market(symbol: str) -> str | None:
+    if symbol.endswith((".SH", ".SZ", ".BJ")):
+        return "ashare"
+    if symbol.endswith(".HK"):
+        return "hk"
+    if "/" in symbol:
+        return "crypto"
+    return "us"
+
+
+@router.get("/profiles", response_model=ProfilesResponse)
+async def profiles(
+    symbols: str = Query(..., description="逗号分隔的 symbol 列表"),
+    svc: SymbolDirectoryService = Depends(get_symbol_directory_service),
+) -> ProfilesResponse:
+    """批量取 profile, 给前端"信号流 / 关注页"消除 N+1 用。
+    缺失的 symbol 也返回(name=None), 让前端能整齐渲染。"""
+    syms = [s.strip() for s in symbols.split(",") if s.strip()]
+    if not syms:
+        return ProfilesResponse(profiles=[])
+    names = await svc.get_names(syms)
+    return ProfilesResponse(profiles=[
+        ProfileResponse(symbol=s, name=names.get(s), market=_infer_market(s))
+        for s in syms
+    ])
+
+
 @router.get("/{symbol}/profile", response_model=ProfileResponse)
 async def profile(
     symbol: str,
     svc: SymbolDirectoryService = Depends(get_symbol_directory_service),
 ) -> ProfileResponse:
     name = await svc.get_name(symbol)
-    # market 推断:简单从后缀拿
-    market = None
-    if symbol.endswith((".SH", ".SZ", ".BJ")):
-        market = "ashare"
-    elif symbol.endswith(".HK"):
-        market = "hk"
-    return ProfileResponse(symbol=symbol, name=name, market=market)
+    return ProfileResponse(symbol=symbol, name=name, market=_infer_market(symbol))
+
+
+@router.get("/{symbol}/quote", response_model=QuoteResponse)
+async def quote(
+    symbol: str,
+    cache: QuoteCache = Depends(get_quote_cache),
+) -> QuoteResponse:
+    market = _infer_market(symbol)
+    q = cache.get(market, symbol) if market else None
+    if q is None:
+        return QuoteResponse(symbol=symbol, price=None, change_pct=None, volume=None, ts=None)
+    return QuoteResponse(
+        symbol=symbol, price=float(q.price), change_pct=q.change_pct,
+        volume=q.volume, ts=q.ts.isoformat(),
+    )
 
 
 @router.get("/{symbol}/bars", response_model=BarsResponse)
@@ -97,7 +145,7 @@ async def bars(
     days: int = Query(365, ge=1, le=3650),
     svc: KLineService = Depends(get_kline_service),
 ) -> BarsResponse:
-    if interval not in _VALID_INTERVALS:
+    if interval not in KLINE_INTERVALS:
         raise HTTPException(400, f"invalid interval: {interval}")
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days)

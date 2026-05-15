@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+import structlog
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
-from apps.api.deps import get_watchlist_service
+from apps.api.deps import get_signal_scan_service, get_watchlist_service
+from core.domain.intervals import SIGNAL_INTERVALS
+from core.services.signal_service import SignalScanService
 from core.services.watchlist_service import WatchlistService
+
+log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/api/watchlists", tags=["watchlists"])
 
@@ -79,10 +84,26 @@ async def list_symbols(wl_id: int,
     return SymbolsResp(watchlist_id=wl_id, symbols=syms)
 
 
+async def _initial_scan(symbol: str, scan: SignalScanService) -> None:
+    """新加的 symbol 立刻在所有支持的周期上扫一次, 避免关注页要等到下一个 cron tick 才出信号。
+    每个周期独立 try/except, 单个失败不影响其他。"""
+    for iv in SIGNAL_INTERVALS:
+        try:
+            n = await scan.scan_symbol(symbol, iv)
+            log.info("watchlist.initial_scan", symbol=symbol, interval=iv, new=n)
+        except Exception as e:  # noqa: BLE001
+            log.warning("watchlist.initial_scan_failed",
+                        symbol=symbol, interval=iv, error=str(e))
+
+
 @router.post("/{wl_id}/symbols", status_code=204)
 async def add_symbol(wl_id: int, body: AddSymbolBody,
-                      svc: WatchlistService = Depends(get_watchlist_service)) -> None:
+                      bg: BackgroundTasks,
+                      svc: WatchlistService = Depends(get_watchlist_service),
+                      scan: SignalScanService = Depends(get_signal_scan_service)) -> None:
     await svc.add_symbol(wl_id, body.symbol)
+    # 后台异步扫一次, 接口立即返回; 失败不影响 add 成功
+    bg.add_task(_initial_scan, body.symbol, scan)
 
 
 @router.delete("/{wl_id}/symbols/{symbol}", status_code=204)

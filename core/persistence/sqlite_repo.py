@@ -18,6 +18,11 @@ class StateRepo:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
+            # WAL: 读写不互斥, signal scan/watchlist add/scheduler cron 并发写更稳;
+            # synchronous=NORMAL: WAL 模式下足够安全 (fsync 减少, 性能 +显著)。
+            # 文件级设置, 持久化, 设一次永久生效。
+            await db.execute("PRAGMA journal_mode=WAL")
+            await db.execute("PRAGMA synchronous=NORMAL")
             await db.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
             await db.commit()
 

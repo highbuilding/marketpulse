@@ -13,10 +13,11 @@ from core.persistence.duckdb_repo import BarRepo
 
 log = structlog.get_logger(__name__)
 
-Interval = Literal["1d", "1wk", "1mo", "1m", "5m", "15m", "30m", "60m"]
+Interval = Literal["1d", "1wk", "1mo", "1m", "5m", "15m", "30m", "60m", "4h"]
 
 _INTRADAY = {"1m", "5m", "15m", "30m", "60m"}
 _RESAMPLED = {"1wk": "W-FRI", "1mo": "ME"}
+_FOUR_HOUR_GROUP = 4  # 4h = 4 根 60m 聚合(A 股一天 4 根 60m → 1 根 4h)
 
 
 class KLineService:
@@ -28,6 +29,9 @@ class KLineService:
         self, symbol: str, *, interval: Interval,
         start: datetime, end: datetime,
     ) -> list[Bar]:
+        if interval == "4h":
+            sixty = await self._get_intraday(symbol, "60m", start, end)
+            return _group_resample(sixty, _FOUR_HOUR_GROUP, "4h")
         if interval in _RESAMPLED:
             daily = await self._get_daily(symbol, start, end)
             return _resample(daily, interval)
@@ -109,3 +113,27 @@ def _resample(daily: list[Bar], interval: str) -> list[Bar]:
         low=Decimal(str(r["low"])), close=Decimal(str(r["close"])),
         volume=int(r["volume"]), interval=interval,
     ) for ts, r in agg.iterrows()]
+
+
+def _group_resample(source: list[Bar], group_size: int, target_interval: str) -> list[Bar]:
+    """每 group_size 根聚成 1 根。
+    用于 4h(A 股 60m × 4 根/天 = 1 天 1 根 4h)。
+    时间戳取每组最后一根的 ts, 与"收盘时点"对齐, 与日线/富途惯例一致。
+    """
+    if not source:
+        return []
+    out: list[Bar] = []
+    sample = source[0]
+    for i in range(0, len(source) - group_size + 1, group_size):
+        chunk = source[i:i + group_size]
+        out.append(Bar(
+            market=sample.market, symbol=sample.symbol,
+            ts=chunk[-1].ts,
+            open=chunk[0].open,
+            high=max(b.high for b in chunk),
+            low=min(b.low for b in chunk),
+            close=chunk[-1].close,
+            volume=sum(b.volume for b in chunk),
+            interval=target_interval,
+        ))
+    return out

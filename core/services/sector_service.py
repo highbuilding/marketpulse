@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import asyncio
-
-import akshare as ak
 import structlog
 
 from core.domain.models import Sector
+from core.integrations.akshare import ak_call
 from core.persistence.sector_repo import SectorRepo
-from core.services._locks import mini_racer_lock
 
 log = structlog.get_logger(__name__)
 
@@ -26,15 +23,15 @@ class SectorService:
         self.repo = repo
 
     async def refresh_sector(self, label: str, display_name: str) -> int:
-        async with mini_racer_lock:
-            df = await asyncio.to_thread(ak.stock_sector_detail, sector=label)
+        df = await ak_call("stock_sector_detail", sector=label,
+                            caller=f"sector.refresh_sector:{label}")
         symbols = [_to_symbol(str(c)) for c in df["代码"].tolist()]
         await self.repo.upsert_sector(display_name, "sina", symbols)
         return len(symbols)
 
     async def refresh_all_sina(self) -> int:
-        async with mini_racer_lock:
-            spot = await asyncio.to_thread(ak.stock_sector_spot, indicator="新浪行业")
+        spot = await ak_call("stock_sector_spot", indicator="新浪行业",
+                              caller="sector.refresh_all_sina")
         total = 0
         for _, row in spot.iterrows():
             label = str(row["label"])

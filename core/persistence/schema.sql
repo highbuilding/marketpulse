@@ -86,3 +86,24 @@ CREATE TABLE IF NOT EXISTS symbol_directory (
 );
 
 CREATE INDEX IF NOT EXISTS idx_symbol_name ON symbol_directory(name);
+
+-- Plan: 指标信号
+-- 离散事件表(每根 K 线最多 1 条同向信号, UNIQUE 让 scan 幂等)
+CREATE TABLE IF NOT EXISTS indicator_signals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol TEXT NOT NULL,
+  interval TEXT NOT NULL,        -- '60m' | '4h' | '1d'
+  indicator TEXT NOT NULL,       -- 'CD'(为 TT/NX 留扩展)
+  signal_type TEXT NOT NULL,     -- 'buy' | 'sell'
+  bar_ts TIMESTAMP NOT NULL,     -- 触发信号的 K 线时间(UTC ISO)
+  detected_at TIMESTAMP NOT NULL,
+  price REAL NOT NULL,
+  d_value REAL,                  -- MACD DIF, 调试用
+  acknowledged INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(symbol, interval, indicator, signal_type, bar_ts)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sig_symbol_interval
+  ON indicator_signals(symbol, interval, bar_ts DESC);
+CREATE INDEX IF NOT EXISTS idx_sig_unack
+  ON indicator_signals(detected_at DESC) WHERE acknowledged = 0;

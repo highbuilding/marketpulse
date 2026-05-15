@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import asyncio
-
-import akshare as ak
 import structlog
 
+from core.integrations.akshare import ak_call
 from core.persistence.symbol_directory_repo import SymbolDirectoryRepo
-from core.services._locks import mini_racer_lock
 
 log = structlog.get_logger(__name__)
 
@@ -43,8 +40,8 @@ class SymbolDirectoryService:
 
     async def refresh_ashare(self) -> int:
         """A 股 + ETF code+name,sina 通道。"""
-        async with mini_racer_lock:
-            df = await asyncio.to_thread(ak.stock_zh_a_spot)
+        df = await ak_call("stock_zh_a_spot",
+                            caller="directory.refresh_ashare:stock_zh_a_spot")
         normalized: list[tuple[str, str, str]] = []
         for _, row in df.iterrows():
             sina_code = str(row["代码"])
@@ -58,8 +55,10 @@ class SymbolDirectoryService:
 
         # ETF 走 sina;mini_racer 必须串行
         try:
-            async with mini_racer_lock:
-                etf_df = await asyncio.to_thread(ak.fund_etf_category_sina, symbol="ETF基金")
+            etf_df = await ak_call(
+                "fund_etf_category_sina", symbol="ETF基金",
+                caller="directory.refresh_ashare:fund_etf_category_sina",
+            )
             for _, row in etf_df.iterrows():
                 sina_code = str(row["代码"])
                 if sina_code[:2].lower() in {"sh", "sz"}:
@@ -75,6 +74,9 @@ class SymbolDirectoryService:
 
     async def get_name(self, symbol: str) -> str | None:
         return await self.repo.get_name(symbol)
+
+    async def get_names(self, symbols: list[str]) -> dict[str, str]:
+        return await self.repo.get_names(symbols)
 
     async def search(self, query: str, limit: int = 20) -> list[tuple[str, str, str]]:
         return await self.repo.search(query, limit)

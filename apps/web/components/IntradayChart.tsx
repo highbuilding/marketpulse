@@ -1,6 +1,9 @@
 'use client'
 
-import { createChart, IChartApi, LineData, HistogramData, LineStyle } from 'lightweight-charts'
+import {
+  createChart, IChartApi, ISeriesApi, IPriceLine,
+  LineData, HistogramData, LineStyle,
+} from 'lightweight-charts'
 import { useEffect, useMemo, useRef } from 'react'
 
 import type { BarDTO } from '@/lib/types'
@@ -39,11 +42,16 @@ function toChartTime(iso: string): number {
 export function IntradayChart({ bars, height = 380, prevClose }: IntradayChartProps) {
   const ref = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
+  const priceSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const vwapSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const volSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null)
+  const prevCloseLineRef = useRef<IPriceLine | null>(null)
+  const didFitRef = useRef(false)
 
   const vwap = useMemo(() => computeVwap(bars), [bars])
 
   useEffect(() => {
-    if (!ref.current || bars.length === 0) return
+    if (!ref.current) return
     const chart = createChart(ref.current, {
       height,
       layout: { background: { color: '#0a0a0a' }, textColor: '#a3a3a3' },
@@ -53,52 +61,22 @@ export function IntradayChart({ bars, height = 380, prevClose }: IntradayChartPr
     })
     chartRef.current = chart
 
-    const priceSeries = chart.addLineSeries({
+    priceSeriesRef.current = chart.addLineSeries({
       color: '#f5f5f5', lineWidth: 2,
       priceLineVisible: false,
     })
-    const priceData: LineData[] = bars.map((b) => ({
-      time: toChartTime(b.ts) as any,
-      value: b.close,
-    }))
-    priceSeries.setData(priceData)
-
-    const vwapSeries = chart.addLineSeries({
+    vwapSeriesRef.current = chart.addLineSeries({
       color: '#fbbf24', lineWidth: 1, lineStyle: LineStyle.Solid,
       priceLineVisible: false,
     })
-    vwapSeries.setData(vwap.map((p) => ({
-      time: toChartTime(p.ts) as any,
-      value: p.vwap,
-    })))
-
-    if (prevClose != null && prevClose > 0) {
-      priceSeries.createPriceLine({
-        price: prevClose,
-        color: '#6b7280',
-        lineWidth: 1,
-        lineStyle: LineStyle.Dashed,
-        axisLabelVisible: true,
-        title: '昨收',
-      })
-    }
-
-    const volSeries = chart.addHistogramSeries({
+    volSeriesRef.current = chart.addHistogramSeries({
       priceFormat: { type: 'volume' },
       priceScaleId: '',
       color: '#525252',
     })
-    volSeries.priceScale().applyOptions({
+    volSeriesRef.current.priceScale().applyOptions({
       scaleMargins: { top: 0.75, bottom: 0 },
     })
-    const volData: HistogramData[] = bars.map((b) => ({
-      time: toChartTime(b.ts) as any,
-      value: b.volume,
-      color: prevClose != null && b.close >= prevClose ? '#ef444466' : '#22c55e66',
-    }))
-    volSeries.setData(volData)
-
-    chart.timeScale().fitContent()
 
     const ro = new ResizeObserver(() => {
       if (ref.current) chart.applyOptions({ width: ref.current.clientWidth })
@@ -109,8 +87,61 @@ export function IntradayChart({ bars, height = 380, prevClose }: IntradayChartPr
       ro.disconnect()
       chart.remove()
       chartRef.current = null
+      priceSeriesRef.current = null
+      vwapSeriesRef.current = null
+      volSeriesRef.current = null
+      prevCloseLineRef.current = null
+      didFitRef.current = false
     }
-  }, [bars, vwap, height, prevClose])
+  }, [height])
+
+  useEffect(() => {
+    const priceSeries = priceSeriesRef.current
+    const vwapSeries = vwapSeriesRef.current
+    const volSeries = volSeriesRef.current
+    const chart = chartRef.current
+    if (!priceSeries || !vwapSeries || !volSeries || !chart) return
+    if (bars.length === 0) return
+
+    const priceData: LineData[] = bars.map((b) => ({
+      time: toChartTime(b.ts) as any,
+      value: b.close,
+    }))
+    priceSeries.setData(priceData)
+
+    vwapSeries.setData(vwap.map((p) => ({
+      time: toChartTime(p.ts) as any,
+      value: p.vwap,
+    })))
+
+    const volData: HistogramData[] = bars.map((b) => ({
+      time: toChartTime(b.ts) as any,
+      value: b.volume,
+      color: prevClose != null && b.close >= prevClose ? '#ef444466' : '#22c55e66',
+    }))
+    volSeries.setData(volData)
+
+    if (prevCloseLineRef.current) {
+      priceSeries.removePriceLine(prevCloseLineRef.current)
+      prevCloseLineRef.current = null
+    }
+    if (prevClose != null && prevClose > 0) {
+      prevCloseLineRef.current = priceSeries.createPriceLine({
+        price: prevClose,
+        color: '#6b7280',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: '昨收',
+      })
+    }
+
+    // 仅首次 fit,后续刷新保留用户的缩放/平移
+    if (!didFitRef.current) {
+      chart.timeScale().fitContent()
+      didFitRef.current = true
+    }
+  }, [bars, vwap, prevClose])
 
   return <div ref={ref} className="w-full" />
 }
