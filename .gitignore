@@ -7,10 +7,14 @@ __pycache__/
 data/*.duckdb
 data/*.db
 data/*.db-journal
+data/*.db-wal
+data/*.db-shm
 logs/
 .env
 apps/web/node_modules/
 apps/web/.next/
 apps/web/out/
 apps/web/test-results/
+apps/web/tsconfig.tsbuildinfo
 .DS_Store
+scratch/

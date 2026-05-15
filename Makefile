@@ -4,7 +4,10 @@ install:
 	python -m venv .venv && . .venv/bin/activate && pip install -e ".[dev]"
 
 dev:
-	. .venv/bin/activate && uvicorn apps.api.main:app --reload --port 8787 & \
+	# NOTE: uvicorn --reload 在本项目下不安全 — py_mini_racer V8 状态在 reload 后会污染
+	# 导致 worker SIGABRT (见 docs/TODO.md 和 memory/project_mini_racer_lock.md)。
+	# 代码变更请手动重启:pkill -f "uvicorn apps.api" + 重跑此命令。
+	. .venv/bin/activate && uvicorn apps.api.main:app --port 8787 & \
 	cd apps/web && npm run dev
 
 test:
