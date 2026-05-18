@@ -40,9 +40,10 @@ export function tzOffsetSeconds(market: Market, iso: string): number {
   })
   const parts = fmt.formatToParts(date)
   const get = (t: string) => Number(parts.find((p) => p.type === t)?.value)
+  // 部分 locale 用 24:00 表示次日 00:00 — 直接交给 Date.UTC 处理参数溢出(hour=24 → day+1, hour=0)
   const localAsUtc = Date.UTC(
     get('year'), get('month') - 1, get('day'),
-    get('hour') === 24 ? 0 : get('hour'),  // 部分 locale 用 24:00 表示午夜
+    get('hour'),
     get('minute'), get('second'),
   )
   return (localAsUtc - date.getTime()) / 1000

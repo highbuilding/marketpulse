@@ -55,8 +55,9 @@ test('tzOffsetSeconds ashare 固定 +8h', () => {
   assert.equal(tzOffsetSeconds('ashare', '2026-05-18T00:00:00Z'), 8 * 3600)
 })
 
-test('todayKey works without throwing', () => {
+test('todayKey works for all markets', () => {
   // 不验证具体值(取决于当前时刻), 只验证不抛错且返回 ISO date 格式
-  const k = todayKey('us')
-  assert.match(k, /^\d{4}-\d{2}-\d{2}$/)
+  for (const m of ['ashare', 'hk', 'us', 'crypto'] as const) {
+    assert.match(todayKey(m), /^\d{4}-\d{2}-\d{2}$/)
+  }
 })
