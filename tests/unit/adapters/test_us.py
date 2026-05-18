@@ -198,3 +198,23 @@ async def test_fetch_history_class_share():
         )
     assert mock_yf.download.call_args.args[0] == "BRK-B"
     assert bars[0].symbol == "BRK.B"
+    assert mock_yf.download.call_args.kwargs["auto_adjust"] is False
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_winter_est_offset():
+    """EST(UTC-5,冬令时)下,2026-01-15 ET 00:00 → 2026-01-15 05:00 UTC。"""
+    idx = pd.DatetimeIndex(["2026-01-15"])
+    df = pd.DataFrame({
+        "Open": [200.0], "High": [202.0], "Low": [199.0],
+        "Close": [201.0], "Volume": [1000000],
+    }, index=idx)
+    adapter = USAdapter()
+    with patch("core.adapters.us.yf") as mock_yf:
+        mock_yf.download = MagicMock(return_value=df)
+        bars = await adapter.fetch_history(
+            "AAPL",
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            datetime(2026, 1, 31, tzinfo=timezone.utc),
+        )
+    assert bars[0].ts == datetime(2026, 1, 15, 5, 0, tzinfo=timezone.utc)

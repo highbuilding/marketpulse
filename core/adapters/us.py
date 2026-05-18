@@ -149,11 +149,12 @@ class USAdapter:
         )
         out: list[Bar] = []
         for idx, row in df.iterrows():
-            if idx.tzinfo is None:
-                local_midnight = idx.tz_localize("America/New_York")
-            else:
-                local_midnight = idx.tz_convert("America/New_York")
-            ts_utc = local_midnight.normalize().tz_convert("UTC").to_pydatetime()
+            local_ts = (
+                idx.tz_localize("America/New_York") if idx.tzinfo is None
+                else idx.tz_convert("America/New_York")
+            )
+            # normalize() 把 wall-clock 设到 00:00, 对应该市场自然交易日开始
+            ts_utc = local_ts.normalize().tz_convert("UTC").to_pydatetime()
             # 跳过 OHLC 任何字段 NaN 的行(与 fetch_intraday 一致)
             if any(pd.isna(row[c]) for c in ("Open", "High", "Low", "Close")):
                 continue
