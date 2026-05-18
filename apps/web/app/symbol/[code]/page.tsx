@@ -11,6 +11,7 @@ import { CDSignalPanel } from '@/components/CDSignalPanel'
 import { fetchBars, fetchSymbolProfile } from '@/lib/symbol_api'
 import { listCDSignalsBySymbol } from '@/lib/cd_signals_api'
 import { CD_MARKER_INTERVALS, klineTabsForMarket } from '@/lib/intervals'
+import { inferMarket } from '@/lib/markets'
 import type { Interval } from '@/lib/types'
 
 // A 股交易时段(北京时间):09:30–11:30 / 13:00–15:00,周一至周五
@@ -46,6 +47,7 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
   }
 
   const { data: profile } = useSWR(`profile:${symbol}`, () => fetchSymbolProfile(symbol))
+  const effectiveMarket = profile?.market ?? inferMarket(symbol)
   const intervalTabs = useMemo(
     () => klineTabsForMarket(profile?.market ?? null),
     [profile?.market],
@@ -137,7 +139,7 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
             bars={todayBars}
             prevClose={prevClose}
             height={420}
-            market={profile?.market ?? 'ashare'}
+            market={effectiveMarket}
           />
         )}
         {interval === '1m' && data && todayBars.length === 0 && (
@@ -149,7 +151,7 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
           <KLineChart
             bars={data.bars}
             interval={interval}
-            market={profile?.market ?? 'ashare'}
+            market={effectiveMarket}
             height={420}
             signals={signalInterval ? markers : undefined}
           />
@@ -160,7 +162,7 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
       </section>
 
       {!isIndex && <FundFlowPanel symbol={symbol} />}
-      <CDSignalPanel symbol={symbol} market={profile?.market ?? 'ashare'} />
+      <CDSignalPanel symbol={symbol} market={effectiveMarket} />
     </main>
   )
 }

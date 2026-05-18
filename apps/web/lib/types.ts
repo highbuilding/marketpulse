@@ -1,4 +1,5 @@
-export type Market = 'ashare' | 'hk' | 'us' | 'crypto'
+import type { Market } from './markets'
+export type { Market }
 
 export interface QuoteDTO {
   symbol: string
