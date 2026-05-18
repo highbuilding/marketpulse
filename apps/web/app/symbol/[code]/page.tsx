@@ -133,7 +133,12 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
 
         {/* 分时模式 */}
         {interval === '1m' && data && todayBars.length > 0 && (
-          <IntradayChart bars={todayBars} prevClose={prevClose} height={420} />
+          <IntradayChart
+            bars={todayBars}
+            prevClose={prevClose}
+            height={420}
+            market={profile?.market ?? 'ashare'}
+          />
         )}
         {interval === '1m' && data && todayBars.length === 0 && (
           <p className="text-sm text-yellow-400">当日无分时数据(可能未开盘或源不通)。</p>
@@ -144,6 +149,7 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
           <KLineChart
             bars={data.bars}
             interval={interval}
+            market={profile?.market ?? 'ashare'}
             height={420}
             signals={signalInterval ? markers : undefined}
           />

@@ -6,6 +6,8 @@ import {
 } from 'lightweight-charts'
 import { useEffect, useMemo, useRef } from 'react'
 
+import { tzOffsetSeconds, type Market } from '@/lib/markets'
+import { makeChartCrosshairFormatter, makeChartTickFormatter } from '@/lib/chart_time'
 import type { BarDTO, Interval } from '@/lib/types'
 
 export interface SignalMarker {
@@ -16,21 +18,22 @@ export interface SignalMarker {
 export interface KLineChartProps {
   bars: BarDTO[]
   interval: Interval
+  market: Market
   height?: number
   signals?: SignalMarker[]
 }
 
 const INTRADAY: ReadonlySet<Interval> = new Set(['1m', '5m', '15m', '30m', '60m'])
 
-function toBeijingDateStr(iso: string): string {
-  return new Date(iso).toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' })
-}
-
-function toBarTime(iso: string, interval: Interval): Time {
+function toBarTime(iso: string, interval: Interval, market: Market): Time {
   if (INTRADAY.has(interval)) {
-    return ((new Date(iso).getTime() / 1000) + 8 * 3600) as Time
+    return ((new Date(iso).getTime() / 1000) + tzOffsetSeconds(market, iso)) as Time
   }
-  return toBeijingDateStr(iso) as Time
+  // 日线: 按市场时区切日历
+  return new Date(iso).toLocaleDateString('en-CA',
+    { timeZone: market === 'us' ? 'America/New_York'
+              : market === 'hk' ? 'Asia/Hong_Kong'
+              : 'Asia/Shanghai' }) as Time
 }
 
 function fmtPrice(v: number): string {
@@ -71,7 +74,7 @@ function computeStats(bars: BarDTO[]): Stats | null {
   return { last, first, diff, pct, high, low, vol }
 }
 
-export function KLineChart({ bars, interval, height = 400, signals }: KLineChartProps) {
+export function KLineChart({ bars, interval, market, height = 400, signals }: KLineChartProps) {
   const ref = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const candleRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
@@ -82,12 +85,17 @@ export function KLineChart({ bars, interval, height = 400, signals }: KLineChart
     if (!ref.current) return
     const chart = createChart(ref.current, {
       height,
-      layout: { background: { color: '#0a0a0a' }, textColor: '#d4d4d4' },
+      layout: {
+        background: { color: '#0a0a0a' }, textColor: '#d4d4d4',
+        attributionLogo: false,
+      },
       grid: { vertLines: { color: '#262626' }, horzLines: { color: '#262626' } },
+      localization: { timeFormatter: makeChartCrosshairFormatter(market) },
       timeScale: {
         timeVisible: intraday,
         secondsVisible: false,
         borderColor: '#262626',
+        tickMarkFormatter: makeChartTickFormatter(market),
       },
       rightPriceScale: { borderColor: '#262626' },
     })
@@ -106,11 +114,11 @@ export function KLineChart({ bars, interval, height = 400, signals }: KLineChart
     volume.priceScale().applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } })
 
     const candleData: CandlestickData[] = bars.map((b) => ({
-      time: toBarTime(b.ts, interval),
+      time: toBarTime(b.ts, interval, market),
       open: b.open, high: b.high, low: b.low, close: b.close,
     }))
     const volData: HistogramData[] = bars.map((b) => ({
-      time: toBarTime(b.ts, interval),
+      time: toBarTime(b.ts, interval, market),
       value: b.volume,
       color: b.close >= b.open ? '#22c55e44' : '#ef444444',
     }))
@@ -119,7 +127,7 @@ export function KLineChart({ bars, interval, height = 400, signals }: KLineChart
 
     if (signals && signals.length > 0) {
       const markers: SeriesMarker<Time>[] = signals.map((s) => ({
-        time: toBarTime(s.ts, interval),
+        time: toBarTime(s.ts, interval, market),
         position: s.signal_type === 'buy' ? 'belowBar' : 'aboveBar',
         color: s.signal_type === 'buy' ? '#ef4444' : '#22c55e',
         shape: s.signal_type === 'buy' ? 'arrowUp' : 'arrowDown',
@@ -146,7 +154,7 @@ export function KLineChart({ bars, interval, height = 400, signals }: KLineChart
       chartRef.current = null
       candleRef.current = null
     }
-  }, [bars, height, interval, intraday, signals])
+  }, [bars, height, interval, intraday, signals, market])
 
   return (
     <div className="w-full">

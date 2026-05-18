@@ -6,10 +6,13 @@ import {
 } from 'lightweight-charts'
 import { useEffect, useMemo, useRef } from 'react'
 
+import { tzOffsetSeconds, type Market } from '@/lib/markets'
+import { makeChartCrosshairFormatter, makeChartTickFormatter } from '@/lib/chart_time'
 import type { BarDTO } from '@/lib/types'
 
 export interface IntradayChartProps {
   bars: BarDTO[]   // 当日 1min bars (按时间正序)
+  market: Market
   height?: number
   prevClose?: number | null  // 昨收价,用于横线 reference
 }
@@ -34,12 +37,12 @@ function computeVwap(bars: BarDTO[]): VWAPPoint[] {
   return out
 }
 
-function toChartTime(iso: string): number {
-  // ISO 是 UTC,加 8h 偏移让 lightweight-charts 按 UTC 渲染时显示为北京时间
-  return (new Date(iso).getTime() / 1000) + 8 * 3600
+function toChartTime(iso: string, market: Market): number {
+  // ISO 是 UTC,加市场时区偏移让 lightweight-charts 按 UTC 渲染时显示为市场本地时间
+  return (new Date(iso).getTime() / 1000) + tzOffsetSeconds(market, iso)
 }
 
-export function IntradayChart({ bars, height = 380, prevClose }: IntradayChartProps) {
+export function IntradayChart({ bars, market, height = 380, prevClose }: IntradayChartProps) {
   const ref = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const priceSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
@@ -54,9 +57,16 @@ export function IntradayChart({ bars, height = 380, prevClose }: IntradayChartPr
     if (!ref.current) return
     const chart = createChart(ref.current, {
       height,
-      layout: { background: { color: '#0a0a0a' }, textColor: '#a3a3a3' },
+      layout: {
+        background: { color: '#0a0a0a' }, textColor: '#a3a3a3',
+        attributionLogo: false,
+      },
       grid: { vertLines: { color: '#1f1f1f' }, horzLines: { color: '#1f1f1f' } },
-      timeScale: { timeVisible: true, secondsVisible: false },
+      localization: { timeFormatter: makeChartCrosshairFormatter(market) },
+      timeScale: {
+        timeVisible: true, secondsVisible: false,
+        tickMarkFormatter: makeChartTickFormatter(market),
+      },
       rightPriceScale: { borderColor: '#262626' },
     })
     chartRef.current = chart
@@ -93,7 +103,7 @@ export function IntradayChart({ bars, height = 380, prevClose }: IntradayChartPr
       prevCloseLineRef.current = null
       didFitRef.current = false
     }
-  }, [height])
+  }, [height, market])
 
   useEffect(() => {
     const priceSeries = priceSeriesRef.current
@@ -104,18 +114,18 @@ export function IntradayChart({ bars, height = 380, prevClose }: IntradayChartPr
     if (bars.length === 0) return
 
     const priceData: LineData[] = bars.map((b) => ({
-      time: toChartTime(b.ts) as any,
+      time: toChartTime(b.ts, market) as any,
       value: b.close,
     }))
     priceSeries.setData(priceData)
 
     vwapSeries.setData(vwap.map((p) => ({
-      time: toChartTime(p.ts) as any,
+      time: toChartTime(p.ts, market) as any,
       value: p.vwap,
     })))
 
     const volData: HistogramData[] = bars.map((b) => ({
-      time: toChartTime(b.ts) as any,
+      time: toChartTime(b.ts, market) as any,
       value: b.volume,
       color: prevClose != null && b.close >= prevClose ? '#ef444466' : '#22c55e66',
     }))
@@ -141,7 +151,7 @@ export function IntradayChart({ bars, height = 380, prevClose }: IntradayChartPr
       chart.timeScale().fitContent()
       didFitRef.current = true
     }
-  }, [bars, vwap, prevClose])
+  }, [bars, vwap, prevClose, market])
 
   return <div ref={ref} className="w-full" />
 }
