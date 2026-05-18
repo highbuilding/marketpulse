@@ -76,12 +76,13 @@ sleep 6 && tail -5 /tmp/api.log  # 看 "Application startup complete"
 
 调试时**自己重启**,不要让用户手动操作(用户已明确说过)。
 
-### 雷区 3:1d bar 的时间戳偏移(代价:UI 显示晚一天)
+### 雷区 3:1d bar 的时间戳约定(踩坑历史:UI 一度显示早一天)
 
-sina daily bar 的 `ts = 收盘日 16:00 UTC = BJT 次日 00:00`。直接显示会让 5.11 收盘信号显示成 5.12。
+**当前约定**:adapter (`core/adapters/ashare.py:180`) 把 1d bar 的 `ts` normalize 为 **BJT 自然交易日 00:00**(= UTC `(D-1) 16:00`)。所以 ts=`2026-05-17T16:00Z` 表示 **交易日 5/18**(BJT 转换为 `5/18 00:00`)。`bjtDateKey(ts)` 直接得到正确交易日,**不需要任何偏移**。
 
-**临时方案**(已实施):`apps/web/lib/signal_time.ts::effectiveTsIso(iso, '1d')` 在显示层 -8h 还原收盘当日。
-**根治**(未做,`docs/TODO.md`):adapter 层 normalize,要清 duckdb 重抓。
+**历史坑**:早期 `signal_time.ts::effectiveTsIso` 错误地假设 ts 是 sina 原始 "收盘日 16:00 UTC = BJT 次日 00:00",在前端做了 `-8h` 还原,反而把 5/18 显示成了 5/17。2026-05-18 已修复为直通(`effectiveTsIso` 改成 noop)。
+
+**给未来 agent**:`bar_ts` 直接喂 `bjtDateKey` 或 `toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'})` 即可,不要再加任何 +/-8h 偏移。如果 adapter 切源后 ts 语义变了,改 adapter,**别在前端补偏移**。
 
 ### 雷区 4:directory bootstrap 跳过逻辑
 
@@ -119,7 +120,7 @@ sina daily bar 的 `ts = 收盘日 16:00 UTC = BJT 次日 00:00`。直接显示�
 | 信号时间格式化 | `apps/web/lib/signal_time.ts` | 1d -8h 偏移、BJT 自然日切分 |
 | 信号表格 UI | `apps/web/components/SignalsTable.tsx` | 详情页 + 关注页公用 |
 | Mini-racer 全局锁 | `core/services/_locks.py::acquire` | **仅 ak_call 内部用,业务勿直接用** |
-| Symbol market 推断 | `apps/api/routes/symbols.py::_infer_market` | `.SH/.SZ/.BJ`→ashare、`.HK`→hk、`/`→crypto、其它→us |
+| Symbol market 推断 | `core/domain/markets.py::infer_market` | route / scheduler / kline_service 4 处入口;前端镜像 `apps/web/lib/markets.ts::inferMarket` |
 | 优化清单 | `docs/TODO.md` | 跨会话单一来源,完成项划掉但不删 |
 
 **反模式**:发现两个文件出现相似的 interval 列表 / 时间格式化逻辑 / 表格 JSX,立即抽到 SSoT。
@@ -344,9 +345,10 @@ grep -c FATAL /tmp/api.log  # 期望 0
 
 ---
 
-## 当前活跃约束(状态时间 2026-05-15)
+## 当前活跃约束(状态时间 2026-05-18)
 
 - **CD 信号在 2026-05-15 后没有新 1d 信号**:不是 bug,公式特性。底/顶背离本身就是低频事件
 - **关注页 4h tab** 仅 watchlist 含 crypto 标的时显示(股票市场 4h ≡ 1d)
 - **scheduler 每 10s 读一次 sqlite 拿 watchlist**:浪费但单读 <1ms 可忽略,优化项在 TODO
 - **`acknowledged` 字段** 后端建好但 UI 没用:死代码,留待"已读"功能或删
+- **美股 4h tab** 在 watchlist + 详情页都显示(prepost 16h ÷ 4 = 4 根/天);港股 4h 仅 detail 页可见但与 1d 等价,无新增信号

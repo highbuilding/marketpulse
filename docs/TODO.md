@@ -129,6 +129,19 @@
 
 ---
 
+## 美股接入未实施事项(spec 2026-05-18 §9)
+
+- `signal_service.scan_symbol(regular_only=)`:美股盘前盘后噪声过滤选项 + UI "Extended Hours" toggle
+- 4h bucket 按时钟对齐(消除 yfinance 偶发缺 bar 时的偏移)
+- 富途 SDK 接入(yfinance 失效时的 Plan B)
+- 美股 dashboard 板块卡(SPY / QQQ / DIA 主要指数代理)
+- 美股资金流(institutional holders / 13F)— 待数据源调研
+- HK / Crypto 关注页内容接入(本期骨架,功能开发中)
+- K 图 markers 新 bar 自动同步(SWR refreshInterval 在交易时段开)
+- IndexCard 时区适配(目前 hardcode BJT,A 股 dashboard 用,迁移到 chart_time 工厂版本)
+
+---
+
 ## 维护
 
 - 完成一项请把 `- [ ]` 改 `- [x]`,并在 commit message 引用本文件位置
