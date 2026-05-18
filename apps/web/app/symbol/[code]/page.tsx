@@ -160,7 +160,7 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
       </section>
 
       {!isIndex && <FundFlowPanel symbol={symbol} />}
-      <CDSignalPanel symbol={symbol} />
+      <CDSignalPanel symbol={symbol} market={profile?.market ?? 'ashare'} />
     </main>
   )
 }

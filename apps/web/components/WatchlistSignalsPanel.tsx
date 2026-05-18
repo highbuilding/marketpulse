@@ -7,23 +7,21 @@ import { SignalsTable } from '@/components/SignalsTable'
 import { fetchWatchlistEvents } from '@/lib/cd_signals_api'
 import { allSignalTabs } from '@/lib/intervals'
 import { fetchSymbolProfiles } from '@/lib/symbol_api'
-import { bjtDateKey, effectiveTsIso, todayBjtKey } from '@/lib/signal_time'
+import { tradingDateKey, todayKey, type Market } from '@/lib/markets'
 import type { AnySignalInterval, CDSignalDTO } from '@/lib/types'
 
 const ALL_TABS = allSignalTabs()
 
-function isCrypto(sym: string): boolean {
-  return !/\.(SH|SZ|BJ|HK)$/.test(sym) && sym.includes('/')
-}
-
-export function WatchlistSignalsPanel({ symbols }: { symbols: string[] }) {
+export function WatchlistSignalsPanel({
+  symbols, market,
+}: { symbols: string[]; market: Market }) {
   const { mutate: mutateGlobal } = useSWRConfig()
 
-  // 仅在 watchlist 含 crypto 标的时才展示 4h tab(股票市场 4h ≡ 日线)
+  // 按 market 决定是否展示 4h tab(股票市场 4h ≡ 日线,us/crypto 才有意义)
   const tabs = useMemo(() => {
-    const hasCrypto = symbols.some(isCrypto)
-    return ALL_TABS.filter((t) => t.key !== '4h' || hasCrypto)
-  }, [symbols])
+    const allowFourH = market === 'us' || market === 'crypto'
+    return ALL_TABS.filter((t) => t.key !== '4h' || allowFourH)
+  }, [market])
 
   const [interval, setInterval] = useState<AnySignalInterval>('1d')
   const activeInterval: AnySignalInterval = useMemo(
@@ -32,8 +30,8 @@ export function WatchlistSignalsPanel({ symbols }: { symbols: string[] }) {
   )
 
   const { data, isLoading } = useSWR(
-    `wl:events:${activeInterval}:${symbols.join(',')}`,
-    () => fetchWatchlistEvents(activeInterval, 100),
+    `wl:events:${activeInterval}:${market}:${symbols.join(',')}`,
+    () => fetchWatchlistEvents(activeInterval, 100, market),
     { refreshInterval: 30_000 },
   )
 
@@ -54,17 +52,17 @@ export function WatchlistSignalsPanel({ symbols }: { symbols: string[] }) {
     return () => { cancelled = true }
   }, [signals, mutateGlobal])
 
-  // 切分当天 vs 历史(按北京时间自然日;1d 信号已 normalize 回"收盘当日")
+  // 切分当天 vs 历史(按市场时区自然日;1d 信号已 normalize 回"收盘当日")
   const { today, history } = useMemo(() => {
-    const tk = todayBjtKey()
+    const tk = todayKey(market)
     const today: CDSignalDTO[] = []
     const history: CDSignalDTO[] = []
     for (const s of signals) {
-      const key = bjtDateKey(effectiveTsIso(s.bar_ts, activeInterval))
+      const key = tradingDateKey(s.bar_ts, market)
       ;(key === tk ? today : history).push(s)
     }
     return { today, history }
-  }, [signals, activeInterval])
+  }, [signals, market])
 
   return (
     <section className="rounded-lg border border-neutral-800 p-4 bg-neutral-950">
@@ -99,12 +97,12 @@ export function WatchlistSignalsPanel({ symbols }: { symbols: string[] }) {
         <div className="space-y-4">
           <div>
             <h3 className="text-xs uppercase tracking-wide text-neutral-500 mb-1">
-              当天(BJT)
+              当天({market === 'us' ? 'ET' : 'BJT'})
             </h3>
             {today.length === 0 ? (
               <p className="text-sm text-neutral-600">当天暂无信号。</p>
             ) : (
-              <SignalsTable signals={today} interval={activeInterval} showSymbol />
+              <SignalsTable signals={today} interval={activeInterval} market={market} showSymbol />
             )}
           </div>
 
@@ -115,7 +113,7 @@ export function WatchlistSignalsPanel({ symbols }: { symbols: string[] }) {
             {history.length === 0 ? (
               <p className="text-sm text-neutral-600">暂无历史信号。</p>
             ) : (
-              <SignalsTable signals={history} interval={activeInterval} showSymbol />
+              <SignalsTable signals={history} interval={activeInterval} market={market} showSymbol />
             )}
           </div>
         </div>

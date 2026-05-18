@@ -135,7 +135,7 @@ export default function WatchlistPage() {
         </ul>
       </section>
 
-      <WatchlistSignalsPanel symbols={items?.symbols ?? []} />
+      <WatchlistSignalsPanel symbols={items?.symbols ?? []} market="ashare" />
     </main>
   )
 }

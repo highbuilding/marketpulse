@@ -6,12 +6,11 @@ import useSWR from 'swr'
 import { SignalsTable } from '@/components/SignalsTable'
 import { listCDSignalsBySymbol, scanCDSignals } from '@/lib/cd_signals_api'
 import { detailSignalTabs } from '@/lib/intervals'
-import { bjtDateKey, todayBjtKey } from '@/lib/signal_time'
+import { tradingDateKey, todayKey, type Market } from '@/lib/markets'
 import type { CDSignalDTO, DetailSignalInterval } from '@/lib/types'
 
-const TABS = detailSignalTabs(null)
-
-export function CDSignalPanel({ symbol }: { symbol: string }) {
+export function CDSignalPanel({ symbol, market }: { symbol: string; market: Market }) {
+  const TABS = useMemo(() => detailSignalTabs(market), [market])
   const [interval, setInterval] = useState<DetailSignalInterval>('60m')
   const triggered = useRef<Set<DetailSignalInterval>>(new Set())
   const [scanning, setScanning] = useState<DetailSignalInterval | null>(null)
@@ -38,17 +37,17 @@ export function CDSignalPanel({ symbol }: { symbol: string }) {
   const signals = data?.signals ?? []
   const isScanningThis = scanning === interval
 
-  // 切分当天 vs 历史(按 BJT 自然日;adapter 已把 1d ts normalize 为 BJT 自然日 00:00)
+  // 切分当天 vs 历史(按市场时区自然日;adapter 已把 1d ts normalize 为市场自然日 00:00)
   const { today, history } = useMemo(() => {
-    const tk = todayBjtKey()
+    const tk = todayKey(market)
     const today: CDSignalDTO[] = []
     const history: CDSignalDTO[] = []
     for (const s of signals) {
-      const key = bjtDateKey(s.bar_ts)
+      const key = tradingDateKey(s.bar_ts, market)
       ;(key === tk ? today : history).push(s)
     }
     return { today, history }
-  }, [signals])
+  }, [signals, market])
 
   return (
     <section className="rounded-lg border border-neutral-800 p-4 bg-neutral-950">
@@ -88,12 +87,12 @@ export function CDSignalPanel({ symbol }: { symbol: string }) {
         <div className="space-y-4">
           <div>
             <h3 className="text-xs uppercase tracking-wide text-neutral-500 mb-1">
-              当天(BJT)
+              当天({market === 'us' ? 'ET' : 'BJT'})
             </h3>
             {today.length === 0 ? (
               <p className="text-sm text-neutral-600">当天暂无信号。</p>
             ) : (
-              <SignalsTable signals={today} interval={interval} />
+              <SignalsTable signals={today} interval={interval} market={market} />
             )}
           </div>
 
@@ -104,7 +103,7 @@ export function CDSignalPanel({ symbol }: { symbol: string }) {
             {history.length === 0 ? (
               <p className="text-sm text-neutral-600">暂无历史信号。</p>
             ) : (
-              <SignalsTable signals={history} interval={interval} />
+              <SignalsTable signals={history} interval={interval} market={market} />
             )}
           </div>
         </div>

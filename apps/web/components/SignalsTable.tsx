@@ -4,6 +4,7 @@ import useSWR from 'swr'
 
 import { fetchSymbolProfile } from '@/lib/symbol_api'
 import { fmtSignalTs } from '@/lib/signal_time'
+import type { Market } from '@/lib/markets'
 import type { AnySignalInterval, CDSignalDTO } from '@/lib/types'
 
 function SymbolNameCell({ symbol }: { symbol: string }) {
@@ -16,10 +17,12 @@ function SymbolNameCell({ symbol }: { symbol: string }) {
 export function SignalsTable({
   signals,
   interval,
+  market,
   showSymbol = false,
 }: {
   signals: CDSignalDTO[]
   interval: AnySignalInterval
+  market: Market
   showSymbol?: boolean
 }) {
   return (
@@ -39,7 +42,7 @@ export function SignalsTable({
           return (
             <tr key={s.id} className="border-t border-neutral-800">
               <td className="py-1 font-mono text-neutral-300 whitespace-nowrap">
-                {fmtSignalTs(s.bar_ts, interval, 'ashare')}
+                {fmtSignalTs(s.bar_ts, interval, market)}
               </td>
               {showSymbol && (
                 <td>
