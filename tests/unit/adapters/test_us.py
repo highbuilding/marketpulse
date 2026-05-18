@@ -218,3 +218,43 @@ async def test_fetch_history_winter_est_offset():
             datetime(2026, 1, 31, tzinfo=timezone.utc),
         )
     assert bars[0].ts == datetime(2026, 1, 15, 5, 0, tzinfo=timezone.utc)
+
+
+# ── verify_ticker ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_verify_ticker_valid():
+    adapter = USAdapter()
+    fake_info = MagicMock(last_price=180.0)
+    fake_ticker = MagicMock(
+        fast_info=fake_info,
+        info={"longName": "Apple Inc."},
+    )
+    with patch("core.adapters.us.yf") as mock_yf:
+        mock_yf.Ticker = MagicMock(return_value=fake_ticker)
+        ok, name = await adapter.verify_ticker("AAPL")
+    assert ok is True
+    assert name == "Apple Inc."
+
+
+@pytest.mark.asyncio
+async def test_verify_ticker_unknown():
+    adapter = USAdapter()
+    fake_info = MagicMock(last_price=None)
+    fake_ticker = MagicMock(fast_info=fake_info, info={})
+    with patch("core.adapters.us.yf") as mock_yf:
+        mock_yf.Ticker = MagicMock(return_value=fake_ticker)
+        ok, name = await adapter.verify_ticker("ZZZZZZ")
+    assert ok is False
+    assert name is None
+
+
+@pytest.mark.asyncio
+async def test_verify_ticker_exception_returns_false():
+    adapter = USAdapter()
+    with patch("core.adapters.us.yf") as mock_yf:
+        mock_yf.Ticker = MagicMock(side_effect=RuntimeError("network"))
+        ok, name = await adapter.verify_ticker("AAPL")
+    assert ok is False
+    assert name is None

@@ -169,6 +169,23 @@ class USAdapter:
             ))
         return out
 
+    async def verify_ticker(self, symbol: str) -> tuple[bool, str | None]:
+        """轻量校验 + 拿 long name。供 directory 懒加载用。
+        返回 (是否有效, 公司名 | None)。
+        """
+        yf_symbol = _to_yfinance_ticker(symbol)
+        try:
+            ticker = await asyncio.to_thread(lambda: yf.Ticker(yf_symbol))
+            info = await asyncio.to_thread(lambda: ticker.fast_info)
+            if not getattr(info, "last_price", None):
+                return False, None
+            long_name = await asyncio.to_thread(
+                lambda: getattr(ticker, "info", {}).get("longName"),
+            )
+            return True, long_name
+        except Exception:  # noqa: BLE001
+            return False, None
+
     async def health(self) -> HealthStatus:
         if not self.has_primary:
             return HealthStatus(name="us", state="disabled", detail="missing ALPACA_API_KEY")
