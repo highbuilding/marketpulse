@@ -121,6 +121,18 @@ async def test_fetch_intraday_drops_nan():
 
 
 @pytest.mark.asyncio
+async def test_fetch_intraday_drops_high_low_nan():
+    """High 或 Low NaN 时也要丢弃,避免 Decimal('nan')。"""
+    df = _mock_intraday_df().copy()
+    df.iloc[0, df.columns.get_loc("High")] = float("nan")
+    adapter = USAdapter()
+    with patch("core.adapters.us.yf") as mock_yf:
+        mock_yf.download = MagicMock(return_value=df)
+        bars = await adapter.fetch_intraday("AAPL", freq="60")
+    assert len(bars) == 1  # 第一行 High NaN, 被丢弃
+
+
+@pytest.mark.asyncio
 async def test_fetch_intraday_period_mapping():
     """1m freq → period=7d, 其他 → 60d, prepost 始终 True。"""
     adapter = USAdapter()

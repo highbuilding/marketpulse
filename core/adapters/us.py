@@ -122,8 +122,8 @@ class USAdapter:
                 )
             else:
                 ts_utc = idx.tz_convert("UTC").to_pydatetime()
-            # 跳过 NaN 行(yfinance 在 prepost 时段偶发)
-            if pd.isna(row["Open"]) or pd.isna(row["Close"]):
+            # 跳过 OHLC 任何字段 NaN 的行(yfinance 在 prepost 时段偶发)
+            if any(pd.isna(row[c]) for c in ("Open", "High", "Low", "Close")):
                 continue
             vol = int(row["Volume"]) if not pd.isna(row["Volume"]) else 0
             out.append(Bar(
