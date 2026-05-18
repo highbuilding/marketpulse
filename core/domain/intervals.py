@@ -34,7 +34,7 @@ _SPECS: list[IntervalSpec] = [
     IntervalSpec("15m", "15分",   True,  True,  1000, 16, False),
     IntervalSpec("30m", "30分",   True,  True,  500,  8,  False),
     IntervalSpec("60m", "1小时",  True,  True,  400,  4,  False),
-    IntervalSpec("4h",  "4小时",  True,  True,  500,  1,  True),
+    IntervalSpec("4h",  "4小时",  True,  True,  500,  1,  False),
     # 日 / 周 / 月
     IntervalSpec("1d",  "日线",   True,  True,  500,  1,  False),
     IntervalSpec("1wk", "周线",   True,  False, 0,    1,  False),

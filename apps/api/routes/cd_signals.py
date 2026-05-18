@@ -19,7 +19,7 @@ from apps.api.deps import (
     get_signal_repo, get_signal_scan_service, get_watchlist_service,
 )
 from core.domain.intervals import SIGNAL_INTERVALS, SIGNAL_INTERVALS_SET
-from core.domain.markets import is_crypto
+from core.domain.markets import infer_market
 from core.persistence.signal_repo import SignalRepo
 from core.services.signal_service import SignalScanService
 from core.services.watchlist_service import WatchlistService
@@ -110,17 +110,21 @@ async def by_symbol(
 @router.get("/watchlist-events", response_model=ListResponse)
 async def watchlist_events(
     interval: str = Query(...),
+    market: str | None = Query(None),
     limit: int = Query(100, ge=1, le=500),
     repo: SignalRepo = Depends(get_signal_repo),
     wl_svc: WatchlistService = Depends(get_watchlist_service),
 ) -> ListResponse:
     """关注列表的所有标的在指定周期上的最近 N 条信号(按 bar_ts 倒序)。
-    4h 仅 crypto 标的有意义(股票 4h≡1d), 自动按市场过滤。"""
+    market 给定时按市场过滤;4h 仅在 us + crypto 标的上有意义,股票市场 4h ≡ 1d。
+    """
     if interval not in SIGNAL_INTERVALS_SET:
         raise HTTPException(400, f"unsupported interval: {interval}")
     symbols = await wl_svc.dynamic_universe()
+    if market:
+        symbols = [s for s in symbols if infer_market(s) == market]
     if interval == "4h":
-        symbols = [s for s in symbols if is_crypto(s)]
+        symbols = [s for s in symbols if infer_market(s) in ("crypto", "us")]
     if not symbols:
         return ListResponse(signals=[])
     sigs = await repo.list_recent(intervals=[interval], symbols=symbols, limit=limit)
