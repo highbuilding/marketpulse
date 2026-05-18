@@ -49,6 +49,7 @@ async def lifespan(app: FastAPI):
     # 导致后续任何 mini_racer 调用 SIGABRT。所以平时启动跳过, 让现有 directory 行存活。
     dir_svc = get_symbol_directory_service()
     await dir_svc.bootstrap_seeds()
+    await dir_svc.bootstrap_us_seeds()
     if not os.getenv("MARKETPULSE_SKIP_DIR_BOOTSTRAP"):
         existing = await dir_svc.count()
         if existing < 100:

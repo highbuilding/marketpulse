@@ -4,6 +4,7 @@ import structlog
 
 from core.integrations.akshare import ak_call
 from core.persistence.symbol_directory_repo import SymbolDirectoryRepo
+from core.services._us_seeds import US_SEEDS
 
 log = structlog.get_logger(__name__)
 
@@ -37,6 +38,15 @@ class SymbolDirectoryService:
     async def bootstrap_seeds(self) -> None:
         """写入指数种子(快,启动时同步跑)."""
         await self.repo.upsert_many(_INDEX_SEEDS)
+
+    async def bootstrap_us_seeds(self) -> int:
+        """美股静态 seeds, 启动时刷一次。纯本地写库, 无外部调用。"""
+        n = await self.repo.upsert_many(US_SEEDS)
+        log.info("symbol_directory.us_seeds_bootstrapped", count=n)
+        return n
+
+    async def upsert_one(self, symbol: str, name: str, market: str) -> None:
+        await self.repo.upsert_many([(symbol, name, market)])
 
     async def refresh_ashare(self) -> int:
         """A 股 + ETF code+name,sina 通道。"""
