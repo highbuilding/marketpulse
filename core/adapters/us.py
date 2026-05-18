@@ -137,22 +137,33 @@ class USAdapter:
         return out
 
     async def fetch_history(self, symbol: str, start: datetime, end: datetime) -> list[Bar]:
+        """1d 历史。ts 与 A 股雷区 3 对称: normalize 为该市场本地交易日 00:00 → UTC。
+        美股本地 = America/New_York(自动跟夏/冬令时)。
+        """
+        yf_symbol = _to_yfinance_ticker(symbol)
         df = await asyncio.to_thread(
-            yf.download, symbol,
+            yf.download, yf_symbol,
             start=start.strftime("%Y-%m-%d"),
             end=end.strftime("%Y-%m-%d"),
-            progress=False,
+            progress=False, auto_adjust=False,
         )
         out: list[Bar] = []
         for idx, row in df.iterrows():
+            if idx.tzinfo is None:
+                local_midnight = idx.tz_localize("America/New_York")
+            else:
+                local_midnight = idx.tz_convert("America/New_York")
+            ts_utc = local_midnight.normalize().tz_convert("UTC").to_pydatetime()
+            # 跳过 OHLC 任何字段 NaN 的行(与 fetch_intraday 一致)
+            if any(pd.isna(row[c]) for c in ("Open", "High", "Low", "Close")):
+                continue
             out.append(Bar(
-                market="us", symbol=symbol,
-                ts=datetime.fromtimestamp(idx.timestamp(), tz=timezone.utc),
+                market="us", symbol=symbol, ts=ts_utc,
                 open=Decimal(str(float(row["Open"]))),
                 high=Decimal(str(float(row["High"]))),
                 low=Decimal(str(float(row["Low"]))),
                 close=Decimal(str(float(row["Close"]))),
-                volume=int(row["Volume"]),
+                volume=int(row["Volume"]) if not pd.isna(row["Volume"]) else 0,
                 interval="1d",
             ))
         return out

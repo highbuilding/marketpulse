@@ -149,3 +149,52 @@ async def test_fetch_intraday_period_mapping():
     assert mock_yf.download.call_args.kwargs["period"] == "60d"
     assert mock_yf.download.call_args.kwargs["interval"] == "60m"
     assert mock_yf.download.call_args.kwargs["prepost"] is True
+
+
+# ── fetch_history ───────────────────────────────────────────────────────────
+
+
+def _mock_history_df():
+    """yfinance.download(start, end) 在 1d 模式返回 naive index, 类型 DatetimeIndex。"""
+    idx = pd.DatetimeIndex(["2026-05-15", "2026-05-16"])
+    return pd.DataFrame({
+        "Open":   [200.0, 201.0],
+        "High":   [202.0, 203.0],
+        "Low":    [199.0, 200.0],
+        "Close":  [201.0, 202.0],
+        "Volume": [1000000, 900000],
+    }, index=idx)
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_normalizes_to_et_midnight():
+    """1d ts 必须 normalize 为 ET 自然交易日 00:00 → UTC。
+    2026-05-15 00:00 ET (EDT, UTC-4) → 2026-05-15 04:00 UTC。"""
+    adapter = USAdapter()
+    with patch("core.adapters.us.yf") as mock_yf:
+        mock_yf.download = MagicMock(return_value=_mock_history_df())
+        bars = await adapter.fetch_history(
+            "AAPL",
+            datetime(2026, 5, 1, tzinfo=timezone.utc),
+            datetime(2026, 5, 20, tzinfo=timezone.utc),
+        )
+    assert len(bars) == 2
+    assert bars[0].ts == datetime(2026, 5, 15, 4, 0, tzinfo=timezone.utc)
+    assert bars[1].ts == datetime(2026, 5, 16, 4, 0, tzinfo=timezone.utc)
+    assert bars[0].interval == "1d"
+    assert bars[0].market == "us"
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_class_share():
+    """业务层 BRK.B → yfinance 收到 BRK-B, Bar.symbol 仍 BRK.B。"""
+    adapter = USAdapter()
+    with patch("core.adapters.us.yf") as mock_yf:
+        mock_yf.download = MagicMock(return_value=_mock_history_df())
+        bars = await adapter.fetch_history(
+            "BRK.B",
+            datetime(2026, 5, 1, tzinfo=timezone.utc),
+            datetime(2026, 5, 20, tzinfo=timezone.utc),
+        )
+    assert mock_yf.download.call_args.args[0] == "BRK-B"
+    assert bars[0].symbol == "BRK.B"
