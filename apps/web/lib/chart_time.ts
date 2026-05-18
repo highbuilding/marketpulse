@@ -1,5 +1,5 @@
 import { TickMarkType, type Time } from 'lightweight-charts'
-import { marketTz, type Market } from './markets'
+import { type Market } from './markets'
 
 // 用 Intl.DateTimeFormat 按市场时区取 Y/M/D/H/m/s parts。
 function tzParts(time: Time, _market: Market): {
@@ -43,6 +43,3 @@ export function makeChartTickFormatter(market: Market) {
 // 兼容老调用: 默认 ashare(IndexCard 等少数旧组件继续用)
 export const fmtChartCrosshair = makeChartCrosshairFormatter('ashare')
 export const fmtChartTick = makeChartTickFormatter('ashare')
-
-// 占位防 unused-import 警告(marketTz 在内部 tzParts 不显式调用, 但 Market 来自 markets.ts)
-void marketTz

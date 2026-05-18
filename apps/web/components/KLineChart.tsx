@@ -6,7 +6,7 @@ import {
 } from 'lightweight-charts'
 import { useEffect, useMemo, useRef } from 'react'
 
-import { tzOffsetSeconds, type Market } from '@/lib/markets'
+import { marketTz, tzOffsetSeconds, type Market } from '@/lib/markets'
 import { makeChartCrosshairFormatter, makeChartTickFormatter } from '@/lib/chart_time'
 import type { BarDTO, Interval } from '@/lib/types'
 
@@ -31,9 +31,7 @@ function toBarTime(iso: string, interval: Interval, market: Market): Time {
   }
   // 日线: 按市场时区切日历
   return new Date(iso).toLocaleDateString('en-CA',
-    { timeZone: market === 'us' ? 'America/New_York'
-              : market === 'hk' ? 'Asia/Hong_Kong'
-              : 'Asia/Shanghai' }) as Time
+    { timeZone: marketTz(market) }) as Time
 }
 
 function fmtPrice(v: number): string {
