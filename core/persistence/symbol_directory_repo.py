@@ -53,22 +53,33 @@ class SymbolDirectoryRepo:
             rows = await cur.fetchall()
         return {r["symbol"]: r["name"] for r in rows}
 
-    async def search(self, query: str, limit: int = 20) -> list[tuple[str, str, str]]:
-        """模糊搜索:matched on symbol prefix OR name substring."""
+    async def search(
+        self, query: str, limit: int = 20,
+        *, market: str | None = None,
+    ) -> list[tuple[str, str, str]]:
+        """模糊搜索: symbol prefix 或 name 子串。可按 market 过滤。"""
         q = query.strip()
         if not q:
             return []
         like = f"%{q}%"
         prefix = f"{q.upper()}%"
+        params: list = [prefix, like]
+        sql = """
+            SELECT symbol, name, market FROM symbol_directory
+            WHERE (symbol LIKE ? OR name LIKE ?)
+        """
+        if market:
+            sql += " AND market = ?"
+            params.append(market)
+        sql += """
+            ORDER BY
+              CASE WHEN symbol LIKE ? THEN 0 ELSE 1 END,
+              symbol
+            LIMIT ?
+        """
+        params.extend([prefix, limit])
         async with self._connect() as db:
-            cur = await db.execute("""
-                SELECT symbol, name, market FROM symbol_directory
-                WHERE symbol LIKE ? OR name LIKE ?
-                ORDER BY
-                  CASE WHEN symbol LIKE ? THEN 0 ELSE 1 END,
-                  symbol
-                LIMIT ?
-            """, (prefix, like, prefix, limit))
+            cur = await db.execute(sql, params)
             rows = await cur.fetchall()
         return [(r["symbol"], r["name"], r["market"]) for r in rows]
 

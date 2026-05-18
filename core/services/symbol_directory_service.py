@@ -88,8 +88,11 @@ class SymbolDirectoryService:
     async def get_names(self, symbols: list[str]) -> dict[str, str]:
         return await self.repo.get_names(symbols)
 
-    async def search(self, query: str, limit: int = 20) -> list[tuple[str, str, str]]:
-        return await self.repo.search(query, limit)
+    async def search(
+        self, query: str, limit: int = 20,
+        *, market: str | None = None,
+    ) -> list[tuple[str, str, str]]:
+        return await self.repo.search(query, limit, market=market)
 
     async def count(self) -> int:
         return await self.repo.count()

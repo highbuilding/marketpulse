@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from apps.api.deps import (
-    get_fund_flow_service, get_kline_service, get_quote_cache, get_symbol_directory_service,
+    get_fund_flow_service, get_kline_service, get_quote_cache,
+    get_registry, get_symbol_directory_service,
 )
+from core.adapters.registry import AdapterRegistry
 from core.cache.quote_cache import QuoteCache
 from core.domain.intervals import KLINE_INTERVALS
 from core.domain.markets import infer_market
@@ -16,6 +19,13 @@ from core.services.kline_service import KLineService
 from core.services.symbol_directory_service import SymbolDirectoryService
 
 router = APIRouter(prefix="/api/symbols", tags=["symbols"])
+
+_US_TICKER_RE = re.compile(r"^[A-Z]{1,5}(\.[A-Z])?$")
+
+
+def _looks_like_us_ticker(q: str) -> bool:
+    """1-5 个大写字母, 可选 .X 一字母后缀(如 BRK.B / BF.A)。"""
+    return bool(_US_TICKER_RE.match(q.upper()))
 
 
 class BarDTO(BaseModel):
@@ -79,13 +89,30 @@ class SearchResponse(BaseModel):
 @router.get("/search", response_model=SearchResponse)
 async def search(
     q: str = Query(..., min_length=1, max_length=50),
+    market: str | None = Query(None),
     limit: int = Query(20, ge=1, le=50),
     svc: SymbolDirectoryService = Depends(get_symbol_directory_service),
+    registry: AdapterRegistry = Depends(get_registry),
 ) -> SearchResponse:
-    hits = await svc.search(q, limit)
-    return SearchResponse(query=q, hits=[
-        SearchHit(symbol=s, name=n, market=m) for s, n, m in hits
-    ])
+    hits = await svc.search(q, limit, market=market)
+    if hits:
+        return SearchResponse(query=q, hits=[
+            SearchHit(symbol=s, name=n, market=m) for s, n, m in hits
+        ])
+    # 美股懒加载: market 为 'us' 或未指定, 且 q 像 US ticker → yfinance verify
+    if market in (None, "us") and _looks_like_us_ticker(q):
+        try:
+            us_adapter = registry.get("us")
+        except KeyError:
+            return SearchResponse(query=q, hits=[])
+        sym = q.upper()
+        ok, name = await us_adapter.verify_ticker(sym)
+        if ok:
+            await svc.upsert_one(sym, name or sym, "us")
+            return SearchResponse(query=q, hits=[
+                SearchHit(symbol=sym, name=name or sym, market="us"),
+            ])
+    return SearchResponse(query=q, hits=[])
 
 
 
