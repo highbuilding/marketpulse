@@ -103,15 +103,16 @@ async def search(
     if market in (None, "us") and _looks_like_us_ticker(q):
         try:
             us_adapter = registry.get("us")
-        except KeyError:
-            return SearchResponse(query=q, hits=[])
-        sym = q.upper()
-        ok, name = await us_adapter.verify_ticker(sym)
-        if ok:
-            await svc.upsert_one(sym, name or sym, "us")
-            return SearchResponse(query=q, hits=[
-                SearchHit(symbol=sym, name=name or sym, market="us"),
-            ])
+            sym = q.upper()
+            ok, name = await us_adapter.verify_ticker(sym)
+            if ok:
+                await svc.upsert_one(sym, name or sym, "us")
+                return SearchResponse(query=q, hits=[
+                    SearchHit(symbol=sym, name=name or sym, market="us"),
+                ])
+        except Exception:  # noqa: BLE001
+            # 网络 / DB 写失败 → 静默降级到 hits=[]
+            pass
     return SearchResponse(query=q, hits=[])
 
 
