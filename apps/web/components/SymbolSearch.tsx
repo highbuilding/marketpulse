@@ -7,10 +7,11 @@ import type { SearchHit } from '@/lib/types'
 
 interface Props {
   placeholder?: string
+  market?: string  // 限定搜索 scope, 例 'us' / 'ashare';未传则全市场搜
   onSelect: (hit: SearchHit) => void
 }
 
-export function SymbolSearch({ placeholder = '搜索代码或名称…', onSelect }: Props) {
+export function SymbolSearch({ placeholder = '搜索代码或名称…', market, onSelect }: Props) {
   const [q, setQ] = useState('')
   const [hits, setHits] = useState<SearchHit[]>([])
   const [open, setOpen] = useState(false)
@@ -27,7 +28,7 @@ export function SymbolSearch({ placeholder = '搜索代码或名称…', onSelec
     debounceRef.current = setTimeout(async () => {
       setLoading(true)
       try {
-        const resp = await searchSymbols(q.trim(), 15)
+        const resp = await searchSymbols(q.trim(), 15, market)
         setHits(resp.hits)
         setOpen(true)
       } catch {
@@ -39,7 +40,7 @@ export function SymbolSearch({ placeholder = '搜索代码或名称…', onSelec
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current)
     }
-  }, [q])
+  }, [q, market])
 
   // 点击外部关闭
   useEffect(() => {
