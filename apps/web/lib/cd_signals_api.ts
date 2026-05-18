@@ -31,9 +31,10 @@ export async function listCDSignalsBySymbol(
 }
 
 export async function fetchWatchlistEvents(
-  interval: string, limit = 100,
+  interval: string, limit = 100, market?: string,
 ): Promise<{ signals: CDSignalDTO[] }> {
   const sp = new URLSearchParams({ interval, limit: String(limit) })
+  if (market) sp.set('market', market)
   const r = await fetch(`/api/cd-signals/watchlist-events?${sp}`, { cache: 'no-store' })
   if (!r.ok) throw new Error(`${r.status}`)
   return r.json()

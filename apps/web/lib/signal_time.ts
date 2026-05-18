@@ -1,30 +1,40 @@
 import type { AnySignalInterval } from './types'
+import type { Market } from './markets'
+import { marketTz, todayKey, tradingDateKey } from './markets'
 
-// 北京时间(UTC+8)的 YYYY-MM-DD,与"自然交易日"对齐 ——
-// 5.5 收盘后跨过 BJT 00:00 进入 5.6, 5.5 的 bar 自然进入"历史"。
-export function bjtDateKey(iso: string): string {
-  return new Date(iso).toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' })
+// adapter 已把 1d ts normalize 为本市场自然交易日 00:00, 这里直通。
+export function effectiveTsIso(iso: string, _interval: AnySignalInterval): string {
+  return iso
 }
 
-// 1d bar 的 bar_ts 是 sina 的 "收盘日 16:00 UTC" = BJT 次日 00:00,
-// 显示和切分都按"收盘当日"语义处理 —— 把 1d ts 减 8h 再算 BJT 日期。
-export function effectiveTsIso(iso: string, interval: AnySignalInterval): string {
-  if (interval !== '1d') return iso
-  const t = new Date(iso).getTime() - 8 * 3600_000
-  return new Date(t).toISOString()
+// BJT 自然日 key, 保留作 A 股专用别名(老代码兼容)
+export function bjtDateKey(iso: string): string {
+  return tradingDateKey(iso, 'ashare')
 }
 
 export function todayBjtKey(): string {
-  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' })
+  return todayKey('ashare')
 }
 
-export function fmtSignalTs(iso: string, interval: AnySignalInterval): string {
-  const d = new Date(effectiveTsIso(iso, interval))
-  const yyyy = d.getFullYear()
-  const mm = String(d.getMonth() + 1).padStart(2, '0')
-  const dd = String(d.getDate()).padStart(2, '0')
-  if (interval === '1d') return `${yyyy}-${mm}-${dd}`
-  const hh = String(d.getHours()).padStart(2, '0')
-  const mi = String(d.getMinutes()).padStart(2, '0')
-  return `${yyyy}-${mm}-${dd} ${hh}:${mi}`
+// Market-aware: 按市场时区切分交易日 key
+export function marketDateKey(iso: string, market: Market): string {
+  return tradingDateKey(iso, market)
+}
+
+export function fmtSignalTs(
+  iso: string,
+  interval: AnySignalInterval,
+  market: Market = 'ashare',
+): string {
+  const tz = marketTz(market)
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  })
+  const parts = fmt.formatToParts(new Date(iso))
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? ''
+  if (interval === '1d') {
+    return `${get('year')}-${get('month')}-${get('day')}`
+  }
+  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`
 }

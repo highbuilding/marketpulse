@@ -39,7 +39,7 @@ export function SignalsTable({
           return (
             <tr key={s.id} className="border-t border-neutral-800">
               <td className="py-1 font-mono text-neutral-300 whitespace-nowrap">
-                {fmtSignalTs(s.bar_ts, interval)}
+                {fmtSignalTs(s.bar_ts, interval, 'ashare')}
               </td>
               {showSymbol && (
                 <td>

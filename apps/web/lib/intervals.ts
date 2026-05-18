@@ -8,7 +8,7 @@ export interface IntervalSpec {
   labelCn: string
   isKline: boolean       // 暴露给 K 线 chart / bars 接口
   isSignal: boolean      // 会被 CD 扫描
-  cryptoOnly: boolean    // 仅在 crypto 市场展示(目前只有 4h)
+  cryptoOnly: boolean    // 历史字段, 已废弃: 4h tab 可见性由前端按 market 控制
 }
 
 export const INTERVAL_SPECS: IntervalSpec[] = [
@@ -17,7 +17,7 @@ export const INTERVAL_SPECS: IntervalSpec[] = [
   { key: '15m', labelCn: '15分',   isKline: true,  isSignal: true,  cryptoOnly: false },
   { key: '30m', labelCn: '30分',   isKline: true,  isSignal: true,  cryptoOnly: false },
   { key: '60m', labelCn: '1小时',  isKline: true,  isSignal: true,  cryptoOnly: false },
-  { key: '4h',  labelCn: '4小时',  isKline: true,  isSignal: true,  cryptoOnly: true  },
+  { key: '4h',  labelCn: '4小时',  isKline: true,  isSignal: true,  cryptoOnly: false },
   { key: '1d',  labelCn: '日线',   isKline: true,  isSignal: true,  cryptoOnly: false },
   { key: '1wk', labelCn: '周线',   isKline: true,  isSignal: false, cryptoOnly: false },
   { key: '1mo', labelCn: '月线',   isKline: true,  isSignal: false, cryptoOnly: false },
@@ -31,23 +31,27 @@ export function intervalLabel(key: Interval): string {
   return BY_KEY[key]?.labelCn ?? key
 }
 
-// K 线 tab(详情页用): 按 market 过滤 cryptoOnly
+// K 线 tab(详情页用): 4h 仅 us+crypto 显示
 export function klineTabsForMarket(
   market: string | null,
 ): { key: Interval; label: string }[] {
+  const allowFourH = market === 'us' || market === 'crypto'
   return INTERVAL_SPECS
-    .filter((s) => s.isKline && (!s.cryptoOnly || market === 'crypto'))
+    .filter((s) => s.isKline && (s.key !== '4h' || allowFourH))
     .map((s) => ({ key: s.key, label: s.labelCn }))
 }
 
-// 详情页 CDSignalPanel tab: 4 个固定信号周期 - 4h
-export function detailSignalTabs(): { key: DetailSignalInterval; label: string }[] {
+// 详情页 CDSignalPanel tab: 信号周期, 4h 仅 us+crypto 显示
+export function detailSignalTabs(
+  market: string | null,
+): { key: DetailSignalInterval; label: string }[] {
+  const allowFourH = market === 'us' || market === 'crypto'
   return INTERVAL_SPECS
-    .filter((s) => s.isSignal && !s.cryptoOnly)
+    .filter((s) => s.isSignal && (s.key !== '4h' || allowFourH))
     .map((s) => ({ key: s.key as DetailSignalInterval, label: s.labelCn }))
 }
 
-// 关注页 WatchlistSignalsPanel tab: 全部信号周期, 4h 仅在含 crypto 标的时出现(由调用方再过滤)
+// 关注页 WatchlistSignalsPanel tab: 全部信号周期, 4h 由调用方按 market 过滤
 export function allSignalTabs(): { key: AnySignalInterval; label: string }[] {
   return INTERVAL_SPECS
     .filter((s) => s.isSignal)

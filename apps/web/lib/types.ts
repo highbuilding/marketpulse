@@ -100,7 +100,7 @@ export interface SearchHit {
 }
 
 export type AnySignalInterval = '15m' | '30m' | '60m' | '4h' | '1d'
-export type DetailSignalInterval = '15m' | '30m' | '60m' | '1d'
+export type DetailSignalInterval = '15m' | '30m' | '60m' | '4h' | '1d'
 
 export interface CDSignalDTO {
   id: number

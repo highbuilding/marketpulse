@@ -33,8 +33,12 @@ export async function fetchSymbolQuote(symbol: string): Promise<SymbolQuote> {
   return r.json()
 }
 
-export async function searchSymbols(q: string, limit = 20): Promise<{ query: string; hits: SearchHit[] }> {
-  const r = await fetch(`/api/symbols/search?q=${encodeURIComponent(q)}&limit=${limit}`, { cache: 'no-store' })
+export async function searchSymbols(
+  q: string, limit = 20, market?: string,
+): Promise<{ query: string; hits: SearchHit[] }> {
+  const sp = new URLSearchParams({ q, limit: String(limit) })
+  if (market) sp.set('market', market)
+  const r = await fetch(`/api/symbols/search?${sp}`, { cache: 'no-store' })
   if (!r.ok) throw new Error(`${r.status}`)
   return r.json()
 }
