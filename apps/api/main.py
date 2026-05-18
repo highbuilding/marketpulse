@@ -19,7 +19,8 @@ from apps.api.routes import (
 )
 from apps.api.ws import ticks
 from core.scheduler.scheduler import (
-    attach_fundamentals_jobs, attach_signal_jobs, build_scheduler,
+    attach_fundamentals_jobs, attach_signal_jobs, attach_us_signal_jobs,
+    build_scheduler,
 )
 
 log = structlog.get_logger(__name__)
@@ -67,6 +68,11 @@ async def lifespan(app: FastAPI):
         sector=get_sector_service(),
     )
     attach_signal_jobs(
+        sched,
+        signal_scan=get_signal_scan_service(),
+        watchlist=get_watchlist_service(),
+    )
+    attach_us_signal_jobs(
         sched,
         signal_scan=get_signal_scan_service(),
         watchlist=get_watchlist_service(),

@@ -118,3 +118,63 @@ def attach_signal_jobs(
         id="cd:1d", kwargs={"interval": "1d", "market_filter": "ashare"}, **common,
     )
     log.info("scheduler.signal_jobs_attached")
+
+
+def attach_us_signal_jobs(
+    sched: AsyncIOScheduler,
+    *, signal_scan: SignalScanService, watchlist: WatchlistService,
+) -> None:
+    """美股 CD 信号扫描 cron(ET 时区, APScheduler 自动跟夏/冬令时)。
+
+    扫描区间: 盘前 04:00 ET 到盘后 20:00 ET, 共 16 小时。
+    所有 job 带 market_filter='us', 避免与 A 股 cron 互相污染。
+    """
+    common = dict(args=(signal_scan, watchlist), max_instances=1, coalesce=True,
+                  misfire_grace_time=300)
+    et = "America/New_York"
+
+    # 15m: ET 04:00-19:45 每 15 分钟
+    sched.add_job(
+        scan_cd_job,
+        CronTrigger(day_of_week="mon-fri", hour="4-19", minute="*/15", timezone=et),
+        id="cd:us:15m",
+        kwargs={"interval": "15m", "market_filter": "us"},
+        **common,
+    )
+
+    # 30m: ET 04:00-19:30 每 30 分钟
+    sched.add_job(
+        scan_cd_job,
+        CronTrigger(day_of_week="mon-fri", hour="4-19", minute="*/30", timezone=et),
+        id="cd:us:30m",
+        kwargs={"interval": "30m", "market_filter": "us"},
+        **common,
+    )
+
+    # 60m: 每根收盘 +5 min, ET 05:05 - 20:05 每小时
+    sched.add_job(
+        scan_cd_job,
+        CronTrigger(day_of_week="mon-fri", hour="5-20", minute="5", timezone=et),
+        id="cd:us:60m",
+        kwargs={"interval": "60m", "market_filter": "us"},
+        **common,
+    )
+
+    # 4h: 收盘点 ET 08:00 / 12:00 / 16:00 / 20:00, 各 +5
+    sched.add_job(
+        scan_cd_job,
+        CronTrigger(day_of_week="mon-fri", hour="8,12,16,20", minute="5", timezone=et),
+        id="cd:us:4h",
+        kwargs={"interval": "4h", "market_filter": "us"},
+        **common,
+    )
+
+    # 1d: 盘后定稿 ET 20:05
+    sched.add_job(
+        scan_cd_job,
+        CronTrigger(day_of_week="mon-fri", hour="20", minute="5", timezone=et),
+        id="cd:us:1d",
+        kwargs={"interval": "1d", "market_filter": "us"},
+        **common,
+    )
+    log.info("scheduler.us_signal_jobs_attached")
