@@ -25,3 +25,16 @@ async def test_scan_cd_job_skips_when_watchlist_empty():
     svc.scan_many = AsyncMock()
     await scan_cd_job(svc, wl, interval="1d")
     svc.scan_many.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_scan_cd_job_passes_market_filter():
+    """显式传入的 market_filter 必须透传给 scan_many。"""
+    wl = MagicMock()
+    wl.dynamic_universe = AsyncMock(return_value=["AAPL", "600519.SH"])
+    svc = MagicMock()
+    svc.scan_many = AsyncMock(return_value=0)
+    await scan_cd_job(svc, wl, interval="1d", market_filter="ashare")
+    svc.scan_many.assert_awaited_once_with(
+        ["AAPL", "600519.SH"], "1d", market_filter="ashare",
+    )
