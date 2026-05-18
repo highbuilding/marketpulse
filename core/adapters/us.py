@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Callable
 
+import pandas as pd
 import structlog
 import yfinance as yf
 
@@ -13,6 +14,13 @@ from core.adapters.base import AdapterError, CircuitBreaker
 from core.domain.models import Bar, HealthStatus, Quote
 
 log = structlog.get_logger(__name__)
+
+
+def _to_yfinance_ticker(symbol: str) -> str:
+    """Class share 字符转换: BRK.B → BRK-B(yfinance 格式)。
+    业务层永远见 BRK.B, adapter 进出口转换。
+    """
+    return symbol.replace(".", "-")
 
 
 class USAdapter:
@@ -86,6 +94,47 @@ class USAdapter:
 
     async def subscribe(self, symbols: list[str], on_bar: Callable[[Bar], None]) -> None:
         raise NotImplementedError("use scheduler polling for us in V1")
+
+    async def fetch_intraday(self, symbol: str, freq: str = "5") -> list[Bar]:
+        """freq: '1'/'5'/'15'/'30'/'60' min。
+        yfinance 限制: 1m=7d, 5m/15m/30m/60m=60d。prepost=True 拿盘前盘后。
+        """
+        interval_map = {"1": "1m", "5": "5m", "15": "15m",
+                        "30": "30m", "60": "60m"}
+        if freq not in interval_map:
+            raise ValueError(f"unsupported freq: {freq}")
+        yf_interval = interval_map[freq]
+        period = "7d" if freq == "1" else "60d"
+        yf_symbol = _to_yfinance_ticker(symbol)
+        df = await asyncio.to_thread(
+            yf.download, yf_symbol,
+            period=period, interval=yf_interval,
+            prepost=True, progress=False, auto_adjust=False,
+        )
+        out: list[Bar] = []
+        for idx, row in df.iterrows():
+            # yfinance intraday 通常返回 ET 时区的 index
+            if idx.tzinfo is None:
+                ts_utc = (
+                    idx.tz_localize("America/New_York")
+                    .tz_convert("UTC")
+                    .to_pydatetime()
+                )
+            else:
+                ts_utc = idx.tz_convert("UTC").to_pydatetime()
+            # 跳过 NaN 行(yfinance 在 prepost 时段偶发)
+            if pd.isna(row["Open"]) or pd.isna(row["Close"]):
+                continue
+            vol = int(row["Volume"]) if not pd.isna(row["Volume"]) else 0
+            out.append(Bar(
+                market="us", symbol=symbol, ts=ts_utc,
+                open=Decimal(str(float(row["Open"]))),
+                high=Decimal(str(float(row["High"]))),
+                low=Decimal(str(float(row["Low"]))),
+                close=Decimal(str(float(row["Close"]))),
+                volume=vol, interval=f"{freq}m",
+            ))
+        return out
 
     async def fetch_history(self, symbol: str, start: datetime, end: datetime) -> list[Bar]:
         df = await asyncio.to_thread(
