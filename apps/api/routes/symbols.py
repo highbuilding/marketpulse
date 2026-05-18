@@ -10,6 +10,7 @@ from apps.api.deps import (
 )
 from core.cache.quote_cache import QuoteCache
 from core.domain.intervals import KLINE_INTERVALS
+from core.domain.markets import infer_market
 from core.services.fund_flow_service import FundFlowService
 from core.services.kline_service import KLineService
 from core.services.symbol_directory_service import SymbolDirectoryService
@@ -87,14 +88,6 @@ async def search(
     ])
 
 
-def _infer_market(symbol: str) -> str | None:
-    if symbol.endswith((".SH", ".SZ", ".BJ")):
-        return "ashare"
-    if symbol.endswith(".HK"):
-        return "hk"
-    if "/" in symbol:
-        return "crypto"
-    return "us"
 
 
 @router.get("/profiles", response_model=ProfilesResponse)
@@ -109,7 +102,7 @@ async def profiles(
         return ProfilesResponse(profiles=[])
     names = await svc.get_names(syms)
     return ProfilesResponse(profiles=[
-        ProfileResponse(symbol=s, name=names.get(s), market=_infer_market(s))
+        ProfileResponse(symbol=s, name=names.get(s), market=infer_market(s))
         for s in syms
     ])
 
@@ -120,7 +113,7 @@ async def profile(
     svc: SymbolDirectoryService = Depends(get_symbol_directory_service),
 ) -> ProfileResponse:
     name = await svc.get_name(symbol)
-    return ProfileResponse(symbol=symbol, name=name, market=_infer_market(symbol))
+    return ProfileResponse(symbol=symbol, name=name, market=infer_market(symbol))
 
 
 @router.get("/{symbol}/quote", response_model=QuoteResponse)
@@ -128,7 +121,7 @@ async def quote(
     symbol: str,
     cache: QuoteCache = Depends(get_quote_cache),
 ) -> QuoteResponse:
-    market = _infer_market(symbol)
+    market = infer_market(symbol)
     q = cache.get(market, symbol) if market else None
     if q is None:
         return QuoteResponse(symbol=symbol, price=None, change_pct=None, volume=None, ts=None)

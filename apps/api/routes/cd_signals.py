@@ -19,17 +19,12 @@ from apps.api.deps import (
     get_signal_repo, get_signal_scan_service, get_watchlist_service,
 )
 from core.domain.intervals import SIGNAL_INTERVALS, SIGNAL_INTERVALS_SET
+from core.domain.markets import is_crypto
 from core.persistence.signal_repo import SignalRepo
 from core.services.signal_service import SignalScanService
 from core.services.watchlist_service import WatchlistService
 
 router = APIRouter(prefix="/api/cd-signals", tags=["cd-signals"])
-
-
-def _is_crypto(symbol: str) -> bool:
-    """股票后缀 .SH/.SZ/.BJ/.HK 之外的视为 crypto。
-    美股 ticker 无后缀(AAPL 等), 这里也算非 crypto。"""
-    return not symbol.endswith((".SH", ".SZ", ".BJ", ".HK")) and "/" in symbol
 
 
 SignalIntervalT = Literal["15m", "30m", "60m", "4h", "1d"]
@@ -125,7 +120,7 @@ async def watchlist_events(
         raise HTTPException(400, f"unsupported interval: {interval}")
     symbols = await wl_svc.dynamic_universe()
     if interval == "4h":
-        symbols = [s for s in symbols if _is_crypto(s)]
+        symbols = [s for s in symbols if is_crypto(s)]
     if not symbols:
         return ListResponse(signals=[])
     sigs = await repo.list_recent(intervals=[interval], symbols=symbols, limit=limit)

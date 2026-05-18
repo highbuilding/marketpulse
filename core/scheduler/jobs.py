@@ -4,21 +4,12 @@ import structlog
 
 from core.adapters.registry import AdapterRegistry
 from core.cache.quote_cache import QuoteCache
+from core.domain.markets import infer_market
 from core.domain.models import Bar
 from core.persistence.duckdb_repo import BarRepo
 from core.services.watchlist_service import WatchlistService
 
 log = structlog.get_logger(__name__)
-
-
-def _market_of(symbol: str) -> str | None:
-    if symbol.endswith((".SH", ".SZ", ".BJ")):
-        return "ashare"
-    if symbol.endswith(".HK"):
-        return "hk"
-    if "/" in symbol:
-        return "crypto"
-    return "us"  # 美股 ticker 无后缀(AAPL, MSFT…)
 
 
 async def tick_snapshot_once(
@@ -32,7 +23,7 @@ async def tick_snapshot_once(
     # 关注列表里属于本 market 的标的也带上, 让用户加的任意 symbol 都能拿到 quote
     try:
         wl_symbols = await watchlist.dynamic_universe()
-        base |= {s for s in wl_symbols if _market_of(s) == market}
+        base |= {s for s in wl_symbols if infer_market(s) == market}
     except Exception as e:  # noqa: BLE001
         log.warning("tick.watchlist_load_failed", market=market, error=str(e))
     symbols = list(base)
