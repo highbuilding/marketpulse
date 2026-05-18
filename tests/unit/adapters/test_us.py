@@ -239,6 +239,22 @@ async def test_verify_ticker_valid():
 
 
 @pytest.mark.asyncio
+async def test_verify_ticker_zero_price_valid():
+    """last_price=0.0 是合法的(极低价 / 停牌当日),不应误判为无效。"""
+    adapter = USAdapter()
+    fake_info = MagicMock(last_price=0.0)
+    fake_ticker = MagicMock(
+        fast_info=fake_info,
+        info={"longName": "Some Penny Stock"},
+    )
+    with patch("core.adapters.us.yf") as mock_yf:
+        mock_yf.Ticker = MagicMock(return_value=fake_ticker)
+        ok, name = await adapter.verify_ticker("PENNY")
+    assert ok is True
+    assert name == "Some Penny Stock"
+
+
+@pytest.mark.asyncio
 async def test_verify_ticker_unknown():
     adapter = USAdapter()
     fake_info = MagicMock(last_price=None)

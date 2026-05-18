@@ -174,15 +174,17 @@ class USAdapter:
         返回 (是否有效, 公司名 | None)。
         """
         yf_symbol = _to_yfinance_ticker(symbol)
-        try:
-            ticker = await asyncio.to_thread(lambda: yf.Ticker(yf_symbol))
-            info = await asyncio.to_thread(lambda: ticker.fast_info)
-            if not getattr(info, "last_price", None):
+
+        def _fetch() -> tuple[bool, str | None]:
+            ticker = yf.Ticker(yf_symbol)
+            last_price = getattr(ticker.fast_info, "last_price", None)
+            if last_price is None:
                 return False, None
-            long_name = await asyncio.to_thread(
-                lambda: getattr(ticker, "info", {}).get("longName"),
-            )
+            long_name = ticker.info.get("longName") if isinstance(ticker.info, dict) else None
             return True, long_name
+
+        try:
+            return await asyncio.to_thread(_fetch)
         except Exception:  # noqa: BLE001
             return False, None
 
