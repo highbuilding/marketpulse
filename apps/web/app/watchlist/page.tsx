@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import useSWR, { mutate } from 'swr'
 
 import { SymbolSearch } from '@/components/SymbolSearch'
@@ -9,6 +9,7 @@ import {
   addWatchlistSymbol, listWatchlists, listWatchlistSymbols, removeWatchlistSymbol,
 } from '@/lib/watchlist_api'
 import { fetchSymbolProfile, fetchSymbolQuote } from '@/lib/symbol_api'
+import { inferMarket, type Market } from '@/lib/markets'
 
 function fmtVolume(v: number | null | undefined): string {
   if (v == null) return '—'
@@ -68,21 +69,37 @@ function SymbolRow({
   )
 }
 
+const MARKET_TABS: { key: Market; label: string; placeholder: string }[] = [
+  { key: 'ashare', label: 'A 股',    placeholder: '搜索代码或名称(如 600519 / 茅台)' },
+  { key: 'hk',     label: '港股',    placeholder: '搜索港股(如 9988 / 腾讯)' },
+  { key: 'us',     label: '美股',    placeholder: '搜索美股(如 AAPL / Apple)' },
+  { key: 'crypto', label: '加密货币', placeholder: '搜索加密货币(如 BTC/USDT)' },
+]
+
 export default function WatchlistPage() {
   const { data: lists } = useSWR('wls', listWatchlists)
   const [activeId, setActiveId] = useState<number | null>(null)
   const currentId = activeId ?? lists?.watchlists[0]?.id ?? null
+
+  const [marketTab, setMarketTab] = useState<Market>('ashare')
 
   const { data: items } = useSWR(
     currentId ? `wl:${currentId}` : null,
     () => listWatchlistSymbols(currentId!),
   )
 
+  const symbolsForTab = useMemo(
+    () => (items?.symbols ?? []).filter((s) => inferMarket(s) === marketTab),
+    [items, marketTab],
+  )
+
+  const tabMeta = MARKET_TABS.find((t) => t.key === marketTab)!
+  const isSkeletonTab = marketTab === 'hk' || marketTab === 'crypto'
+
   async function onAdd(hitSymbol: string) {
     if (!currentId) return
     await addWatchlistSymbol(currentId, hitSymbol)
     mutate(`wl:${currentId}`)
-    // 后端 BackgroundTask 在异步扫描该 symbol 5 个周期, 给 ~6s 缓冲再 mutate 事件流
     setTimeout(() => {
       mutate((key) => typeof key === 'string' && key.startsWith('wl:events:'))
     }, 6_000)
@@ -113,13 +130,34 @@ export default function WatchlistPage() {
         ))}
       </div>
 
+      {/* 市场 tab */}
+      <div className="flex gap-1 border-b border-neutral-800">
+        {MARKET_TABS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setMarketTab(t.key)}
+            className={`px-3 py-1.5 text-sm border-b-2 transition-colors ${
+              marketTab === t.key
+                ? 'text-white border-blue-500'
+                : 'text-neutral-400 border-transparent hover:text-neutral-200'
+            }`}
+          >
+            {t.label}
+            {isSkeletonTab && t.key === marketTab && (
+              <span className="ml-2 text-xs text-neutral-500">(骨架)</span>
+            )}
+          </button>
+        ))}
+      </div>
+
       <SymbolSearch
-        placeholder="搜索代码或名称(如 600519 / 茅台)"
+        key={marketTab}
+        market={marketTab}
+        placeholder={tabMeta.placeholder}
         onSelect={(hit) => onAdd(hit.symbol)}
       />
 
       <section className="rounded-lg border border-neutral-800 bg-neutral-950 p-4">
-        {/* 表头 */}
         <div className="grid grid-cols-[1fr_100px_90px_110px_40px] gap-2 text-xs text-neutral-500 pb-2 border-b border-neutral-800">
           <span>标的</span>
           <span className="text-right">价格</span>
@@ -127,15 +165,25 @@ export default function WatchlistPage() {
           <span className="text-right">成交量</span>
           <span />
         </div>
-        {items && items.symbols.length === 0 && <p className="text-sm text-neutral-500 mt-3">空</p>}
+        {isSkeletonTab && symbolsForTab.length === 0 && (
+          <p className="text-sm text-neutral-500 mt-3">
+            {marketTab === 'hk' ? '港股' : '加密货币'} 行情/信号本期暂未接入,可先添加标的占位。
+          </p>
+        )}
+        {!isSkeletonTab && symbolsForTab.length === 0 && (
+          <p className="text-sm text-neutral-500 mt-3">空</p>
+        )}
         <ul>
-          {items?.symbols.map((s) => (
+          {symbolsForTab.map((s) => (
             <SymbolRow key={s} symbol={s} onRemove={onRemove} />
           ))}
         </ul>
       </section>
 
-      <WatchlistSignalsPanel symbols={items?.symbols ?? []} market="ashare" />
+      <WatchlistSignalsPanel
+        symbols={symbolsForTab}
+        market={marketTab}
+      />
     </main>
   )
 }
