@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import structlog
 
 from core.domain.intervals import BARS_PER_DAY, LOOKBACK_BARS
+from core.domain.markets import infer_market
 from core.domain.models import IndicatorSignal
 from core.indicators.cd import compute_cd_signals
 from core.persistence.signal_repo import SignalRepo
@@ -44,7 +45,12 @@ class SignalScanService:
                      total=len(records))
         return n
 
-    async def scan_many(self, symbols: list[str], interval: Interval) -> int:
+    async def scan_many(
+        self, symbols: list[str], interval: Interval,
+        *, market_filter: str | None = None,
+    ) -> int:
+        if market_filter:
+            symbols = [s for s in symbols if infer_market(s) == market_filter]
         total = 0
         for sym in symbols:
             try:
