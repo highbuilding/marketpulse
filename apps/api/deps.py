@@ -4,7 +4,6 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-from core.adapters.ashare import AShareAdapter
 from core.adapters.registry import AdapterRegistry, load_sources_config
 from core.cache.quote_cache import QuoteCache
 from core.persistence.duckdb_repo import BarRepo
@@ -51,7 +50,9 @@ def get_state_repo() -> StateRepo:
 
 @lru_cache(maxsize=1)
 def get_kline_service() -> KLineService:
-    return KLineService(get_bar_repo(), AShareAdapter())
+    registry = get_registry()
+    adapters = {m: registry.get(m) for m in registry.markets()}
+    return KLineService(get_bar_repo(), adapters)
 
 
 @lru_cache(maxsize=1)

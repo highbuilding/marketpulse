@@ -8,6 +8,7 @@ import pandas as pd
 import structlog
 
 from core.adapters.base import MarketAdapter
+from core.domain.markets import infer_market
 from core.domain.models import Bar
 from core.persistence.duckdb_repo import BarRepo
 
@@ -17,21 +18,38 @@ Interval = Literal["1d", "1wk", "1mo", "1m", "5m", "15m", "30m", "60m", "4h"]
 
 _INTRADAY = {"1m", "5m", "15m", "30m", "60m"}
 _RESAMPLED = {"1wk": "W-FRI", "1mo": "ME"}
-_FOUR_HOUR_GROUP = 4  # 4h = 4 根 60m 聚合(A 股一天 4 根 60m → 1 根 4h)
+_FOUR_HOUR_GROUP_BY_MARKET: dict[str, int] = {
+    "us":     4,  # 美股 prepost 16 根 60m / 天 → 4 根 4h
+    "crypto": 4,  # crypto 24h 连续, 6 根 4h / 天
+    "ashare": 4,  # A 股 4 根 60m / 天 → 4h ≡ 1d, 通常不展示
+    "hk":     4,  # 同上
+}
 
 
 class KLineService:
-    def __init__(self, bar_repo: BarRepo, adapter: MarketAdapter) -> None:
+    def __init__(
+        self, bar_repo: BarRepo,
+        adapters: dict[str, MarketAdapter],
+    ) -> None:
         self.repo = bar_repo
-        self.adapter = adapter
+        self.adapters = adapters
+
+    def _adapter_for(self, symbol: str) -> MarketAdapter:
+        m = infer_market(symbol)
+        a = self.adapters.get(m)
+        if a is None:
+            raise ValueError(f"no adapter for market={m} (symbol={symbol})")
+        return a
 
     async def get_bars(
         self, symbol: str, *, interval: Interval,
         start: datetime, end: datetime,
     ) -> list[Bar]:
         if interval == "4h":
+            market = infer_market(symbol)
+            group_size = _FOUR_HOUR_GROUP_BY_MARKET.get(market, 4)
             sixty = await self._get_intraday(symbol, "60m", start, end)
-            return _group_resample(sixty, _FOUR_HOUR_GROUP, "4h")
+            return _group_resample(sixty, group_size, "4h")
         if interval in _RESAMPLED:
             daily = await self._get_daily(symbol, start, end)
             return _resample(daily, interval)
@@ -42,11 +60,12 @@ class KLineService:
         raise ValueError(f"unsupported interval: {interval}")
 
     async def _get_daily(self, symbol: str, start: datetime, end: datetime) -> list[Bar]:
-        cached = self.repo.fetch_history("ashare", symbol, start, end, interval="1d")
+        market = infer_market(symbol)
+        cached = self.repo.fetch_history(market, symbol, start, end, interval="1d")
         # 只有当缓存覆盖了请求窗口才命中,否则重拉
         if cached and self._covers(cached, start, end):
             return cached
-        bars = await self.adapter.fetch_history(symbol, start, end)
+        bars = await self._adapter_for(symbol).fetch_history(symbol, start, end)
         self.repo.insert_bars(bars)
         return bars
 
@@ -82,13 +101,14 @@ class KLineService:
     ) -> list[Bar]:
         # 1m 不缓存,总是拿最新
         if interval == "1m":
-            bars = await self.adapter.fetch_intraday(symbol, freq="1")
+            bars = await self._adapter_for(symbol).fetch_intraday(symbol, freq="1")
             return [b for b in bars if start <= b.ts <= end]
-        cached = self.repo.fetch_history("ashare", symbol, start, end, interval=interval)
+        market = infer_market(symbol)
+        cached = self.repo.fetch_history(market, symbol, start, end, interval=interval)
         if cached and self._covers(cached, start, end):
             return cached
         freq = interval.replace("m", "")
-        bars = await self.adapter.fetch_intraday(symbol, freq=freq)
+        bars = await self._adapter_for(symbol).fetch_intraday(symbol, freq=freq)
         self.repo.insert_bars(bars)
         return [b for b in bars if start <= b.ts <= end]
 

@@ -24,7 +24,7 @@ async def test_get_bars_cache_hit_returns_from_duckdb():
     repo.fetch_history.return_value = [_bar("600519.SH", i, close=100 + i) for i in range(10)]
     adapter = MagicMock()
     adapter.fetch_history = AsyncMock()
-    svc = KLineService(repo, adapter)
+    svc = KLineService(repo, {"ashare": adapter})
     bars = await svc.get_bars(
         "600519.SH",
         interval="1d",
@@ -40,10 +40,10 @@ async def test_get_bars_cache_miss_calls_adapter_then_writes_back():
     repo = MagicMock()
     repo.fetch_history.return_value = []
     adapter = MagicMock()
-    adapter.fetch_history = AsyncMock(return_value=[_bar("X", i) for i in range(5)])
-    svc = KLineService(repo, adapter)
+    adapter.fetch_history = AsyncMock(return_value=[_bar("600519.SH", i) for i in range(5)])
+    svc = KLineService(repo, {"ashare": adapter})
     bars = await svc.get_bars(
-        "X", interval="1d",
+        "600519.SH", interval="1d",
         start=datetime(2026, 5, 1, tzinfo=timezone.utc),
         end=datetime(2026, 5, 5, tzinfo=timezone.utc),
     )
@@ -55,12 +55,12 @@ async def test_get_bars_cache_miss_calls_adapter_then_writes_back():
 @pytest.mark.asyncio
 async def test_get_bars_weekly_resamples_daily():
     repo = MagicMock()
-    daily = [_bar("X", i, close=100 + i) for i in range(14)]
+    daily = [_bar("600519.SH", i, close=100 + i) for i in range(14)]
     repo.fetch_history.return_value = daily
     adapter = MagicMock()
-    svc = KLineService(repo, adapter)
+    svc = KLineService(repo, {"ashare": adapter})
     weeks = await svc.get_bars(
-        "X", interval="1wk",
+        "600519.SH", interval="1wk",
         start=datetime(2026, 5, 1, tzinfo=timezone.utc),
         end=datetime(2026, 5, 14, tzinfo=timezone.utc),
     )
@@ -73,20 +73,20 @@ async def test_get_intraday_calls_adapter_intraday_and_writes():
     repo = MagicMock()
     repo.fetch_history.return_value = []
     intraday_bar = Bar(
-        market="ashare", symbol="X",
+        market="ashare", symbol="600519.SH",
         ts=datetime(2026, 5, 13, 10, tzinfo=timezone.utc),
         open=Decimal("99"), high=Decimal("101"), low=Decimal("98"),
         close=Decimal("100"), volume=1000, interval="5m",
     )
     adapter = MagicMock()
     adapter.fetch_intraday = AsyncMock(return_value=[intraday_bar])
-    svc = KLineService(repo, adapter)
+    svc = KLineService(repo, {"ashare": adapter})
     bars = await svc.get_bars(
-        "X", interval="5m",
+        "600519.SH", interval="5m",
         start=datetime(2026, 5, 13, tzinfo=timezone.utc),
         end=datetime(2026, 5, 13, 23, tzinfo=timezone.utc),
     )
-    adapter.fetch_intraday.assert_called_once_with("X", freq="5")
+    adapter.fetch_intraday.assert_called_once_with("600519.SH", freq="5")
     repo.insert_bars.assert_called_once()
     assert bars[0].interval == "5m"
 
@@ -103,7 +103,7 @@ async def test_get_bars_refetches_when_cache_too_narrow():
     repo.fetch_history.return_value = old_bars
     adapter = MagicMock()
     adapter.fetch_history = AsyncMock(return_value=fresh_bars)
-    svc = KLineService(repo, adapter)
+    svc = KLineService(repo, {"ashare": adapter})
     bars = await svc.get_bars(
         "600004.SH", interval="1d",
         start=datetime(2020, 1, 1, tzinfo=timezone.utc),
@@ -119,13 +119,13 @@ async def test_get_bars_cache_covers_returns_cached():
     """缓存覆盖范围足够,不再调 adapter。"""
     repo = MagicMock()
     # cache 覆盖了 5-1 到 5-30 之间 30 条,start=5-7, end=5-28 → 完全覆盖
-    cached = [_bar("X", i, close=100) for i in range(30)]
+    cached = [_bar("600519.SH", i, close=100) for i in range(30)]
     repo.fetch_history.return_value = cached
     adapter = MagicMock()
     adapter.fetch_history = AsyncMock()
-    svc = KLineService(repo, adapter)
+    svc = KLineService(repo, {"ashare": adapter})
     bars = await svc.get_bars(
-        "X", interval="1d",
+        "600519.SH", interval="1d",
         start=datetime(2026, 5, 7, tzinfo=timezone.utc),
         end=datetime(2026, 5, 28, tzinfo=timezone.utc),
     )
@@ -138,13 +138,13 @@ async def test_get_bars_cache_head_too_late_triggers_refetch():
     """缓存起点比请求起点晚太多(>7d),需重拉。"""
     repo = MagicMock()
     # cache 第一根 ts=2026-05-01,请求 start=2026-04-01 → 早了 30 天 → 不覆盖
-    cached = [_bar("X", i, close=100) for i in range(10)]
+    cached = [_bar("600519.SH", i, close=100) for i in range(10)]
     repo.fetch_history.return_value = cached
     adapter = MagicMock()
-    adapter.fetch_history = AsyncMock(return_value=[_bar("X", i) for i in range(60)])
-    svc = KLineService(repo, adapter)
+    adapter.fetch_history = AsyncMock(return_value=[_bar("600519.SH", i) for i in range(60)])
+    svc = KLineService(repo, {"ashare": adapter})
     await svc.get_bars(
-        "X", interval="1d",
+        "600519.SH", interval="1d",
         start=datetime(2026, 4, 1, tzinfo=timezone.utc),
         end=datetime(2026, 5, 10, tzinfo=timezone.utc),
     )
@@ -156,13 +156,13 @@ async def test_get_bars_cache_tail_too_old_triggers_refetch():
     """缓存末点离 end 太远(>4d),需重拉。"""
     repo = MagicMock()
     # cache 最后 ts=2026-05-09,请求 end=2026-05-20 → tail 早 11 天
-    cached = [_bar("X", i, close=100) for i in range(9)]
+    cached = [_bar("600519.SH", i, close=100) for i in range(9)]
     repo.fetch_history.return_value = cached
     adapter = MagicMock()
-    adapter.fetch_history = AsyncMock(return_value=[_bar("X", i) for i in range(20)])
-    svc = KLineService(repo, adapter)
+    adapter.fetch_history = AsyncMock(return_value=[_bar("600519.SH", i) for i in range(20)])
+    svc = KLineService(repo, {"ashare": adapter})
     await svc.get_bars(
-        "X", interval="1d",
+        "600519.SH", interval="1d",
         start=datetime(2026, 4, 28, tzinfo=timezone.utc),
         end=datetime(2026, 5, 20, tzinfo=timezone.utc),
     )
@@ -174,13 +174,13 @@ async def test_get_intraday_5m_cache_too_narrow_refetches():
     """5m intraday cache 范围不够,需重拉 + 写 cache."""
     repo = MagicMock()
     repo.fetch_history.return_value = [
-        Bar(market="ashare", symbol="X",
+        Bar(market="ashare", symbol="600519.SH",
             ts=datetime(2026, 5, 13, 10, tzinfo=timezone.utc),
             open=Decimal("99"), high=Decimal("101"), low=Decimal("98"),
             close=Decimal("100"), volume=1000, interval="5m"),
     ]
     fresh = [
-        Bar(market="ashare", symbol="X",
+        Bar(market="ashare", symbol="600519.SH",
             ts=datetime(2026, 5, 11, tzinfo=timezone.utc) + timedelta(hours=i),
             open=Decimal("99"), high=Decimal("101"), low=Decimal("98"),
             close=Decimal("100"), volume=1000, interval="5m")
@@ -188,9 +188,9 @@ async def test_get_intraday_5m_cache_too_narrow_refetches():
     ]
     adapter = MagicMock()
     adapter.fetch_intraday = AsyncMock(return_value=fresh)
-    svc = KLineService(repo, adapter)
+    svc = KLineService(repo, {"ashare": adapter})
     await svc.get_bars(
-        "X", interval="5m",
+        "600519.SH", interval="5m",
         start=datetime(2026, 5, 11, tzinfo=timezone.utc),
         end=datetime(2026, 5, 13, 23, tzinfo=timezone.utc),
     )
@@ -204,20 +204,20 @@ async def test_get_intraday_1m_never_caches():
     repo = MagicMock()
     repo.fetch_history.return_value = []
     intraday_bar = Bar(
-        market="ashare", symbol="X",
+        market="ashare", symbol="600519.SH",
         ts=datetime(2026, 5, 13, 10, tzinfo=timezone.utc),
         open=Decimal("99"), high=Decimal("101"), low=Decimal("98"),
         close=Decimal("100"), volume=1000, interval="1m",
     )
     adapter = MagicMock()
     adapter.fetch_intraday = AsyncMock(return_value=[intraday_bar])
-    svc = KLineService(repo, adapter)
+    svc = KLineService(repo, {"ashare": adapter})
     await svc.get_bars(
-        "X", interval="1m",
+        "600519.SH", interval="1m",
         start=datetime(2026, 5, 13, tzinfo=timezone.utc),
         end=datetime(2026, 5, 13, 23, tzinfo=timezone.utc),
     )
-    adapter.fetch_intraday.assert_called_once_with("X", freq="1")
+    adapter.fetch_intraday.assert_called_once_with("600519.SH", freq="1")
     repo.insert_bars.assert_not_called()
 
 
@@ -242,7 +242,7 @@ async def test_get_bars_4h_groups_four_60m_bars():
     repo.fetch_history.return_value = []  # 强制走 adapter
     adapter = MagicMock()
     adapter.fetch_intraday = AsyncMock(return_value=sixty)
-    svc = KLineService(repo, adapter)
+    svc = KLineService(repo, {"ashare": adapter})
 
     bars = await svc.get_bars(
         "600519.SH", interval="4h",
@@ -281,10 +281,10 @@ async def test_get_bars_4h_drops_incomplete_trailing_group():
     repo.fetch_history.return_value = []
     adapter = MagicMock()
     adapter.fetch_intraday = AsyncMock(return_value=[_bar60(i) for i in range(6)])  # 1 完整 + 2 残
-    svc = KLineService(repo, adapter)
+    svc = KLineService(repo, {"ashare": adapter})
 
     bars = await svc.get_bars(
-        "X", interval="4h",
+        "600519.SH", interval="4h",
         start=datetime(2026, 5, 12, tzinfo=timezone.utc),
         end=datetime(2026, 5, 13, tzinfo=timezone.utc),
     )
@@ -297,9 +297,9 @@ async def test_get_bars_4h_empty_source_returns_empty():
     repo.fetch_history.return_value = []
     adapter = MagicMock()
     adapter.fetch_intraday = AsyncMock(return_value=[])
-    svc = KLineService(repo, adapter)
+    svc = KLineService(repo, {"ashare": adapter})
     bars = await svc.get_bars(
-        "X", interval="4h",
+        "600519.SH", interval="4h",
         start=datetime(2026, 5, 1, tzinfo=timezone.utc),
         end=datetime(2026, 5, 12, tzinfo=timezone.utc),
     )
