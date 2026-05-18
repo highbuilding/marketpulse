@@ -79,3 +79,51 @@ async def test_raises_when_no_adapter_for_market():
             start=datetime(2026, 5, 1, tzinfo=timezone.utc),
             end=datetime(2026, 5, 20, tzinfo=timezone.utc),
         )
+
+
+@pytest.mark.asyncio
+async def test_routes_hk_symbol_to_hk_adapter():
+    repo = MagicMock()
+    repo.fetch_history = MagicMock(return_value=[])
+    repo.insert_bars = MagicMock()
+    hk_adapter = MagicMock()
+    hk_adapter.fetch_history = AsyncMock(return_value=[
+        _bar("9988.HK", "hk", datetime(2026, 5, 14, 16, tzinfo=timezone.utc)),
+    ])
+    ashare_adapter = MagicMock()
+    ashare_adapter.fetch_history = AsyncMock()
+
+    svc = KLineService(repo, {"hk": hk_adapter, "ashare": ashare_adapter})
+    await svc.get_bars(
+        "9988.HK", interval="1d",
+        start=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        end=datetime(2026, 5, 20, tzinfo=timezone.utc),
+    )
+    hk_adapter.fetch_history.assert_called_once()
+    ashare_adapter.fetch_history.assert_not_called()
+    repo.fetch_history.assert_called_with(
+        "hk", "9988.HK", datetime(2026, 5, 1, tzinfo=timezone.utc),
+        datetime(2026, 5, 20, tzinfo=timezone.utc), interval="1d",
+    )
+
+
+@pytest.mark.asyncio
+async def test_routes_crypto_symbol_to_crypto_adapter():
+    repo = MagicMock()
+    repo.fetch_history = MagicMock(return_value=[])
+    repo.insert_bars = MagicMock()
+    crypto_adapter = MagicMock()
+    crypto_adapter.fetch_history = AsyncMock(return_value=[
+        _bar("BTC/USDT", "crypto", datetime(2026, 5, 15, tzinfo=timezone.utc)),
+    ])
+    us_adapter = MagicMock()
+    us_adapter.fetch_history = AsyncMock()
+
+    svc = KLineService(repo, {"crypto": crypto_adapter, "us": us_adapter})
+    await svc.get_bars(
+        "BTC/USDT", interval="1d",
+        start=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        end=datetime(2026, 5, 20, tzinfo=timezone.utc),
+    )
+    crypto_adapter.fetch_history.assert_called_once()
+    us_adapter.fetch_history.assert_not_called()

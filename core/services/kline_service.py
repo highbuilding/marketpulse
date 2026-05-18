@@ -46,9 +46,8 @@ class KLineService:
         start: datetime, end: datetime,
     ) -> list[Bar]:
         if interval == "4h":
-            market = infer_market(symbol)
-            group_size = _FOUR_HOUR_GROUP_BY_MARKET.get(market, 4)
             sixty = await self._get_intraday(symbol, "60m", start, end)
+            group_size = _FOUR_HOUR_GROUP_BY_MARKET[infer_market(symbol)]
             return _group_resample(sixty, group_size, "4h")
         if interval in _RESAMPLED:
             daily = await self._get_daily(symbol, start, end)
