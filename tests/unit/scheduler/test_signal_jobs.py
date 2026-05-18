@@ -12,7 +12,9 @@ async def test_scan_cd_job_invokes_scan_many_with_universe():
     svc = MagicMock()
     svc.scan_many = AsyncMock(return_value=3)
     await scan_cd_job(svc, wl, interval="1d")
-    svc.scan_many.assert_awaited_once_with(["600519.SH", "300750.SZ"], "1d")
+    svc.scan_many.assert_awaited_once_with(
+        ["600519.SH", "300750.SZ"], "1d", market_filter=None,
+    )
 
 
 @pytest.mark.asyncio

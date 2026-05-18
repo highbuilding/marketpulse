@@ -18,6 +18,7 @@ def _q(market, symbol, price):
 
 @pytest.mark.asyncio
 async def test_tick_snapshot_fills_cache():
+    from core.services.watchlist_service import WatchlistService
     cache = QuoteCache(ttl_s=60)
     adapter = MagicMock()
     adapter.fetch_snapshot = AsyncMock(return_value=[_q("ashare", "A", "1"), _q("ashare", "B", "2")])
@@ -25,13 +26,16 @@ async def test_tick_snapshot_fills_cache():
     registry.get.return_value = adapter
     registry.universe.return_value = ["A", "B"]
     registry.index_symbols.return_value = []
+    watchlist = MagicMock(spec=WatchlistService)
+    watchlist.dynamic_universe = AsyncMock(return_value=[])
 
-    await tick_snapshot_once("ashare", registry, cache)
+    await tick_snapshot_once("ashare", registry, cache, watchlist)
     assert {q.symbol for q in cache.snapshot("ashare")} == {"A", "B"}
 
 
 @pytest.mark.asyncio
 async def test_tick_handles_adapter_error():
+    from core.services.watchlist_service import WatchlistService
     cache = QuoteCache(ttl_s=60)
     adapter = MagicMock()
     adapter.fetch_snapshot = AsyncMock(side_effect=RuntimeError("boom"))
@@ -39,8 +43,10 @@ async def test_tick_handles_adapter_error():
     registry.get.return_value = adapter
     registry.universe.return_value = ["A"]
     registry.index_symbols.return_value = []
+    watchlist = MagicMock(spec=WatchlistService)
+    watchlist.dynamic_universe = AsyncMock(return_value=[])
 
-    await tick_snapshot_once("ashare", registry, cache)
+    await tick_snapshot_once("ashare", registry, cache, watchlist)
     assert cache.snapshot("ashare") == []
 
 

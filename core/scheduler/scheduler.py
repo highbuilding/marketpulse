@@ -87,14 +87,14 @@ def attach_signal_jobs(
     sched.add_job(
         scan_cd_job,
         CronTrigger(day_of_week="mon-fri", hour="2-7", minute="*/15"),
-        id="cd:15m", kwargs={"interval": "15m"}, **common,
+        id="cd:15m", kwargs={"interval": "15m", "market_filter": "ashare"}, **common,
     )
 
     # 30m: 同区间每 30 分钟一次
     sched.add_job(
         scan_cd_job,
         CronTrigger(day_of_week="mon-fri", hour="2-7", minute="*/30"),
-        id="cd:30m", kwargs={"interval": "30m"}, **common,
+        id="cd:30m", kwargs={"interval": "30m", "market_filter": "ashare"}, **common,
     )
 
     # 60m 收盘后 +5 分钟
@@ -103,18 +103,18 @@ def attach_signal_jobs(
                                 (6, 35, "1430"), (7, 5, "1500")]:
         sched.add_job(
             scan_cd_job, CronTrigger(day_of_week="mon-fri", hour=h_utc, minute=m_utc),
-            id=f"cd:60m:{tag}", kwargs={"interval": "60m"}, **common,
+            id=f"cd:60m:{tag}", kwargs={"interval": "60m", "market_filter": "ashare"}, **common,
         )
 
     # 4h:A 股一天 1 根, 收盘后(BJT 15:10)
     sched.add_job(
         scan_cd_job, CronTrigger(day_of_week="mon-fri", hour=7, minute=10),
-        id="cd:4h", kwargs={"interval": "4h"}, **common,
+        id="cd:4h", kwargs={"interval": "4h", "market_filter": "ashare"}, **common,
     )
 
     # 1d:BJT 15:30
     sched.add_job(
         scan_cd_job, CronTrigger(day_of_week="mon-fri", hour=7, minute=30),
-        id="cd:1d", kwargs={"interval": "1d"}, **common,
+        id="cd:1d", kwargs={"interval": "1d", "market_filter": "ashare"}, **common,
     )
     log.info("scheduler.signal_jobs_attached")

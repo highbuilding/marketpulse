@@ -12,11 +12,15 @@ log = structlog.get_logger(__name__)
 async def scan_cd_job(
     signal_scan: SignalScanService,
     watchlist: WatchlistService,
-    *, interval: str,
+    *, interval: str, market_filter: str | None = None,
 ) -> None:
     symbols = await watchlist.dynamic_universe()
     if not symbols:
-        log.debug("cd.scan_skipped_empty_watchlist", interval=interval)
+        log.debug("cd.scan_skipped_empty_watchlist", interval=interval,
+                  market_filter=market_filter)
         return
-    n = await signal_scan.scan_many(symbols, interval)
-    log.info("cd.scan_done", interval=interval, symbols=len(symbols), new=n)
+    n = await signal_scan.scan_many(
+        symbols, interval, market_filter=market_filter,
+    )
+    log.info("cd.scan_done", interval=interval,
+             market_filter=market_filter, symbols=len(symbols), new=n)
