@@ -33,4 +33,5 @@ def infer_market(symbol: str) -> Market:
 
 
 def is_crypto(symbol: str) -> bool:
+    """symbol 是否属于 crypto 市场。"""
     return infer_market(symbol) == "crypto"
