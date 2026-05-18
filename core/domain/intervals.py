@@ -23,7 +23,7 @@ class IntervalSpec:
     is_signal: bool         # 是否会被 CD 扫描
     lookback_bars: int      # 信号扫描回看根数(is_signal=False 时无意义)
     bars_per_day_ashare: int  # A 股一天的根数,用于"回看根数 → 日历天数"换算
-    crypto_only: bool       # 是否仅在 crypto 市场展示(目前只有 4h)
+    crypto_only: bool       # 历史字段, 已废弃: 4h tab 可见性由前端按 market 控制
 
 
 _SPECS: list[IntervalSpec] = [
