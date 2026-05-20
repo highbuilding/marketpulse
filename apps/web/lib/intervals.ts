@@ -31,32 +31,22 @@ export function intervalLabel(key: Interval): string {
   return BY_KEY[key]?.labelCn ?? key
 }
 
-// K 线 tab(详情页用): 美股 intraday 暂未接入,仅 1d/1wk/1mo;4h 仅 crypto 显示
+// K 线 tab(详情页用): 4h 仅 crypto 显示(美股 Alpaca IEX prepost bar 稀疏,4h 重采样残缺;A 股/HK 4h ≡ 1d 无意义)
 export function klineTabsForMarket(
   market: string | null,
 ): { key: Interval; label: string }[] {
-  // 美股 intraday 暂未接入(yfinance ban + akshare 长窗口拉不动),仅 1d/1wk/1mo
-  if (market === 'us') {
-    return INTERVAL_SPECS
-      .filter((s) => s.isKline && ['1d', '1wk', '1mo'].includes(s.key))
-      .map((s) => ({ key: s.key, label: s.labelCn }))
-  }
+  // 4h 仅 crypto 显示(美股 Alpaca IEX prepost bar 稀疏, 4h 重采样残缺;A 股/HK 4h ≡ 1d 无意义)
   const allowFourH = market === 'crypto'
   return INTERVAL_SPECS
     .filter((s) => s.isKline && (s.key !== '4h' || allowFourH))
     .map((s) => ({ key: s.key, label: s.labelCn }))
 }
 
-// 详情页 CDSignalPanel tab: 美股仅 1d 信号;4h 仅 crypto 显示
+// 详情页 CDSignalPanel tab: 4h 仅 crypto 显示
 export function detailSignalTabs(
   market: string | null,
 ): { key: DetailSignalInterval; label: string }[] {
-  // 美股仅 1d 信号(intraday 暂未接入)
-  if (market === 'us') {
-    return INTERVAL_SPECS
-      .filter((s) => s.isSignal && s.key === '1d')
-      .map((s) => ({ key: s.key as DetailSignalInterval, label: s.labelCn }))
-  }
+  // 4h 仅 crypto 显示
   const allowFourH = market === 'crypto'
   return INTERVAL_SPECS
     .filter((s) => s.isSignal && (s.key !== '4h' || allowFourH))
