@@ -15,6 +15,7 @@ import yfinance as yf
 
 from core.adapters.base import AdapterError, CircuitBreaker
 from core.domain.models import Bar, HealthStatus, Quote
+from core.integrations.akshare import ak_call
 
 log = structlog.get_logger(__name__)
 
@@ -24,6 +25,10 @@ def _to_yfinance_ticker(symbol: str) -> str:
     业务层永远见 BRK.B, adapter 进出口转换。
     """
     return symbol.replace(".", "-")
+
+
+# akshare 美股交易所代码: 105=NASDAQ, 106=NYSE, 107=AMEX
+_AKSHARE_PREFIXES: tuple[str, ...] = ("105", "106", "107")
 
 
 class USAdapter:
@@ -199,6 +204,47 @@ class USAdapter:
             return await asyncio.to_thread(_fetch)
         except Exception:  # noqa: BLE001
             return False, None
+
+    async def _resolve_akshare_code(self, symbol: str) -> str | None:
+        """返回 akshare 美股 code(如 '105.AAPL')。
+
+        - 已缓存 → 直接返回
+        - 未缓存 → 试 105/106/107, 首次成功后回写 directory
+        - 全失败或未注入 dir_repo → None
+        """
+        if self.dir_repo is None:
+            return None
+        cached = await self.dir_repo.get_akshare_code(symbol)
+        if cached:
+            return cached
+
+        # akshare 不接受 BRK.B, 试横杠版本(yfinance 格式 BRK-B)+ 原版
+        candidates = []
+        yf_sym = _to_yfinance_ticker(symbol)
+        candidates.append(yf_sym)
+        if symbol != yf_sym:
+            candidates.append(symbol)
+
+        for candidate in candidates:
+            for prefix in _AKSHARE_PREFIXES:
+                ak_code = f"{prefix}.{candidate}"
+                try:
+                    df = await ak_call(
+                        "stock_us_hist",
+                        symbol=ak_code, period="daily",
+                        start_date="20260101", end_date="20260110",
+                        adjust="",
+                        caller=f"us.resolve:{symbol}:{ak_code}",
+                    )
+                    if df is not None and len(df) > 0:
+                        await self.dir_repo.set_akshare_code(symbol, ak_code)
+                        log.info("us.akshare_code_resolved",
+                                 symbol=symbol, code=ak_code)
+                        return ak_code
+                except Exception:  # noqa: BLE001
+                    continue
+        log.warning("us.akshare_code_unresolved", symbol=symbol)
+        return None
 
     async def health(self) -> HealthStatus:
         if not self.has_primary:

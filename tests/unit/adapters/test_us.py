@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
 import pytest
@@ -290,3 +290,81 @@ def test_us_adapter_accepts_dir_repo_optional():
     """dir_repo 可选注入, 不传时 akshare 路径不可用(向后兼容)。"""
     adapter = USAdapter()
     assert adapter.dir_repo is None
+
+
+# ── _resolve_akshare_code ───────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_resolve_akshare_code_cached():
+    """已缓存时直接返回, 不调 ak_call。"""
+    fake_repo = MagicMock()
+    fake_repo.get_akshare_code = AsyncMock(return_value="105.AAPL")
+    adapter = USAdapter(dir_repo=fake_repo)
+    with patch("core.adapters.us.ak_call") as mock_ak:
+        result = await adapter._resolve_akshare_code("AAPL")
+    assert result == "105.AAPL"
+    mock_ak.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resolve_akshare_code_probes_105_first():
+    """未缓存 → 试 105.X, 命中后回写。"""
+    import pandas as pd
+    fake_repo = MagicMock()
+    fake_repo.get_akshare_code = AsyncMock(return_value=None)
+    fake_repo.set_akshare_code = AsyncMock()
+    adapter = USAdapter(dir_repo=fake_repo)
+    fake_df = pd.DataFrame({"日期": ["2026-01-02"], "开盘": [180.0],
+                            "收盘": [181.0], "最高": [181.5], "最低": [179.5],
+                            "成交量": [1000000]})
+    with patch("core.adapters.us.ak_call", new=AsyncMock(return_value=fake_df)) as mock_ak:
+        result = await adapter._resolve_akshare_code("AAPL")
+    assert result == "105.AAPL"
+    fake_repo.set_akshare_code.assert_awaited_once_with("AAPL", "105.AAPL")
+    assert mock_ak.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_resolve_akshare_code_falls_back_106():
+    """105 抛异常 → 试 106 → 命中。"""
+    import pandas as pd
+    fake_repo = MagicMock()
+    fake_repo.get_akshare_code = AsyncMock(return_value=None)
+    fake_repo.set_akshare_code = AsyncMock()
+    adapter = USAdapter(dir_repo=fake_repo)
+    fake_df = pd.DataFrame({"日期": ["2026-01-02"], "开盘": [200.0],
+                            "收盘": [201.0], "最高": [202.0], "最低": [199.0],
+                            "成交量": [500000]})
+
+    async def fake_ak_call(func_name, *args, **kwargs):
+        if "105." in kwargs.get("symbol", ""):
+            raise RuntimeError("not found")
+        return fake_df
+
+    with patch("core.adapters.us.ak_call", side_effect=fake_ak_call):
+        result = await adapter._resolve_akshare_code("XYZ")
+    assert result == "106.XYZ"
+    fake_repo.set_akshare_code.assert_awaited_once_with("XYZ", "106.XYZ")
+
+
+@pytest.mark.asyncio
+async def test_resolve_akshare_code_all_fail_returns_none():
+    """三种前缀全失败 → None, 不写库。"""
+    fake_repo = MagicMock()
+    fake_repo.get_akshare_code = AsyncMock(return_value=None)
+    fake_repo.set_akshare_code = AsyncMock()
+    adapter = USAdapter(dir_repo=fake_repo)
+    with patch("core.adapters.us.ak_call",
+               side_effect=RuntimeError("not found")):
+        result = await adapter._resolve_akshare_code("ZZZZ")
+    assert result is None
+    fake_repo.set_akshare_code.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_akshare_code_no_repo_returns_none():
+    """没注入 dir_repo → 直接返 None。"""
+    adapter = USAdapter()  # dir_repo=None
+    result = await adapter._resolve_akshare_code("AAPL")
+    assert result is None
