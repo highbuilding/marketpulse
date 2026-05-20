@@ -160,15 +160,6 @@ def attach_us_signal_jobs(
         **common,
     )
 
-    # 4h: 收盘点 ET 08:00 / 12:00 / 16:00 / 20:00, 各 +5
-    sched.add_job(
-        scan_cd_job,
-        CronTrigger(day_of_week="mon-fri", hour="8,12,16,20", minute="5", timezone=et),
-        id="cd:us:4h",
-        kwargs={"interval": "4h", "market_filter": "us"},
-        **common,
-    )
-
     # 1d: 盘后定稿 ET 20:05
     sched.add_job(
         scan_cd_job,
