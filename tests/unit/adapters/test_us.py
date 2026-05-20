@@ -168,9 +168,10 @@ def _mock_history_df():
 
 @pytest.mark.asyncio
 async def test_fetch_history_normalizes_to_et_midnight():
-    """1d ts 必须 normalize 为 ET 自然交易日 00:00 → UTC。
+    """yfinance fallback 路径 1d ts 必须 normalize 为 ET 自然交易日 00:00 → UTC。
     2026-05-15 00:00 ET (EDT, UTC-4) → 2026-05-15 04:00 UTC。"""
     adapter = USAdapter()
+    adapter.has_primary = False  # 强制走 yfinance
     with patch("core.adapters.us.yf") as mock_yf:
         mock_yf.download = MagicMock(return_value=_mock_history_df())
         bars = await adapter.fetch_history(
@@ -189,6 +190,7 @@ async def test_fetch_history_normalizes_to_et_midnight():
 async def test_fetch_history_class_share():
     """业务层 BRK.B → yfinance 收到 BRK-B, Bar.symbol 仍 BRK.B。"""
     adapter = USAdapter()
+    adapter.has_primary = False  # 强制走 yfinance
     with patch("core.adapters.us.yf") as mock_yf:
         mock_yf.download = MagicMock(return_value=_mock_history_df())
         bars = await adapter.fetch_history(
@@ -210,6 +212,7 @@ async def test_fetch_history_winter_est_offset():
         "Close": [201.0], "Volume": [1000000],
     }, index=idx)
     adapter = USAdapter()
+    adapter.has_primary = False  # 强制走 yfinance
     with patch("core.adapters.us.yf") as mock_yf:
         mock_yf.download = MagicMock(return_value=df)
         bars = await adapter.fetch_history(
@@ -286,196 +289,6 @@ def test_us_adapter_has_backup_cb_with_strict_params():
     assert adapter.backup_cb is not adapter.primary_cb
 
 
-def test_us_adapter_accepts_dir_repo_optional():
-    """dir_repo 可选注入, 不传时 akshare 路径不可用(向后兼容)。"""
-    adapter = USAdapter()
-    assert adapter.dir_repo is None
-
-
-# ── _resolve_akshare_code ───────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_resolve_akshare_code_cached():
-    """已缓存时直接返回, 不调 ak_call。"""
-    fake_repo = MagicMock()
-    fake_repo.get_akshare_code = AsyncMock(return_value="105.AAPL")
-    adapter = USAdapter(dir_repo=fake_repo)
-    with patch("core.adapters.us.ak_call") as mock_ak:
-        result = await adapter._resolve_akshare_code("AAPL")
-    assert result == "105.AAPL"
-    mock_ak.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_resolve_akshare_code_probes_105_first():
-    """未缓存 → 试 105.X, 命中后回写。"""
-    import pandas as pd
-    fake_repo = MagicMock()
-    fake_repo.get_akshare_code = AsyncMock(return_value=None)
-    fake_repo.set_akshare_code = AsyncMock()
-    adapter = USAdapter(dir_repo=fake_repo)
-    fake_df = pd.DataFrame({"日期": ["2026-01-02"], "开盘": [180.0],
-                            "收盘": [181.0], "最高": [181.5], "最低": [179.5],
-                            "成交量": [1000000]})
-    with patch("core.adapters.us.ak_call", new=AsyncMock(return_value=fake_df)) as mock_ak:
-        result = await adapter._resolve_akshare_code("AAPL")
-    assert result == "105.AAPL"
-    fake_repo.set_akshare_code.assert_awaited_once_with("AAPL", "105.AAPL")
-    assert mock_ak.await_count == 1
-
-
-@pytest.mark.asyncio
-async def test_resolve_akshare_code_falls_back_106():
-    """105 抛异常 → 试 106 → 命中。"""
-    import pandas as pd
-    fake_repo = MagicMock()
-    fake_repo.get_akshare_code = AsyncMock(return_value=None)
-    fake_repo.set_akshare_code = AsyncMock()
-    adapter = USAdapter(dir_repo=fake_repo)
-    fake_df = pd.DataFrame({"日期": ["2026-01-02"], "开盘": [200.0],
-                            "收盘": [201.0], "最高": [202.0], "最低": [199.0],
-                            "成交量": [500000]})
-
-    async def fake_ak_call(func_name, *args, **kwargs):
-        if "105." in kwargs.get("symbol", ""):
-            raise RuntimeError("not found")
-        return fake_df
-
-    with patch("core.adapters.us.ak_call", side_effect=fake_ak_call):
-        result = await adapter._resolve_akshare_code("XYZ")
-    assert result == "106.XYZ"
-    fake_repo.set_akshare_code.assert_awaited_once_with("XYZ", "106.XYZ")
-
-
-@pytest.mark.asyncio
-async def test_resolve_akshare_code_all_fail_returns_none():
-    """三种前缀全失败 → None, 不写库。"""
-    fake_repo = MagicMock()
-    fake_repo.get_akshare_code = AsyncMock(return_value=None)
-    fake_repo.set_akshare_code = AsyncMock()
-    adapter = USAdapter(dir_repo=fake_repo)
-    with patch("core.adapters.us.ak_call",
-               side_effect=RuntimeError("not found")):
-        result = await adapter._resolve_akshare_code("ZZZZ")
-    assert result is None
-    fake_repo.set_akshare_code.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_resolve_akshare_code_no_repo_returns_none():
-    """没注入 dir_repo → 直接返 None。"""
-    adapter = USAdapter()  # dir_repo=None
-    result = await adapter._resolve_akshare_code("AAPL")
-    assert result is None
-
-
-# ── fetch_history 路由 (akshare 主 / yfinance 备) ──────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_fetch_history_uses_akshare_when_resolved():
-    """akshare 主源命中时返回 akshare 数据,不调 yfinance。"""
-    fake_repo = MagicMock()
-    fake_repo.get_akshare_code = AsyncMock(return_value="105.AAPL")
-    adapter = USAdapter(dir_repo=fake_repo)
-    fake_df = pd.DataFrame({
-        "日期": ["2026-05-19"], "开盘": [296.97], "收盘": [298.97],
-        "最高": [300.51], "最低": [296.35], "成交量": [42243561],
-    })
-    with patch("core.adapters.us.ak_call", new=AsyncMock(return_value=fake_df)) as mock_ak, \
-         patch("core.adapters.us.yf") as mock_yf:
-        bars = await adapter.fetch_history(
-            "AAPL",
-            datetime(2026, 5, 1, tzinfo=timezone.utc),
-            datetime(2026, 5, 20, tzinfo=timezone.utc),
-        )
-    mock_yf.download.assert_not_called()
-    assert len(bars) == 1
-    assert bars[0].symbol == "AAPL"
-    assert bars[0].market == "us"
-    assert bars[0].interval == "1d"
-    # 5/19 ET 00:00 EDT (UTC-4) → UTC 5/19 04:00
-    assert bars[0].ts == datetime(2026, 5, 19, 4, 0, tzinfo=timezone.utc)
-    assert bars[0].close == Decimal("298.97")
-
-
-@pytest.mark.asyncio
-async def test_fetch_history_falls_back_to_yfinance_when_akshare_fails():
-    """akshare 抛 → fallback yfinance(backup_cb 未熔断时)。"""
-    fake_repo = MagicMock()
-    fake_repo.get_akshare_code = AsyncMock(return_value="105.AAPL")
-    adapter = USAdapter(dir_repo=fake_repo)
-    yf_df = _mock_history_df()
-    with patch("core.adapters.us.ak_call",
-               side_effect=RuntimeError("akshare network")), \
-         patch("core.adapters.us.yf") as mock_yf:
-        mock_yf.download = MagicMock(return_value=yf_df)
-        bars = await adapter.fetch_history(
-            "AAPL",
-            datetime(2026, 5, 1, tzinfo=timezone.utc),
-            datetime(2026, 5, 20, tzinfo=timezone.utc),
-        )
-    assert len(bars) == 2
-    mock_yf.download.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_fetch_history_raises_when_yfinance_circuit_open():
-    """akshare 失败 + yfinance backup_cb 已熔断 → AdapterError。"""
-    from core.adapters.base import AdapterError
-    fake_repo = MagicMock()
-    fake_repo.get_akshare_code = AsyncMock(return_value="105.AAPL")
-    adapter = USAdapter(dir_repo=fake_repo)
-    # 强制熔断
-    adapter.backup_cb.state = "open"
-    adapter.backup_cb.opened_at = 9999999999.0  # 远未来, 不会自动 half-open
-    with patch("core.adapters.us.ak_call",
-               side_effect=RuntimeError("akshare fail")):
-        with pytest.raises(AdapterError, match="circuit open"):
-            await adapter.fetch_history(
-                "AAPL",
-                datetime(2026, 5, 1, tzinfo=timezone.utc),
-                datetime(2026, 5, 20, tzinfo=timezone.utc),
-            )
-
-
-@pytest.mark.asyncio
-async def test_fetch_history_yfinance_failure_records_backup_cb():
-    """akshare 抛 → yfinance 抛 → backup_cb.failure_count 增加。"""
-    fake_repo = MagicMock()
-    fake_repo.get_akshare_code = AsyncMock(return_value="105.AAPL")
-    adapter = USAdapter(dir_repo=fake_repo)
-    initial = adapter.backup_cb.failure_count
-    with patch("core.adapters.us.ak_call",
-               side_effect=RuntimeError("akshare")), \
-         patch("core.adapters.us.yf") as mock_yf:
-        mock_yf.download = MagicMock(side_effect=RuntimeError("yfinance 429"))
-        with pytest.raises(Exception):
-            await adapter.fetch_history(
-                "AAPL",
-                datetime(2026, 5, 1, tzinfo=timezone.utc),
-                datetime(2026, 5, 20, tzinfo=timezone.utc),
-            )
-    assert adapter.backup_cb.failure_count == initial + 1
-
-
-@pytest.mark.asyncio
-async def test_fetch_history_no_dir_repo_skips_to_yfinance():
-    """没 dir_repo → akshare 路径返空 → 走 yfinance。"""
-    adapter = USAdapter()  # 不注入 dir_repo
-    yf_df = _mock_history_df()
-    with patch("core.adapters.us.yf") as mock_yf:
-        mock_yf.download = MagicMock(return_value=yf_df)
-        bars = await adapter.fetch_history(
-            "AAPL",
-            datetime(2026, 5, 1, tzinfo=timezone.utc),
-            datetime(2026, 5, 20, tzinfo=timezone.utc),
-        )
-    assert len(bars) == 2
-    mock_yf.download.assert_called_once()
-
-
 @pytest.mark.asyncio
 async def test_fetch_snapshot_skips_yfinance_when_circuit_open():
     """Alpaca 失败 + yfinance backup_cb 已熔断 → 静默返空,不抛。"""
@@ -489,3 +302,111 @@ async def test_fetch_snapshot_skips_yfinance_when_circuit_open():
         result = await adapter.fetch_snapshot(["AAPL"])
     assert result == []
     mock_yf.Ticker.assert_not_called()
+
+
+# ── fetch_history Alpaca 路径 ───────────────────────────────────────────────
+
+
+def _mock_alpaca_bar(timestamp, open_, high, low, close, volume):
+    """模拟 Alpaca SDK 返回的 Bar 对象。"""
+    bar = MagicMock()
+    bar.timestamp = timestamp
+    bar.open = open_
+    bar.high = high
+    bar.low = low
+    bar.close = close
+    bar.volume = volume
+    return bar
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_uses_alpaca_when_configured():
+    """has_primary=True → 走 Alpaca, 不调 yfinance。"""
+    adapter = USAdapter()
+    adapter.has_primary = True
+    fake_bars = [
+        _mock_alpaca_bar(
+            datetime(2026, 5, 19, 4, 0, tzinfo=timezone.utc),
+            296.97, 300.51, 296.35, 298.97, 42243561,
+        ),
+    ]
+    fake_resp = MagicMock()
+    fake_resp.data = {"AAPL": fake_bars}
+    fake_client = MagicMock()
+    fake_client.get_stock_bars = MagicMock(return_value=fake_resp)
+    with patch("alpaca.data.historical.StockHistoricalDataClient",
+               return_value=fake_client), \
+         patch("core.adapters.us.yf") as mock_yf:
+        bars = await adapter.fetch_history(
+            "AAPL",
+            datetime(2026, 5, 1, tzinfo=timezone.utc),
+            datetime(2026, 5, 20, tzinfo=timezone.utc),
+        )
+    assert len(bars) == 1
+    assert bars[0].symbol == "AAPL"
+    assert bars[0].market == "us"
+    assert bars[0].interval == "1d"
+    assert bars[0].ts == datetime(2026, 5, 19, 4, 0, tzinfo=timezone.utc)
+    assert bars[0].close == Decimal("298.97")
+    mock_yf.download.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_alpaca_failure_falls_back_yfinance():
+    """Alpaca 抛 → fallback yfinance(backup_cb 未熔断时)。"""
+    adapter = USAdapter()
+    adapter.has_primary = True
+    yf_df = _mock_history_df()
+    with patch("alpaca.data.historical.StockHistoricalDataClient",
+               side_effect=RuntimeError("alpaca network")), \
+         patch("core.adapters.us.yf") as mock_yf:
+        mock_yf.download = MagicMock(return_value=yf_df)
+        bars = await adapter.fetch_history(
+            "AAPL",
+            datetime(2026, 5, 1, tzinfo=timezone.utc),
+            datetime(2026, 5, 20, tzinfo=timezone.utc),
+        )
+    assert len(bars) == 2  # _mock_history_df 返 2 行
+    mock_yf.download.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_no_alpaca_falls_back_yfinance():
+    """has_primary=False(无 key)→ 直接 yfinance。"""
+    adapter = USAdapter()
+    adapter.has_primary = False
+    yf_df = _mock_history_df()
+    with patch("core.adapters.us.yf") as mock_yf:
+        mock_yf.download = MagicMock(return_value=yf_df)
+        bars = await adapter.fetch_history(
+            "AAPL",
+            datetime(2026, 5, 1, tzinfo=timezone.utc),
+            datetime(2026, 5, 20, tzinfo=timezone.utc),
+        )
+    assert len(bars) == 2
+    mock_yf.download.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_class_share_uses_dash():
+    """BRK.B → Alpaca 拿 BRK-B, Bar.symbol 仍 BRK.B。"""
+    adapter = USAdapter()
+    adapter.has_primary = True
+    fake_bars = [_mock_alpaca_bar(
+        datetime(2026, 5, 19, 4, 0, tzinfo=timezone.utc),
+        500.0, 510.0, 495.0, 505.0, 1000000,
+    )]
+    fake_resp = MagicMock()
+    fake_resp.data = {"BRK-B": fake_bars}
+    fake_client = MagicMock()
+    fake_client.get_stock_bars = MagicMock(return_value=fake_resp)
+    with patch("alpaca.data.historical.StockHistoricalDataClient",
+               return_value=fake_client):
+        bars = await adapter.fetch_history(
+            "BRK.B",
+            datetime(2026, 5, 1, tzinfo=timezone.utc),
+            datetime(2026, 5, 20, tzinfo=timezone.utc),
+        )
+    assert bars[0].symbol == "BRK.B"
+    call = fake_client.get_stock_bars.call_args
+    assert call.args[0].symbol_or_symbols == "BRK-B"
