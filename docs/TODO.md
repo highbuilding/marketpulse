@@ -142,13 +142,15 @@
 
 ---
 
-## 美股 intraday 接入(2026-05-20 spec)
+## 美股 Alpaca IEX 已接入(2026-05-20 spec 修订)
 
-- 数据源调研:stooq.com / pandas-datareader / 等 yfinance ban 解封后接回 / 购入 Alpaca paid
-- akshare `BRK.B` 类 class share ticker 格式探索
-- yfinance 解封后启用熔断恢复路径(`USAdapter.backup_cb` 已写好,`fail_threshold=2`/`reset_after_s=1800`)
-- 美股 directory `_US_SEEDS` 启动期批量预热 akshare_code(如果用户体验慢)
-- 美股 intraday 暂未接入,前端只显示 1d/1wk/1mo K 线 + 1d CD 信号
+后端美股数据全部走 Alpaca IEX 主源(免费, 实测 1d 2020-至今, intraday 5m/15m/30m/60m 60 天历史, 1m 7 天)。
+
+后续可选优化:
+- **SIP 付费升级**($99/月):获 2016 之前的全市场历史 + 实时 SIP feed(无 15min 延迟)。如需扩历史窗口或精度
+- Alpaca historical bars rate limit 监控:目前 200/min 够用;watchlist 增长后需重新评估
+- `directory.akshare_code` 列保留作 dead column,日后若再用 akshare 直接复用 schema
+- 美股 4h 暂不支持(Alpaca IEX prepost bar 稀疏,4h 重采样残缺);对齐 A 股 / HK 口径
 
 ---
 

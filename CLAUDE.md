@@ -366,3 +366,4 @@ grep -c FATAL /tmp/api.log  # 期望 0
 - **scheduler 每 10s 读一次 sqlite 拿 watchlist**:浪费但单读 <1ms 可忽略,优化项在 TODO
 - **`acknowledged` 字段** 后端建好但 UI 没用:死代码,留待"已读"功能或删
 - **美股 4h tab** 在 watchlist + 详情页都显示(prepost 16h ÷ 4 = 4 根/天);港股 4h 仅 detail 页可见但与 1d 等价,无新增信号
+- 美股数据源 2026-05-20 切回 Alpaca IEX(免费层, 完整支持 1d + 1m/5m/15m/30m/60m intraday);上午接入的 akshare 路径已删除, 但 `directory.akshare_code` 列保留作 dead column
