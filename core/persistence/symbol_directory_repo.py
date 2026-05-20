@@ -7,6 +7,9 @@ import aiosqlite
 
 
 class SymbolDirectoryRepo:
+    # 类级 flag，保证 ALTER 只跑一次(多实例共享)
+    _schema_ensured: bool = False
+
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
 
@@ -14,7 +17,21 @@ class SymbolDirectoryRepo:
     async def _connect(self):
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
+            if not SymbolDirectoryRepo._schema_ensured:
+                await self._ensure_schema(db)
+                SymbolDirectoryRepo._schema_ensured = True
             yield db
+
+    @staticmethod
+    async def _ensure_schema(db) -> None:
+        """幂等加 akshare_code 列(老库升级用)。"""
+        cur = await db.execute("PRAGMA table_info(symbol_directory)")
+        cols = {r[1] for r in await cur.fetchall()}
+        if "akshare_code" not in cols:
+            await db.execute(
+                "ALTER TABLE symbol_directory ADD COLUMN akshare_code TEXT"
+            )
+            await db.commit()
 
     async def upsert_many(self, items: list[tuple[str, str, str]]) -> int:
         """items: list[(symbol, name, market)]."""
@@ -41,7 +58,7 @@ class SymbolDirectoryRepo:
         return row["name"] if row else None
 
     async def get_names(self, symbols: list[str]) -> dict[str, str]:
-        """批量查 name, 缺失的不在返回 dict 里。"""
+        """批量查 name，缺失的不在返回 dict 里。"""
         if not symbols:
             return {}
         placeholders = ",".join("?" * len(symbols))
@@ -57,7 +74,7 @@ class SymbolDirectoryRepo:
         self, query: str, limit: int = 20,
         *, market: str | None = None,
     ) -> list[tuple[str, str, str]]:
-        """模糊搜索: symbol prefix 或 name 子串。可按 market 过滤。"""
+        """模糊搜索：symbol prefix 或 name 子串。可按 market 过滤。"""
         q = query.strip()
         if not q:
             return []
@@ -88,3 +105,27 @@ class SymbolDirectoryRepo:
             cur = await db.execute("SELECT COUNT(*) AS c FROM symbol_directory")
             row = await cur.fetchone()
         return int(row["c"])
+
+    async def get_akshare_code(self, symbol: str) -> str | None:
+        """查 symbol 对应的 akshare 调用格式（如 105.AAPL），不存在返回 None。"""
+        async with self._connect() as db:
+            cur = await db.execute(
+                "SELECT akshare_code FROM symbol_directory WHERE symbol = ?",
+                (symbol,),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        code = row["akshare_code"]
+        return code if code else None
+
+    async def set_akshare_code(self, symbol: str, code: str) -> None:
+        """更新 symbol 的 akshare_code（symbol 必须已在 directory）。"""
+        now = datetime.now(timezone.utc).isoformat()
+        async with self._connect() as db:
+            await db.execute(
+                "UPDATE symbol_directory SET akshare_code = ?, updated_at = ? "
+                "WHERE symbol = ?",
+                (code, now, symbol),
+            )
+            await db.commit()
