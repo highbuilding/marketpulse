@@ -4,6 +4,14 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 
+# 必须在 import adapters 之前 load .env, 否则 USAdapter().__init__ 拿不到 ALPACA_*
+from dotenv import load_dotenv
+load_dotenv()
+
+# 必须在其他 import 之前装好日志, 让 startup 期任何错误也能落到 data/logs/
+from core.integrations.logging_setup import setup_logging
+setup_logging()
+
 import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

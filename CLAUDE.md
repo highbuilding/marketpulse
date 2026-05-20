@@ -69,10 +69,12 @@ reload 时 V8 状态污染会触发 SIGABRT。`Makefile dev` 已去掉 `--reload
 ```bash
 pkill -9 -f "uvicorn apps.api.main:app"; sleep 2
 cd /Users/xiangrong/stock/marketpulse
-nohup bash -c '. .venv/bin/activate && uvicorn apps.api.main:app --port 8787' > /tmp/api.log 2>&1 &
+nohup bash -c '. .venv/bin/activate && uvicorn apps.api.main:app --port 8787' >> /tmp/api.log 2>&1 &
 disown
 sleep 6 && tail -5 /tmp/api.log  # 看 "Application startup complete"
 ```
+
+注意 `>>` 是 append 模式(早期用 `>` 覆盖,崩溃日志会丢失)。**事实源是 `data/logs/api.log`**(见雷区 6),`/tmp/api.log` 仅作 stdout 镜像。
 
 调试时**自己重启**,不要让用户手动操作(用户已明确说过)。
 
@@ -103,6 +105,18 @@ sleep 6 && tail -5 /tmp/api.log  # 看 "Application startup complete"
 ```
 
 `apps/api/routes/symbols.py` 里就有这个 trap,踩过。
+
+### 雷区 6:日志持久化与崩溃排查(2026-05-20 加固)
+
+**事实源**:`data/logs/api.log`(全量,rotation)、`data/logs/api-errors.log`(WARNING+)、`data/logs/fault.log`(SIGABRT/SIGSEGV C-level 线程栈)。**`/tmp/api.log` 仅作 stdout 镜像,重启 append 不丢**,但不要当事实源。
+
+`core/integrations/logging_setup.py::setup_logging()` 在 `apps/api/main.py` 启动早期(`load_dotenv()` 之后)调一次,无需重复。`faulthandler` 用 fd 直写 fault.log,雷区 1 触发 SIGABRT 时 stdout buffer 来不及 flush 但 fault.log 仍能落盘。
+
+**排查崩溃**:
+```bash
+tail -100 data/logs/api-errors.log   # 看最后 warning/error
+tail -50 data/logs/fault.log          # 看 C 层崩溃栈(如有)
+```
 
 ---
 
