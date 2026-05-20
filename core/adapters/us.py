@@ -55,9 +55,20 @@ class USAdapter:
             except Exception as e:
                 self.primary_cb.record_failure()
                 log.warning("us.alpaca_failed", error=str(e))
+        # yfinance backup, 熔断保护
+        if not self.backup_cb.can_execute():
+            log.debug("us.yfinance_circuit_open_skip_snapshot")
+            return []
         try:
-            return await asyncio.to_thread(self._fetch_snapshot_yfinance, symbols)
+            quotes = await asyncio.to_thread(self._fetch_snapshot_yfinance, symbols)
+            if quotes:
+                self.backup_cb.record_success()
+            else:
+                # 整批 0 quote 视作失败(可能全部 429)
+                self.backup_cb.record_failure()
+            return quotes
         except Exception as e:
+            self.backup_cb.record_failure()
             raise AdapterError(f"both primary and backup failed: {e}", source="us") from e
 
     def _fetch_snapshot_alpaca(self, symbols: list[str]) -> list[Quote]:

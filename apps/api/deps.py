@@ -52,6 +52,9 @@ def get_state_repo() -> StateRepo:
 def get_kline_service() -> KLineService:
     registry = get_registry()
     adapters = {m: registry.get(m) for m in registry.markets()}
+    # 给 us adapter 注入 dir_repo, 启用 akshare 主源路径(akshare_code 缓存写入用)
+    if "us" in adapters:
+        adapters["us"].dir_repo = get_symbol_directory_repo()
     return KLineService(get_bar_repo(), adapters)
 
 

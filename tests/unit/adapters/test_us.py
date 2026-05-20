@@ -474,3 +474,18 @@ async def test_fetch_history_no_dir_repo_skips_to_yfinance():
         )
     assert len(bars) == 2
     mock_yf.download.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_fetch_snapshot_skips_yfinance_when_circuit_open():
+    """Alpaca 失败 + yfinance backup_cb 已熔断 → 静默返空,不抛。"""
+    adapter = USAdapter()
+    # 设没 alpaca + yfinance 熔断
+    adapter.has_primary = False
+    adapter.backup_cb.state = "open"
+    adapter.backup_cb.opened_at = 9999999999.0
+    with patch("core.adapters.us.yf") as mock_yf:
+        mock_yf.Ticker = MagicMock()
+        result = await adapter.fetch_snapshot(["AAPL"])
+    assert result == []
+    mock_yf.Ticker.assert_not_called()
