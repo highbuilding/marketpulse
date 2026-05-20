@@ -142,6 +142,16 @@
 
 ---
 
+## 美股 intraday 接入(2026-05-20 spec)
+
+- 数据源调研:stooq.com / pandas-datareader / 等 yfinance ban 解封后接回 / 购入 Alpaca paid
+- akshare `BRK.B` 类 class share ticker 格式探索
+- yfinance 解封后启用熔断恢复路径(`USAdapter.backup_cb` 已写好,`fail_threshold=2`/`reset_after_s=1800`)
+- 美股 directory `_US_SEEDS` 启动期批量预热 akshare_code(如果用户体验慢)
+- 美股 intraday 暂未接入,前端只显示 1d/1wk/1mo K 线 + 1d CD 信号
+
+---
+
 ## 维护
 
 - 完成一项请把 `- [ ]` 改 `- [x]`,并在 commit message 引用本文件位置
