@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, Callable
 
@@ -218,6 +218,12 @@ class USAdapter:
         if cached:
             return cached
 
+        # 试探窗口: 最近 10 天, 足够判定 ticker 是否在该交易所存在
+        end_dt = datetime.now(timezone.utc)
+        start_dt = end_dt - timedelta(days=10)
+        probe_start = start_dt.strftime("%Y%m%d")
+        probe_end = end_dt.strftime("%Y%m%d")
+
         # akshare 不接受 BRK.B, 试横杠版本(yfinance 格式 BRK-B)+ 原版
         candidates = []
         yf_sym = _to_yfinance_ticker(symbol)
@@ -232,7 +238,7 @@ class USAdapter:
                     df = await ak_call(
                         "stock_us_hist",
                         symbol=ak_code, period="daily",
-                        start_date="20260101", end_date="20260110",
+                        start_date=probe_start, end_date=probe_end,
                         adjust="",
                         caller=f"us.resolve:{symbol}:{ak_code}",
                     )
