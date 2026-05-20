@@ -4,7 +4,10 @@ import asyncio
 import os
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from core.persistence.symbol_directory_repo import SymbolDirectoryRepo
 
 import pandas as pd
 import structlog
@@ -27,11 +30,16 @@ class USAdapter:
     market = "us"
     name = "us"
 
-    def __init__(self) -> None:
+    def __init__(self, dir_repo: "SymbolDirectoryRepo | None" = None) -> None:
         self.api_key = os.getenv("ALPACA_API_KEY")
         self.secret = os.getenv("ALPACA_SECRET_KEY")
         self.has_primary = bool(self.api_key and self.secret)
+        # primary: Alpaca, 中等阈值
         self.primary_cb = CircuitBreaker(fail_threshold=3, reset_after_s=300)
+        # backup: yfinance, 更激进 - 429 / 网络失败 2 次熔断 30 分钟
+        self.backup_cb = CircuitBreaker(fail_threshold=2, reset_after_s=1800)
+        # akshare 路径需要 dir_repo 缓存 ticker → akshare_code 映射(未注入时 akshare 路径不可用)
+        self.dir_repo = dir_repo
 
     async def fetch_snapshot(self, symbols: list[str]) -> list[Quote]:
         if self.has_primary and self.primary_cb.can_execute():
@@ -50,12 +58,16 @@ class USAdapter:
     def _fetch_snapshot_alpaca(self, symbols: list[str]) -> list[Quote]:
         from alpaca.data.historical import StockHistoricalDataClient
         from alpaca.data.requests import StockLatestQuoteRequest
+        # Alpaca 拒绝 ^GSPC 这种 Yahoo 指数 ticker(整批 400),先过滤
+        eligible = [s for s in symbols if not s.startswith("^")]
+        if not eligible:
+            return []
         client = StockHistoricalDataClient(self.api_key, self.secret)
-        req = StockLatestQuoteRequest(symbol_or_symbols=symbols)
+        req = StockLatestQuoteRequest(symbol_or_symbols=eligible)
         resp = client.get_stock_latest_quote(req)
         now = datetime.now(timezone.utc)
         out: list[Quote] = []
-        for sym in symbols:
+        for sym in eligible:
             q = resp.get(sym)
             if q is None:
                 continue

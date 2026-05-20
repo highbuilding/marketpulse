@@ -274,3 +274,19 @@ async def test_verify_ticker_exception_returns_false():
         ok, name = await adapter.verify_ticker("AAPL")
     assert ok is False
     assert name is None
+
+
+def test_us_adapter_has_backup_cb_with_strict_params():
+    """yfinance backup 必须有独立 CircuitBreaker, 比 primary 更激进。"""
+    adapter = USAdapter()
+    assert hasattr(adapter, "backup_cb")
+    assert adapter.backup_cb.fail_threshold == 2
+    assert adapter.backup_cb.reset_after_s == 1800
+    # 与 primary 是独立实例
+    assert adapter.backup_cb is not adapter.primary_cb
+
+
+def test_us_adapter_accepts_dir_repo_optional():
+    """dir_repo 可选注入, 不传时 akshare 路径不可用(向后兼容)。"""
+    adapter = USAdapter()
+    assert adapter.dir_repo is None
