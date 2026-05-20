@@ -114,43 +114,53 @@ class USAdapter:
         raise NotImplementedError("use scheduler polling for us in V1")
 
     async def fetch_intraday(self, symbol: str, freq: str = "5") -> list[Bar]:
-        """freq: '1'/'5'/'15'/'30'/'60' min。
-        yfinance 限制: 1m=7d, 5m/15m/30m/60m=60d。prepost=True 拿盘前盘后。
+        """Alpaca IEX intraday。freq: '1' / '5' / '15' / '30' / '60'。
+        1m 限 7 天历史(IEX delay 15 min);其他 60 天。
         """
-        interval_map = {"1": "1m", "5": "5m", "15": "15m",
-                        "30": "30m", "60": "60m"}
-        if freq not in interval_map:
+        if freq not in ("1", "5", "15", "30", "60"):
             raise ValueError(f"unsupported freq: {freq}")
-        yf_interval = interval_map[freq]
-        period = "7d" if freq == "1" else "60d"
+        if not self.has_primary:
+            raise AdapterError("alpaca not configured for intraday", source="us")
+        return await asyncio.to_thread(self._fetch_intraday_alpaca, symbol, freq)
+
+    def _fetch_intraday_alpaca(self, symbol: str, freq: str) -> list[Bar]:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+
+        tf_map = {
+            "1":  TimeFrame.Minute,
+            "5":  TimeFrame(5, TimeFrameUnit.Minute),
+            "15": TimeFrame(15, TimeFrameUnit.Minute),
+            "30": TimeFrame(30, TimeFrameUnit.Minute),
+            "60": TimeFrame.Hour,
+        }
+        interval_map = {"1": "1m", "5": "5m", "15": "15m", "30": "30m", "60": "60m"}
+        days = 7 if freq == "1" else 60
+        now = datetime.now(timezone.utc)
+        end_safe = now - timedelta(minutes=20)
+        start = end_safe - timedelta(days=days)
+
+        client = StockHistoricalDataClient(self.api_key, self.secret)
         yf_symbol = _to_yfinance_ticker(symbol)
-        df = await asyncio.to_thread(
-            yf.download, yf_symbol,
-            period=period, interval=yf_interval,
-            prepost=True, progress=False, auto_adjust=False,
+        req = StockBarsRequest(
+            symbol_or_symbols=yf_symbol,
+            timeframe=tf_map[freq],
+            start=start, end=end_safe, feed="iex",
         )
+        resp = client.get_stock_bars(req)
+        raw_bars = resp.data.get(yf_symbol, [])
         out: list[Bar] = []
-        for idx, row in df.iterrows():
-            # yfinance intraday 通常返回 ET 时区的 index
-            if idx.tzinfo is None:
-                ts_utc = (
-                    idx.tz_localize("America/New_York")
-                    .tz_convert("UTC")
-                    .to_pydatetime()
-                )
-            else:
-                ts_utc = idx.tz_convert("UTC").to_pydatetime()
-            # 跳过 OHLC 任何字段 NaN 的行(yfinance 在 prepost 时段偶发)
-            if any(pd.isna(row[c]) for c in ("Open", "High", "Low", "Close")):
-                continue
-            vol = int(row["Volume"]) if not pd.isna(row["Volume"]) else 0
+        interval = interval_map[freq]
+        for b in raw_bars:
             out.append(Bar(
-                market="us", symbol=symbol, ts=ts_utc,
-                open=Decimal(str(float(row["Open"]))),
-                high=Decimal(str(float(row["High"]))),
-                low=Decimal(str(float(row["Low"]))),
-                close=Decimal(str(float(row["Close"]))),
-                volume=vol, interval=f"{freq}m",
+                market="us", symbol=symbol, ts=b.timestamp,
+                open=Decimal(str(float(b.open))),
+                high=Decimal(str(float(b.high))),
+                low=Decimal(str(float(b.low))),
+                close=Decimal(str(float(b.close))),
+                volume=int(b.volume) if b.volume else 0,
+                interval=interval,
             ))
         return out
 

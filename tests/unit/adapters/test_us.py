@@ -63,92 +63,71 @@ def test_to_yfinance_ticker_plain():
     assert _to_yfinance_ticker("SPY") == "SPY"
 
 
-# ── fetch_intraday ──────────────────────────────────────────────────────────
-
-
-def _mock_intraday_df():
-    """yfinance.download intraday 返回 ET 时区的 DataFrame。"""
-    idx = pd.DatetimeIndex(
-        ["2026-05-15 09:30:00-04:00", "2026-05-15 10:30:00-04:00"],
-        tz="America/New_York",
-    )
-    return pd.DataFrame({
-        "Open":   [180.0, 181.0],
-        "High":   [181.0, 182.0],
-        "Low":    [179.0, 180.5],
-        "Close":  [180.5, 181.5],
-        "Volume": [100000, 120000],
-    }, index=idx)
+# ── fetch_intraday (Alpaca IEX) ──────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_fetch_intraday_basic():
+async def test_fetch_intraday_uses_alpaca():
+    """has_primary=True → fetch_intraday 走 Alpaca。"""
     adapter = USAdapter()
-    with patch("core.adapters.us.yf") as mock_yf:
-        mock_yf.download = MagicMock(return_value=_mock_intraday_df())
+    adapter.has_primary = True
+    fake_bars = [
+        _mock_alpaca_bar(
+            datetime(2026, 5, 20, 13, 30, tzinfo=timezone.utc),
+            300.0, 301.0, 299.5, 300.8, 50000,
+        ),
+        _mock_alpaca_bar(
+            datetime(2026, 5, 20, 14, 30, tzinfo=timezone.utc),
+            300.8, 302.0, 300.5, 301.5, 60000,
+        ),
+    ]
+    fake_resp = MagicMock()
+    fake_resp.data = {"AAPL": fake_bars}
+    fake_client = MagicMock()
+    fake_client.get_stock_bars = MagicMock(return_value=fake_resp)
+    with patch("alpaca.data.historical.StockHistoricalDataClient",
+               return_value=fake_client):
         bars = await adapter.fetch_intraday("AAPL", freq="60")
     assert len(bars) == 2
-    assert bars[0].symbol == "AAPL"
-    assert bars[0].market == "us"
     assert bars[0].interval == "60m"
-    # 13:30 UTC == 09:30 EDT
-    assert bars[0].ts == datetime(2026, 5, 15, 13, 30, tzinfo=timezone.utc)
-    assert bars[0].open == Decimal("180.0")
+    assert bars[0].ts == datetime(2026, 5, 20, 13, 30, tzinfo=timezone.utc)
+    assert bars[1].close == Decimal("301.5")
 
 
 @pytest.mark.asyncio
-async def test_fetch_intraday_class_share_converts_ticker():
+async def test_fetch_intraday_alpaca_5m_freq():
+    """5m freq 调用 TimeFrame(5, Minute)。"""
+    from alpaca.data.timeframe import TimeFrameUnit
     adapter = USAdapter()
-    with patch("core.adapters.us.yf") as mock_yf:
-        mock_yf.download = MagicMock(return_value=_mock_intraday_df())
-        bars = await adapter.fetch_intraday("BRK.B", freq="60")
-    # yfinance.download 应该被以 'BRK-B' 调用(adapter 内部转换)
-    call = mock_yf.download.call_args
-    assert call.args[0] == "BRK-B"
-    # business 层 Bar 仍标 BRK.B
-    assert bars[0].symbol == "BRK.B"
+    adapter.has_primary = True
+    fake_resp = MagicMock()
+    fake_resp.data = {"AAPL": []}
+    fake_client = MagicMock()
+    fake_client.get_stock_bars = MagicMock(return_value=fake_resp)
+    with patch("alpaca.data.historical.StockHistoricalDataClient",
+               return_value=fake_client):
+        await adapter.fetch_intraday("AAPL", freq="5")
+    call = fake_client.get_stock_bars.call_args
+    tf = call.args[0].timeframe
+    assert tf.amount == 5
+    assert tf.unit == TimeFrameUnit.Minute
 
 
 @pytest.mark.asyncio
-async def test_fetch_intraday_drops_nan():
-    df = _mock_intraday_df().copy()
-    df.iloc[0, df.columns.get_loc("Close")] = float("nan")
+async def test_fetch_intraday_invalid_freq_raises():
     adapter = USAdapter()
-    with patch("core.adapters.us.yf") as mock_yf:
-        mock_yf.download = MagicMock(return_value=df)
-        bars = await adapter.fetch_intraday("AAPL", freq="60")
-    assert len(bars) == 1  # 第一行 NaN 被丢弃
+    with pytest.raises(ValueError, match="unsupported freq"):
+        await adapter.fetch_intraday("AAPL", freq="2")
 
 
 @pytest.mark.asyncio
-async def test_fetch_intraday_drops_high_low_nan():
-    """High 或 Low NaN 时也要丢弃,避免 Decimal('nan')。"""
-    df = _mock_intraday_df().copy()
-    df.iloc[0, df.columns.get_loc("High")] = float("nan")
+async def test_fetch_intraday_no_alpaca_raises():
+    """has_primary=False → 抛 AdapterError。"""
+    from core.adapters.base import AdapterError
     adapter = USAdapter()
-    with patch("core.adapters.us.yf") as mock_yf:
-        mock_yf.download = MagicMock(return_value=df)
-        bars = await adapter.fetch_intraday("AAPL", freq="60")
-    assert len(bars) == 1  # 第一行 High NaN, 被丢弃
-
-
-@pytest.mark.asyncio
-async def test_fetch_intraday_period_mapping():
-    """1m freq → period=7d, 其他 → 60d, prepost 始终 True。"""
-    adapter = USAdapter()
-    with patch("core.adapters.us.yf") as mock_yf:
-        mock_yf.download = MagicMock(return_value=_mock_intraday_df())
-        await adapter.fetch_intraday("AAPL", freq="1")
-    assert mock_yf.download.call_args.kwargs["period"] == "7d"
-    assert mock_yf.download.call_args.kwargs["interval"] == "1m"
-    assert mock_yf.download.call_args.kwargs["prepost"] is True
-
-    with patch("core.adapters.us.yf") as mock_yf:
-        mock_yf.download = MagicMock(return_value=_mock_intraday_df())
+    adapter.has_primary = False
+    with pytest.raises(AdapterError, match="alpaca not configured"):
         await adapter.fetch_intraday("AAPL", freq="60")
-    assert mock_yf.download.call_args.kwargs["period"] == "60d"
-    assert mock_yf.download.call_args.kwargs["interval"] == "60m"
-    assert mock_yf.download.call_args.kwargs["prepost"] is True
 
 
 # ── fetch_history ───────────────────────────────────────────────────────────
