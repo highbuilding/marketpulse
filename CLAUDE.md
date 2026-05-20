@@ -78,6 +78,23 @@ sleep 6 && tail -5 /tmp/api.log  # 看 "Application startup complete"
 
 调试时**自己重启**,不要让用户手动操作(用户已明确说过)。
 
+**强制工作流(防"我以为它崩了"误判)**:
+干一段活前先 `pkill -9`,干完活后**统一重启一次**。中途不要让 API 服务停在挂掉状态去问用户问题或处理别的事 — 否则用户在浏览器看到"加载失败"会以为是新 bug,实际只是没重启。模板:
+
+```bash
+# 开干前:停服务(避免运行中的进程被 commit / git checkout 影响)
+pkill -9 -f "uvicorn apps.api.main:app"; sleep 2
+
+# ... 干活、改代码、commit、跑测试 ...
+
+# 收尾:必须重启,不要留 8787 空
+nohup bash -c '. .venv/bin/activate && uvicorn apps.api.main:app --port 8787' >> /tmp/api.log 2>&1 &
+disown
+sleep 6 && curl -s -m 3 http://localhost:8787/api/health | grep -o '"status":"[^"]*"'
+```
+
+**反模式**(已踩过,2026-05-20):e2e 测试 plan 末尾 `pkill -9` 收尾但忘了重启,16 分钟后用户报"加载失败",实际仅服务没起来。任何 task plan 里 `pkill` 一定要配套 nohup 重启。
+
 ### 雷区 3:1d bar 的时间戳约定(踩坑历史:UI 一度显示早一天)
 
 **当前约定**:adapter (`core/adapters/ashare.py:180`) 把 1d bar 的 `ts` normalize 为 **BJT 自然交易日 00:00**(= UTC `(D-1) 16:00`)。所以 ts=`2026-05-17T16:00Z` 表示 **交易日 5/18**(BJT 转换为 `5/18 00:00`)。`bjtDateKey(ts)` 直接得到正确交易日,**不需要任何偏移**。
