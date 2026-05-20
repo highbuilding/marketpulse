@@ -17,9 +17,10 @@ export function WatchlistSignalsPanel({
 }: { symbols: string[]; market: Market }) {
   const { mutate: mutateGlobal } = useSWRConfig()
 
-  // 按 market 决定是否展示 4h tab(股票市场 4h ≡ 日线,us/crypto 才有意义)
+  // 按 market 决定是否展示 4h tab(美股 Alpaca IEX prepost 数据稀疏 → 4h 残缺;
+  // A 股/HK 4h ≡ 日线,无意义。仅 crypto 24h 连续才有意义)
   const tabs = useMemo(() => {
-    const allowFourH = market === 'us' || market === 'crypto'
+    const allowFourH = market === 'crypto'
     return ALL_TABS.filter((t) => t.key !== '4h' || allowFourH)
   }, [market])
 
