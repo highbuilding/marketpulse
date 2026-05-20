@@ -154,6 +154,76 @@ class USAdapter:
         return out
 
     async def fetch_history(self, symbol: str, start: datetime, end: datetime) -> list[Bar]:
+        """1d 历史。
+        路径: akshare 主源 → yfinance 备份(backup_cb 控制)。
+        """
+        # 主源: akshare
+        try:
+            bars = await self._fetch_history_akshare(symbol, start, end)
+            if bars:
+                return bars
+        except Exception as e:  # noqa: BLE001
+            log.warning("us.akshare_history_failed",
+                        symbol=symbol, error=str(e))
+
+        # 备份: yfinance(circuit breaker 控制)
+        if not self.backup_cb.can_execute():
+            log.warning("us.yfinance_circuit_open_skip_history", symbol=symbol)
+            raise AdapterError(
+                f"akshare unavailable and yfinance circuit open for {symbol}",
+                source="us",
+            )
+        try:
+            bars = await self._fetch_history_yfinance(symbol, start, end)
+            self.backup_cb.record_success()
+            return bars
+        except Exception as e:
+            self.backup_cb.record_failure()
+            raise AdapterError(
+                f"both akshare and yfinance failed for {symbol}: {e}",
+                source="us",
+            ) from e
+
+    async def _fetch_history_akshare(
+        self, symbol: str, start: datetime, end: datetime,
+    ) -> list[Bar]:
+        """akshare stock_us_hist 拿 1d。
+        ts normalize: 'YYYY-MM-DD' → ET 自然交易日 00:00 → UTC(雷区 3 对称)。
+        """
+        if self.dir_repo is None:
+            return []  # 上层会 fallback yfinance
+        ak_code = await self._resolve_akshare_code(symbol)
+        if ak_code is None:
+            raise RuntimeError(f"failed to resolve akshare code for {symbol}")
+
+        sd = start.strftime("%Y%m%d")
+        ed = end.strftime("%Y%m%d")
+        df = await ak_call(
+            "stock_us_hist",
+            symbol=ak_code, period="daily",
+            start_date=sd, end_date=ed, adjust="",
+            caller=f"us.fetch_history:{symbol}",
+        )
+        out: list[Bar] = []
+        for _, row in df.iterrows():
+            date_str = str(row["日期"])
+            # ET 自然日 00:00 → UTC(对称 A 股雷区 3)
+            et_midnight = pd.Timestamp(date_str).tz_localize("America/New_York")
+            ts_utc = et_midnight.tz_convert("UTC").to_pydatetime()
+            if pd.isna(row["开盘"]) or pd.isna(row["收盘"]):
+                continue
+            out.append(Bar(
+                market="us", symbol=symbol, ts=ts_utc,
+                open=Decimal(str(float(row["开盘"]))),
+                high=Decimal(str(float(row["最高"]))),
+                low=Decimal(str(float(row["最低"]))),
+                close=Decimal(str(float(row["收盘"]))),
+                volume=int(row["成交量"]) if not pd.isna(row["成交量"]) else 0,
+                interval="1d",
+            ))
+        return out
+
+    async def _fetch_history_yfinance(self, symbol: str, start: datetime, end: datetime) -> list[Bar]:
         """1d 历史。ts 与 A 股雷区 3 对称: normalize 为该市场本地交易日 00:00 → UTC。
         美股本地 = America/New_York(自动跟夏/冬令时)。
         """

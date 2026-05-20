@@ -368,3 +368,109 @@ async def test_resolve_akshare_code_no_repo_returns_none():
     adapter = USAdapter()  # dir_repo=None
     result = await adapter._resolve_akshare_code("AAPL")
     assert result is None
+
+
+# ── fetch_history 路由 (akshare 主 / yfinance 备) ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_uses_akshare_when_resolved():
+    """akshare 主源命中时返回 akshare 数据,不调 yfinance。"""
+    fake_repo = MagicMock()
+    fake_repo.get_akshare_code = AsyncMock(return_value="105.AAPL")
+    adapter = USAdapter(dir_repo=fake_repo)
+    fake_df = pd.DataFrame({
+        "日期": ["2026-05-19"], "开盘": [296.97], "收盘": [298.97],
+        "最高": [300.51], "最低": [296.35], "成交量": [42243561],
+    })
+    with patch("core.adapters.us.ak_call", new=AsyncMock(return_value=fake_df)) as mock_ak, \
+         patch("core.adapters.us.yf") as mock_yf:
+        bars = await adapter.fetch_history(
+            "AAPL",
+            datetime(2026, 5, 1, tzinfo=timezone.utc),
+            datetime(2026, 5, 20, tzinfo=timezone.utc),
+        )
+    mock_yf.download.assert_not_called()
+    assert len(bars) == 1
+    assert bars[0].symbol == "AAPL"
+    assert bars[0].market == "us"
+    assert bars[0].interval == "1d"
+    # 5/19 ET 00:00 EDT (UTC-4) → UTC 5/19 04:00
+    assert bars[0].ts == datetime(2026, 5, 19, 4, 0, tzinfo=timezone.utc)
+    assert bars[0].close == Decimal("298.97")
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_falls_back_to_yfinance_when_akshare_fails():
+    """akshare 抛 → fallback yfinance(backup_cb 未熔断时)。"""
+    fake_repo = MagicMock()
+    fake_repo.get_akshare_code = AsyncMock(return_value="105.AAPL")
+    adapter = USAdapter(dir_repo=fake_repo)
+    yf_df = _mock_history_df()
+    with patch("core.adapters.us.ak_call",
+               side_effect=RuntimeError("akshare network")), \
+         patch("core.adapters.us.yf") as mock_yf:
+        mock_yf.download = MagicMock(return_value=yf_df)
+        bars = await adapter.fetch_history(
+            "AAPL",
+            datetime(2026, 5, 1, tzinfo=timezone.utc),
+            datetime(2026, 5, 20, tzinfo=timezone.utc),
+        )
+    assert len(bars) == 2
+    mock_yf.download.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_raises_when_yfinance_circuit_open():
+    """akshare 失败 + yfinance backup_cb 已熔断 → AdapterError。"""
+    from core.adapters.base import AdapterError
+    fake_repo = MagicMock()
+    fake_repo.get_akshare_code = AsyncMock(return_value="105.AAPL")
+    adapter = USAdapter(dir_repo=fake_repo)
+    # 强制熔断
+    adapter.backup_cb.state = "open"
+    adapter.backup_cb.opened_at = 9999999999.0  # 远未来, 不会自动 half-open
+    with patch("core.adapters.us.ak_call",
+               side_effect=RuntimeError("akshare fail")):
+        with pytest.raises(AdapterError, match="circuit open"):
+            await adapter.fetch_history(
+                "AAPL",
+                datetime(2026, 5, 1, tzinfo=timezone.utc),
+                datetime(2026, 5, 20, tzinfo=timezone.utc),
+            )
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_yfinance_failure_records_backup_cb():
+    """akshare 抛 → yfinance 抛 → backup_cb.failure_count 增加。"""
+    fake_repo = MagicMock()
+    fake_repo.get_akshare_code = AsyncMock(return_value="105.AAPL")
+    adapter = USAdapter(dir_repo=fake_repo)
+    initial = adapter.backup_cb.failure_count
+    with patch("core.adapters.us.ak_call",
+               side_effect=RuntimeError("akshare")), \
+         patch("core.adapters.us.yf") as mock_yf:
+        mock_yf.download = MagicMock(side_effect=RuntimeError("yfinance 429"))
+        with pytest.raises(Exception):
+            await adapter.fetch_history(
+                "AAPL",
+                datetime(2026, 5, 1, tzinfo=timezone.utc),
+                datetime(2026, 5, 20, tzinfo=timezone.utc),
+            )
+    assert adapter.backup_cb.failure_count == initial + 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_no_dir_repo_skips_to_yfinance():
+    """没 dir_repo → akshare 路径返空 → 走 yfinance。"""
+    adapter = USAdapter()  # 不注入 dir_repo
+    yf_df = _mock_history_df()
+    with patch("core.adapters.us.yf") as mock_yf:
+        mock_yf.download = MagicMock(return_value=yf_df)
+        bars = await adapter.fetch_history(
+            "AAPL",
+            datetime(2026, 5, 1, tzinfo=timezone.utc),
+            datetime(2026, 5, 20, tzinfo=timezone.utc),
+        )
+    assert len(bars) == 2
+    mock_yf.download.assert_called_once()
