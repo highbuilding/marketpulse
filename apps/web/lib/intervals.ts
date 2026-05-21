@@ -31,23 +31,23 @@ export function intervalLabel(key: Interval): string {
   return BY_KEY[key]?.labelCn ?? key
 }
 
-// K 线 tab(详情页用): 4h 仅 crypto 显示(美股 Alpaca IEX prepost bar 稀疏,4h 重采样残缺;A 股/HK 4h ≡ 1d 无意义)
+// K 线 tab(详情页用): 4h 仅 crypto + 美股 SIP 显示(美股 SIP 16 60m bars/day 完整 prepost, 4h 重采样 4 根/日;A 股/HK 4h ≡ 1d 无意义)
 export function klineTabsForMarket(
   market: string | null,
 ): { key: Interval; label: string }[] {
-  // 4h 仅 crypto 显示(美股 Alpaca IEX prepost bar 稀疏, 4h 重采样残缺;A 股/HK 4h ≡ 1d 无意义)
-  const allowFourH = market === 'crypto'
+  // 4h: crypto + 美股 SIP(16 60m bars/day → 4 根/日);A 股/HK 4h ≡ 1d 无意义
+  const allowFourH = market === 'crypto' || market === 'us'
   return INTERVAL_SPECS
     .filter((s) => s.isKline && (s.key !== '4h' || allowFourH))
     .map((s) => ({ key: s.key, label: s.labelCn }))
 }
 
-// 详情页 CDSignalPanel tab: 4h 仅 crypto 显示
+// 详情页 CDSignalPanel tab: 4h 仅 crypto + 美股显示
 export function detailSignalTabs(
   market: string | null,
 ): { key: DetailSignalInterval; label: string }[] {
-  // 4h 仅 crypto 显示
-  const allowFourH = market === 'crypto'
+  // 4h: crypto + 美股(对齐 K 线 tab 可见性)
+  const allowFourH = market === 'crypto' || market === 'us'
   return INTERVAL_SPECS
     .filter((s) => s.isSignal && (s.key !== '4h' || allowFourH))
     .map((s) => ({ key: s.key as DetailSignalInterval, label: s.labelCn }))
