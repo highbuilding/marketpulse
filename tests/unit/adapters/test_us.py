@@ -389,3 +389,43 @@ async def test_fetch_history_class_share_uses_dash():
     assert bars[0].symbol == "BRK.B"
     call = fake_client.get_stock_bars.call_args
     assert call.args[0].symbol_or_symbols == "BRK-B"
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_alpaca_uses_adjustment_all():
+    """前复权: StockBarsRequest 必须带 adjustment='all',否则 split/dividend 不平滑。"""
+    adapter = USAdapter()
+    adapter.has_primary = True
+    fake_resp = MagicMock()
+    fake_resp.data = {"AAPL": []}
+    fake_client = MagicMock()
+    fake_client.get_stock_bars = MagicMock(return_value=fake_resp)
+    with patch("alpaca.data.historical.StockHistoricalDataClient",
+               return_value=fake_client):
+        await adapter.fetch_history(
+            "AAPL",
+            datetime(2026, 5, 1, tzinfo=timezone.utc),
+            datetime(2026, 5, 20, tzinfo=timezone.utc),
+        )
+    req = fake_client.get_stock_bars.call_args.args[0]
+    adj = getattr(req, "adjustment", None)
+    assert adj is not None, "adjustment 参数必须显式传"
+    assert str(adj).lower().endswith("all"), f"expected 'all', got {adj!r}"
+
+
+@pytest.mark.asyncio
+async def test_fetch_intraday_alpaca_uses_adjustment_all():
+    """intraday 同样要前复权(尽管 60 天内 split 罕见, 保持一致)。"""
+    adapter = USAdapter()
+    adapter.has_primary = True
+    fake_resp = MagicMock()
+    fake_resp.data = {"AAPL": []}
+    fake_client = MagicMock()
+    fake_client.get_stock_bars = MagicMock(return_value=fake_resp)
+    with patch("alpaca.data.historical.StockHistoricalDataClient",
+               return_value=fake_client):
+        await adapter.fetch_intraday("AAPL", freq="60")
+    req = fake_client.get_stock_bars.call_args.args[0]
+    adj = getattr(req, "adjustment", None)
+    assert adj is not None
+    assert str(adj).lower().endswith("all"), f"expected 'all', got {adj!r}"

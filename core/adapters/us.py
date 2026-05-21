@@ -147,6 +147,7 @@ class USAdapter:
             symbol_or_symbols=yf_symbol,
             timeframe=tf_map[freq],
             start=start, end=end_safe, feed="iex",
+            adjustment="all",  # 前复权(intraday 60 天内 split 罕见, 保持一致)
         )
         resp = client.get_stock_bars(req)
         raw_bars = resp.data.get(yf_symbol, [])
@@ -211,6 +212,7 @@ class USAdapter:
             symbol_or_symbols=yf_symbol,
             timeframe=TimeFrame.Day,
             start=start, end=end_safe, feed="iex",
+            adjustment="all",  # 前复权: split + dividend 都按当前股本回算
         )
         resp = client.get_stock_bars(req)
         raw_bars = resp.data.get(yf_symbol, [])
