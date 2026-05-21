@@ -160,6 +160,16 @@ def attach_us_signal_jobs(
         **common,
     )
 
+    # 4h: 4 个 bucket 收盘后 +5 min, ET 08:05/12:05/16:05/20:05
+    # bucket 边界 ET 04/08/12/16/20 (5 个切分点, 4 根 4h/日 含完整 prepost+regular+afterhours)
+    sched.add_job(
+        scan_cd_job,
+        CronTrigger(day_of_week="mon-fri", hour="8,12,16,20", minute="5", timezone=et),
+        id="cd:us:4h",
+        kwargs={"interval": "4h", "market_filter": "us"},
+        **common,
+    )
+
     # 1d: 盘后定稿 ET 20:05
     sched.add_job(
         scan_cd_job,
