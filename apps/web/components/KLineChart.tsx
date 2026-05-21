@@ -23,7 +23,7 @@ export interface KLineChartProps {
   signals?: SignalMarker[]
 }
 
-const INTRADAY: ReadonlySet<Interval> = new Set(['1m', '5m', '15m', '30m', '60m'])
+const INTRADAY: ReadonlySet<Interval> = new Set(['1m', '5m', '15m', '30m', '60m', '4h'])
 
 function toBarTime(iso: string, interval: Interval, market: Market): Time {
   if (INTRADAY.has(interval)) {
