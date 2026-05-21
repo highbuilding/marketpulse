@@ -146,7 +146,7 @@ class USAdapter:
         req = StockBarsRequest(
             symbol_or_symbols=yf_symbol,
             timeframe=tf_map[freq],
-            start=start, end=end_safe, feed="iex",
+            start=start, end=end_safe, feed="sip",  # SIP: 16 60m bars/day 完整 prepost
             adjustment="all",  # 前复权(intraday 60 天内 split 罕见, 保持一致)
         )
         resp = client.get_stock_bars(req)
@@ -211,7 +211,7 @@ class USAdapter:
         req = StockBarsRequest(
             symbol_or_symbols=yf_symbol,
             timeframe=TimeFrame.Day,
-            start=start, end=end_safe, feed="iex",
+            start=start, end=end_safe, feed="sip",  # SIP: 全美 16 交易所; free tier end_safe=now-20min 余量
             adjustment="all",  # 前复权: split + dividend 都按当前股本回算
         )
         resp = client.get_stock_bars(req)

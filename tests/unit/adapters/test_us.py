@@ -429,3 +429,45 @@ async def test_fetch_intraday_alpaca_uses_adjustment_all():
     adj = getattr(req, "adjustment", None)
     assert adj is not None
     assert str(adj).lower().endswith("all"), f"expected 'all', got {adj!r}"
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_alpaca_uses_sip_feed():
+    """SIP feed: 全美 16 交易所聚合, 1d 历史更长 + intraday prepost 完整。
+    free tier 通过 end <= now-15min 拿到 SIP 数据。
+    """
+    adapter = USAdapter()
+    adapter.has_primary = True
+    fake_resp = MagicMock()
+    fake_resp.data = {"AAPL": []}
+    fake_client = MagicMock()
+    fake_client.get_stock_bars = MagicMock(return_value=fake_resp)
+    with patch("alpaca.data.historical.StockHistoricalDataClient",
+               return_value=fake_client):
+        await adapter.fetch_history(
+            "AAPL",
+            datetime(2026, 5, 1, tzinfo=timezone.utc),
+            datetime(2026, 5, 20, tzinfo=timezone.utc),
+        )
+    req = fake_client.get_stock_bars.call_args.args[0]
+    feed = getattr(req, "feed", None)
+    assert feed is not None, "feed 参数必须显式传"
+    assert str(feed).lower().endswith("sip"), f"expected 'sip', got {feed!r}"
+
+
+@pytest.mark.asyncio
+async def test_fetch_intraday_alpaca_uses_sip_feed():
+    """intraday 也走 SIP, 拿到完整 prepost 16 60m bars/day。"""
+    adapter = USAdapter()
+    adapter.has_primary = True
+    fake_resp = MagicMock()
+    fake_resp.data = {"AAPL": []}
+    fake_client = MagicMock()
+    fake_client.get_stock_bars = MagicMock(return_value=fake_resp)
+    with patch("alpaca.data.historical.StockHistoricalDataClient",
+               return_value=fake_client):
+        await adapter.fetch_intraday("AAPL", freq="60")
+    req = fake_client.get_stock_bars.call_args.args[0]
+    feed = getattr(req, "feed", None)
+    assert feed is not None
+    assert str(feed).lower().endswith("sip"), f"expected 'sip', got {feed!r}"
