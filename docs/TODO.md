@@ -43,6 +43,15 @@
 
 ## 中价值 / 中代价
 
+### 4h bucket 时钟对齐(跨市场)
+
+- [ ] **`_group_resample` 按时区刻度切, 而非数组下标切**
+  - 现状:`core/services/kline_service.py::_group_resample` 用 `for i in range(0, len(bars), group_size)` 切。当源数组起点不在 4h 边界(如美股盘中第 1 根是 09:30 ET 而非 08:00 ET 起点),bucket 错位
+  - 期望:按市场所在时区的 4h 自然刻度切(美股 ET 04/08/12/16/20, A 股 BJT, HK BJT, crypto UTC)。富途/老虎/TradingView 都按时钟切
+  - 影响:K 线显示 + CD 信号 trigger 时刻 — 4 个市场全覆盖
+  - 估代价:中(market → 时区映射, 测试要回归 4 个市场)
+  - 触发:2026-05-21 美股 SIP 切换后 4h tab 启用,如发现 bucket 错位影响判断, 优先级抬高
+
 ### 性能 — N+1 / 重复查询
 
 - [ ] **tick_snapshot_once 内存化 watchlist universe**

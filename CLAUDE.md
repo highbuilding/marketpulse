@@ -382,6 +382,6 @@ grep -c FATAL /tmp/api.log  # 期望 0
 - **关注页 4h tab** 仅 watchlist 含 crypto 标的时显示(股票市场 4h ≡ 1d)
 - **scheduler 每 10s 读一次 sqlite 拿 watchlist**:浪费但单读 <1ms 可忽略,优化项在 TODO
 - **`acknowledged` 字段** 后端建好但 UI 没用:死代码,留待"已读"功能或删
-- **美股 4h tab** 在 watchlist + 详情页都显示(prepost 16h ÷ 4 = 4 根/天);港股 4h 仅 detail 页可见但与 1d 等价,无新增信号
-- 美股数据源 2026-05-20 切回 Alpaca IEX(免费层, 完整支持 1d + 1m/5m/15m/30m/60m intraday);上午接入的 akshare 路径已删除, 但 `directory.akshare_code` 列保留作 dead column
-- 美股 1d / intraday 走 Alpaca IEX 前复权(`adjustment='all'`),split + dividend 都已按当前股本回算。2026-05-21 修复:之前 raw 数据导致 NVDA 2024-06 split 处价格跳水(1208 → 120),K 线 + CD 信号失真。如果 user 报"价格跳变",先检查是否在 split 日;如确实未复权,看 `core/adapters/us.py::_fetch_history_alpaca` 的 `adjustment` 参数
+- 美股数据源 2026-05-21 切到 Alpaca **SIP feed**(原 IEX): 全美 16 交易所聚合,1d 历史更长(IEX 是 2020-07-27),60m 完整 16 根/日 prepost+regular+afterhours。Free tier 通过 `end_safe=now-20min` 余量绕过 SIP 15min 延迟限制
+- 美股 1d / intraday 走 Alpaca SIP 前复权(`adjustment='all'`),split + dividend 都已按当前股本回算。2026-05-21 修复:之前 raw 数据导致 NVDA 2024-06 split 处价格跳水(1208 → 120),K 线 + CD 信号失真。如果 user 报"价格跳变",先检查是否在 split 日;如确实未复权,看 `core/adapters/us.py::_fetch_history_alpaca` 的 `adjustment` 参数
+- **美股 4h tab 已启用**(2026-05-21):前端 detail/watchlist 都可见,scheduler `cd:us:4h` ET 08:05/12:05/16:05/20:05 跑 4 次/日。4h 重采样仍走数组下标切(`_group_resample`),与 ET 时钟对齐有 bucket 错位风险,跨市场统一处理列入 `docs/TODO.md`
