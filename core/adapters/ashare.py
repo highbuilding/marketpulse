@@ -192,13 +192,20 @@ class AShareAdapter:
         return out
 
     async def fetch_intraday(self, symbol: str, freq: str = "5") -> list[Bar]:
-        """freq: '1'/'5'/'15'/'30'/'60' min。"""
+        """freq: '1'/'5'/'15'/'30'/'60' min。
+
+        sina 当日复权因子盘中可能未入表,导致 adjust='qfq' 当日 OHLC 全部 NaN。
+        T 日 qfq 数学上 = 不复权价(因子=1),所以 NaN 行用 adjust='' 当日数据兜底。
+        """
         sina_code = _to_sina_code(symbol)
         df = await ak_call(
             "stock_zh_a_minute",
             symbol=sina_code, period=freq, adjust="qfq",
             caller=f"ashare.fetch_intraday:{symbol}:{freq}m",
         )
+        nan_mask = df["open"].isna() | df["high"].isna() | df["low"].isna() | df["close"].isna()
+        if nan_mask.any():
+            df = await self._patch_today_nan(df, sina_code, freq, symbol)
         out: list[Bar] = []
         interval = f"{freq}m"
         for _, row in df.iterrows():
@@ -218,6 +225,43 @@ class AShareAdapter:
                 interval=interval,
             ))
         return out
+
+    async def _patch_today_nan(
+        self, qfq_df: pd.DataFrame, sina_code: str, freq: str, symbol: str,
+    ) -> pd.DataFrame:
+        """sina qfq 当日因子未入表 → NaN 行用 adjust='' 兜底(T 日两者等价)。"""
+        try:
+            raw_df = await ak_call(
+                "stock_zh_a_minute",
+                symbol=sina_code, period=freq, adjust="",
+                caller=f"ashare.fetch_intraday_raw:{symbol}:{freq}m",
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("ashare.qfq_patch_failed", symbol=symbol, freq=freq, error=str(e))
+            return qfq_df
+        # sina HTTP 返回 OHLCV 字符串/float 不固定, qfq_df 列 dtype 也可能漂移。
+        # pandas 2.x 不再隐式 cast → 显式把两边 OHLCV 都强转 float64 避免 TypeError。
+        ohlcv_cols = ["open", "high", "low", "close", "volume"]
+        for col in ohlcv_cols:
+            if col in qfq_df.columns:
+                qfq_df[col] = pd.to_numeric(qfq_df[col], errors="coerce")
+            if col in raw_df.columns:
+                raw_df[col] = pd.to_numeric(raw_df[col], errors="coerce")
+        raw_by_day = {str(r["day"]): r for _, r in raw_df.iterrows()}
+        patched = 0
+        for idx, row in qfq_df.iterrows():
+            if pd.isna(row["close"]) and str(row["day"]) in raw_by_day:
+                src = raw_by_day[str(row["day"])]
+                if not pd.isna(src["close"]):
+                    qfq_df.at[idx, "open"] = src["open"]
+                    qfq_df.at[idx, "high"] = src["high"]
+                    qfq_df.at[idx, "low"] = src["low"]
+                    qfq_df.at[idx, "close"] = src["close"]
+                    qfq_df.at[idx, "volume"] = src["volume"]
+                    patched += 1
+        if patched:
+            log.info("ashare.qfq_patched", symbol=symbol, freq=freq, patched=patched)
+        return qfq_df
 
     async def health(self) -> HealthStatus:
         if not self.primary_cb.can_execute():
