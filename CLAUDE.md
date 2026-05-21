@@ -384,3 +384,4 @@ grep -c FATAL /tmp/api.log  # 期望 0
 - **`acknowledged` 字段** 后端建好但 UI 没用:死代码,留待"已读"功能或删
 - **美股 4h tab** 在 watchlist + 详情页都显示(prepost 16h ÷ 4 = 4 根/天);港股 4h 仅 detail 页可见但与 1d 等价,无新增信号
 - 美股数据源 2026-05-20 切回 Alpaca IEX(免费层, 完整支持 1d + 1m/5m/15m/30m/60m intraday);上午接入的 akshare 路径已删除, 但 `directory.akshare_code` 列保留作 dead column
+- 美股 1d / intraday 走 Alpaca IEX 前复权(`adjustment='all'`),split + dividend 都已按当前股本回算。2026-05-21 修复:之前 raw 数据导致 NVDA 2024-06 split 处价格跳水(1208 → 120),K 线 + CD 信号失真。如果 user 报"价格跳变",先检查是否在 split 日;如确实未复权,看 `core/adapters/us.py::_fetch_history_alpaca` 的 `adjustment` 参数
