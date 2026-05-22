@@ -15,7 +15,10 @@ function MiniChart({ points, color }: { points: { ts: string; close: number }[];
     if (!ref.current || points.length === 0) return
     const chart = createChart(ref.current, {
       height: 80,
-      layout: { background: { color: 'transparent' }, textColor: '#737373' },
+      layout: {
+        background: { color: 'transparent' }, textColor: '#737373',
+        attributionLogo: false,
+      },
       grid: { vertLines: { visible: false }, horzLines: { visible: false } },
       timeScale: { visible: false },
       rightPriceScale: { visible: false },

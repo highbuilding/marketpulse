@@ -147,6 +147,14 @@ class HKAdapter:
                 volume=int(row["Volume"]),
                 interval="1d",
             ))
+        # 追溯日志: HK daily 类问题 grep "hk.daily.fetched" data/logs/api.log
+        latest_ts = out[-1].ts.isoformat() if out else None
+        latest_close = float(out[-1].close) if out else None
+        log.info(
+            "hk.daily.fetched", symbol=symbol,
+            req_start=start.isoformat(), req_end=end.isoformat(),
+            bars=len(out), latest_ts=latest_ts, latest_close=latest_close,
+        )
         return out
 
     async def health(self) -> HealthStatus:

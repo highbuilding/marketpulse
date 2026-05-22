@@ -148,6 +148,7 @@
 - HK / Crypto 关注页内容接入(本期骨架,功能开发中)
 - K 图 markers 新 bar 自动同步(SWR refreshInterval 在交易时段开)
 - IndexCard 时区适配(目前 hardcode BJT,A 股 dashboard 用,迁移到 chart_time 工厂版本)
+- HK adapter 增加 `fetch_intraday(freq='5')`(yahoo `0700.HK?interval=5m` 或 sina HK):接入后 60m / 4h 自动走 `aggregate_intraday` 富途口径(`10:30/11:30/12:00/14:00/15:00/16:00`),前端详情页 60m / 4h tab 即可显示。当前 HK 60m / 4h 接口 500,前端 tab 已隐藏,无用户感知影响。**价值:中(关注页 4h 完整化) / 代价:低**
 
 ---
 

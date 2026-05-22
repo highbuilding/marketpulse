@@ -18,3 +18,9 @@ apps/web/test-results/
 apps/web/tsconfig.tsbuildinfo
 .DS_Store
 scratch/
+
+# 一次性手动备份, 不入 git
+data/*.duckdb.before-*
+
+# 一次性救火脚本, 历史用
+apps/repair_intraday_today.py

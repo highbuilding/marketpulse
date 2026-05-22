@@ -123,6 +123,14 @@ class CryptoAdapter:
                 volume=int(float(row[5])),
                 interval="1d",
             ))
+        # 追溯日志: crypto daily 类问题 grep "crypto.daily.fetched" data/logs/api.log
+        latest_ts = out[-1].ts.isoformat() if out else None
+        latest_close = float(out[-1].close) if out else None
+        log.info(
+            "crypto.daily.fetched", symbol=symbol,
+            req_start=start.isoformat(), req_end=end.isoformat(),
+            bars=len(out), latest_ts=latest_ts, latest_close=latest_close,
+        )
         return out
 
     async def health(self) -> HealthStatus:
