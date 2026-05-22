@@ -6,8 +6,10 @@ from pathlib import Path
 
 from core.adapters.registry import AdapterRegistry, load_sources_config
 from core.cache.quote_cache import QuoteCache
+from core.notifications import EmailChannel, WeChatChannel
 from core.persistence.duckdb_repo import BarRepo
 from core.persistence.fund_flow_repo import FundFlowRepo
+from core.persistence.notification_repo import NotificationRepo
 from core.persistence.sector_repo import SectorRepo
 from core.persistence.signal_repo import SignalRepo
 from core.persistence.sqlite_repo import StateRepo
@@ -15,6 +17,7 @@ from core.persistence.symbol_directory_repo import SymbolDirectoryRepo
 from core.persistence.watchlist_repo import WatchlistRepo
 from core.services.fund_flow_service import FundFlowService
 from core.services.kline_service import KLineService
+from core.services.notification_service import NotificationService
 from core.services.sector_service import SectorService
 from core.services.signal_service import SignalScanService
 from core.services.symbol_directory_service import SymbolDirectoryService
@@ -103,3 +106,22 @@ def get_signal_repo() -> SignalRepo:
 @lru_cache(maxsize=1)
 def get_signal_scan_service() -> SignalScanService:
     return SignalScanService(get_kline_service(), get_signal_repo())
+
+
+@lru_cache(maxsize=1)
+def get_notification_repo() -> NotificationRepo:
+    return NotificationRepo(str(_DATA / "state.db"))
+
+
+@lru_cache(maxsize=1)
+def get_notification_service() -> NotificationService:
+    channels = {
+        "email": EmailChannel(),
+        "wechat": WeChatChannel(),
+    }
+    return NotificationService(
+        notif_repo=get_notification_repo(),
+        signal_repo=get_signal_repo(),
+        channels=channels,
+        directory_service=get_symbol_directory_service(),
+    )

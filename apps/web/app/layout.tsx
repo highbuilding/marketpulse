@@ -14,6 +14,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <a href="/market" className="font-bold">MarketPulse</a>
           <a href="/market" className="text-neutral-400 hover:text-neutral-200">市场</a>
           <a href="/watchlist" className="text-neutral-400 hover:text-neutral-200">我的关注</a>
+          <a href="/notifications" className="text-neutral-400 hover:text-neutral-200">通知</a>
         </nav>
         {children}
       </body>

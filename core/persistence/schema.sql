@@ -107,3 +107,35 @@ CREATE INDEX IF NOT EXISTS idx_sig_symbol_interval
   ON indicator_signals(symbol, interval, bar_ts DESC);
 CREATE INDEX IF NOT EXISTS idx_sig_unack
   ON indicator_signals(detected_at DESC) WHERE acknowledged = 0;
+
+-- Plan: CD 信号汇总通知
+-- 收件人列表(按市场分组, channel 预留 wechat 扩展)
+CREATE TABLE IF NOT EXISTS notification_recipients (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  market TEXT NOT NULL,                     -- 'ashare' | 'us' | 'hk' | 'crypto'
+  channel TEXT NOT NULL,                    -- 'email' | 'wechat'
+  address TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TIMESTAMP NOT NULL,
+  UNIQUE(market, channel, address)
+);
+CREATE INDEX IF NOT EXISTS idx_recipients_market ON notification_recipients(market, enabled);
+
+-- 每个 symbol 启用的 interval 列表(JSON array, 1d 必有, 服务端强制注入)
+CREATE TABLE IF NOT EXISTS symbol_notification_config (
+  symbol TEXT PRIMARY KEY,
+  intervals_json TEXT NOT NULL DEFAULT '["1d"]',
+  updated_at TIMESTAMP NOT NULL
+);
+
+-- 推送审计 + snapshot hash 去重
+CREATE TABLE IF NOT EXISTS notification_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  market TEXT NOT NULL,
+  triggered_at TIMESTAMP NOT NULL,
+  snapshot_hash TEXT NOT NULL,              -- (symbol,interval,type,count) 排序后 sha256
+  sent INTEGER NOT NULL,                    -- 1=发送, 0=与上轮一致跳过
+  recipients_count INTEGER NOT NULL DEFAULT 0,
+  error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_market_time ON notification_audit(market, triggered_at DESC);

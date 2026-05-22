@@ -15,6 +15,7 @@ from core.scheduler.fundamentals_jobs import (
 from core.scheduler.jobs import flush_quotes_to_duckdb, tick_snapshot_once
 from core.scheduler.signal_jobs import scan_cd_job
 from core.services.fund_flow_service import FundFlowService
+from core.services.notification_service import NotificationService
 from core.services.sector_service import SectorService
 from core.services.signal_service import SignalScanService
 from core.services.watchlist_service import WatchlistService
@@ -73,14 +74,15 @@ def attach_fundamentals_jobs(
 def attach_signal_jobs(
     sched: AsyncIOScheduler,
     *, signal_scan: SignalScanService, watchlist: WatchlistService,
+    notify_service: NotificationService | None = None,
 ) -> None:
     """CD 信号扫描 — A 股交易日北京时间触发。
 
     APScheduler timezone='UTC', cron 用 UTC 时刻表示北京时间。
     BJT 10:35 = UTC 02:35 等。
     """
-    common = dict(args=(signal_scan, watchlist), max_instances=1, coalesce=True,
-                  misfire_grace_time=300)
+    common = dict(args=(signal_scan, watchlist, notify_service),
+                  max_instances=1, coalesce=True, misfire_grace_time=300)
 
     # 15m: BJT 10:00-15:30 ≈ UTC 02:00-07:30, 每 15 分钟扫一次
     # 跨午休/收盘时段顺带扫也无害(UNIQUE 幂等, 无新 bar 不写库)
@@ -97,20 +99,20 @@ def attach_signal_jobs(
         id="cd:30m", kwargs={"interval": "30m", "market_filter": "ashare"}, **common,
     )
 
-    # 60m 收盘后 +5 分钟
-    # BJT 10:30 / 11:30 / 14:30 / 15:00 收盘
+    # 60m 收盘后 +5 分钟 (富途口径: 10:30 / 11:30 / 14:00 / 15:00 close)
     for h_utc, m_utc, tag in [(2, 35, "1030"), (3, 35, "1130"),
-                                (6, 35, "1430"), (7, 5, "1500")]:
+                                (6, 5, "1400"), (7, 5, "1500")]:
         sched.add_job(
             scan_cd_job, CronTrigger(day_of_week="mon-fri", hour=h_utc, minute=m_utc),
             id=f"cd:60m:{tag}", kwargs={"interval": "60m", "market_filter": "ashare"}, **common,
         )
 
-    # 4h:A 股一天 1 根, 收盘后(BJT 15:10)
-    sched.add_job(
-        scan_cd_job, CronTrigger(day_of_week="mon-fri", hour=7, minute=10),
-        id="cd:4h", kwargs={"interval": "4h", "market_filter": "ashare"}, **common,
-    )
+    # 4h: A 股富途口径 2 根/日 (close BJT 11:30 / 15:00)
+    for h_utc, m_utc, tag in [(3, 35, "1130"), (7, 5, "1500")]:
+        sched.add_job(
+            scan_cd_job, CronTrigger(day_of_week="mon-fri", hour=h_utc, minute=m_utc),
+            id=f"cd:4h:{tag}", kwargs={"interval": "4h", "market_filter": "ashare"}, **common,
+        )
 
     # 1d:BJT 15:30
     sched.add_job(
@@ -123,14 +125,15 @@ def attach_signal_jobs(
 def attach_us_signal_jobs(
     sched: AsyncIOScheduler,
     *, signal_scan: SignalScanService, watchlist: WatchlistService,
+    notify_service: NotificationService | None = None,
 ) -> None:
     """美股 CD 信号扫描 cron(ET 时区, APScheduler 自动跟夏/冬令时)。
 
     扫描区间: 盘前 04:00 ET 到盘后 20:00 ET, 共 16 小时。
     所有 job 带 market_filter='us', 避免与 A 股 cron 互相污染。
     """
-    common = dict(args=(signal_scan, watchlist), max_instances=1, coalesce=True,
-                  misfire_grace_time=300)
+    common = dict(args=(signal_scan, watchlist, notify_service),
+                  max_instances=1, coalesce=True, misfire_grace_time=300)
     et = "America/New_York"
 
     # 15m: ET 04:00-19:45 每 15 分钟
@@ -151,30 +154,51 @@ def attach_us_signal_jobs(
         **common,
     )
 
-    # 60m: 每根收盘 +5 min, ET 05:05 - 20:05 每小时
+    # 60m: 富途口径 17 根/日, 每根 close +5 min
+    # 整点收盘: ET 05/06/07/08/09 (盘前) + 10:30/11:30/12:30/13:30/14:30/15:30 (RTH) + 17/18/19/20 (盘后)
+    # 09:30 半棒收盘 → 09:35; 16:00 半棒收盘 → 16:05; 其他整点 +5
+    # 用两条 cron 合并: 盘前/盘后整点(5/6/7/8/9/17/18/19/20):05 + RTH 半小时(10/11/12/13/14/15):35 + 边界 9:35 / 16:05
     sched.add_job(
         scan_cd_job,
-        CronTrigger(day_of_week="mon-fri", hour="5-20", minute="5", timezone=et),
-        id="cd:us:60m",
-        kwargs={"interval": "60m", "market_filter": "us"},
-        **common,
+        CronTrigger(day_of_week="mon-fri", hour="5-9,16-20", minute="5", timezone=et),
+        id="cd:us:60m:hourly_05",
+        kwargs={"interval": "60m", "market_filter": "us"}, **common,
+    )
+    sched.add_job(
+        scan_cd_job,
+        CronTrigger(day_of_week="mon-fri", hour="9-15", minute="35", timezone=et),
+        id="cd:us:60m:hourly_35",
+        kwargs={"interval": "60m", "market_filter": "us"}, **common,
     )
 
-    # 4h: 4 个 bucket 收盘后 +5 min, ET 08:05/12:05/16:05/20:05
-    # bucket 边界 ET 04/08/12/16/20 (5 个切分点, 4 根 4h/日 含完整 prepost+regular+afterhours)
+    # 4h: 富途口径 5 根/日 (close ET 08:00 / 09:30 / 13:30 / 16:00 / 20:00)
     sched.add_job(
         scan_cd_job,
-        CronTrigger(day_of_week="mon-fri", hour="8,12,16,20", minute="5", timezone=et),
-        id="cd:us:4h",
-        kwargs={"interval": "4h", "market_filter": "us"},
-        **common,
+        CronTrigger(day_of_week="mon-fri", hour="8,16,20", minute="5", timezone=et),
+        id="cd:us:4h:hourly",
+        kwargs={"interval": "4h", "market_filter": "us"}, **common,
+    )
+    sched.add_job(
+        scan_cd_job,
+        CronTrigger(day_of_week="mon-fri", hour="9,13", minute="35", timezone=et),
+        id="cd:us:4h:half_hour",
+        kwargs={"interval": "4h", "market_filter": "us"}, **common,
     )
 
-    # 1d: 盘后定稿 ET 20:05
+    # 1d: RTH 16:00 ET closing auction 后 daily bar 即定稿(SIP daily 不含盘后),
+    # 留 30 min buffer (>20 min SIP free tier 延迟) → 主跑 16:30 ET
+    # 兜底再跑一次 20:30 ET, 防 16:30 那次因网络/circuit 失败漏扫
     sched.add_job(
         scan_cd_job,
-        CronTrigger(day_of_week="mon-fri", hour="20", minute="5", timezone=et),
+        CronTrigger(day_of_week="mon-fri", hour="16", minute="30", timezone=et),
         id="cd:us:1d",
+        kwargs={"interval": "1d", "market_filter": "us"},
+        **common,
+    )
+    sched.add_job(
+        scan_cd_job,
+        CronTrigger(day_of_week="mon-fri", hour="20", minute="30", timezone=et),
+        id="cd:us:1d:fallback",
         kwargs={"interval": "1d", "market_filter": "us"},
         **common,
     )
