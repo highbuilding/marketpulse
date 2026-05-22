@@ -79,9 +79,18 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
     { refreshInterval: 60_000 },
   )
   const markers: SignalMarker[] = useMemo(() => {
-    if (!signalsResp) return []
-    return signalsResp.signals.map((s) => ({ ts: s.bar_ts, signal_type: s.signal_type }))
-  }, [signalsResp])
+    if (!signalsResp || !data || data.bars.length === 0) return []
+    // 过滤超出 bars 时间窗口的历史 marker, 否则 lightweight-charts 会把越界 marker
+    // 全部堆到最左边那根 bar 上 (intraday 视图 days=5, 但信号是全量历史的)
+    const minTs = new Date(data.bars[0].ts).getTime()
+    const maxTs = new Date(data.bars[data.bars.length - 1].ts).getTime()
+    return signalsResp.signals
+      .filter((s) => {
+        const t = new Date(s.bar_ts).getTime()
+        return t >= minTs && t <= maxTs
+      })
+      .map((s) => ({ ts: s.bar_ts, signal_type: s.signal_type }))
+  }, [signalsResp, data])
 
   // 分时模式:拉日线最后一根作 prevClose,只展示当日
   const { data: daily } = useSWR(
@@ -104,6 +113,19 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
     // 倒数第二根日线作昨收(最后一根可能就是今日实时不准)
     return daily.bars[daily.bars.length - 2]?.close ?? daily.bars[daily.bars.length - 1]?.close
   }, [daily])
+
+  // 当前价位指针(K 线模式用): 拉 1m 分时, 取最末根 close 作 livePrice
+  // 在 5m/15m/30m/60m/4h K 线上画一条水平虚线, 让用户即使当前 bar 没收盘也能看到价位
+  const isKlineMode = interval !== '1m' && interval !== '1d' && interval !== '1wk' && interval !== '1mo'
+  const { data: live1m } = useSWR(
+    isKlineMode ? `bars:${symbol}:1m:1` : null,
+    () => fetchBars(symbol, '1m', 1),
+    { refreshInterval: 30_000 },
+  )
+  const livePrice: number | null = useMemo(() => {
+    if (!live1m || live1m.bars.length === 0) return null
+    return live1m.bars[live1m.bars.length - 1].close
+  }, [live1m])
 
   return (
     <main className="p-6 max-w-7xl mx-auto space-y-4">
@@ -154,6 +176,7 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
             market={effectiveMarket}
             height={420}
             signals={signalInterval ? markers : undefined}
+            livePrice={isKlineMode ? livePrice : null}
           />
         )}
         {interval !== '1m' && data && data.bars.length === 0 && (

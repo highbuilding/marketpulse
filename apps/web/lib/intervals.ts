@@ -64,3 +64,20 @@ export function allSignalTabs(): { key: AnySignalInterval; label: string }[] {
 export const CD_MARKER_INTERVALS: Set<Interval> = new Set(
   INTERVAL_SPECS.filter((s) => s.isSignal).map((s) => s.key),
 )
+
+// 各 interval 对应秒数 (用于判断"上一根 close 后多久还没收到下一根" → 加 placeholder)
+const INTERVAL_SECONDS: Record<string, number> = {
+  '1m':  60,
+  '5m':  5 * 60,
+  '15m': 15 * 60,
+  '30m': 30 * 60,
+  '60m': 60 * 60,
+  '4h':  4 * 60 * 60,
+  '1d':  24 * 60 * 60,
+  '1wk': 7 * 24 * 60 * 60,
+  '1mo': 30 * 24 * 60 * 60,
+}
+
+export function intervalSeconds(key: Interval): number {
+  return INTERVAL_SECONDS[key] ?? 60
+}

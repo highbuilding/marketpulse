@@ -48,3 +48,43 @@ export function tzOffsetSeconds(market: Market, iso: string): number {
   )
   return (localAsUtc - date.getTime()) / 1000
 }
+
+// 市场 session 表(SSoT 镜像: core/domain/market_sessions.py::SESSIONS)。
+// 用于前端判断当前是否在交易时段(决定是否显示 placeholder K 线)。
+const SESSIONS: Record<Market, [string, string][]> = {
+  ashare: [['09:30', '11:30'], ['13:00', '15:00']],
+  hk:     [['09:30', '12:00'], ['13:00', '16:00']],
+  us:     [['04:00', '09:30'], ['09:30', '16:00'], ['16:00', '20:00']],
+  crypto: [['00:00', '24:00']],
+}
+
+function _hhmmToMinutes(s: string): number {
+  const [h, m] = s.split(':').map(Number)
+  return h * 60 + m
+}
+
+// 当前是否在本市场交易时段(本市场时区, 周一-五;crypto 24/7)
+export function isMarketOpenNow(market: Market): boolean {
+  const now = new Date()
+  // 本市场时区当前 hh:mm + day-of-week
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: TZ[market],
+    weekday: 'short',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  })
+  const parts = fmt.formatToParts(now)
+  const weekday = parts.find((p) => p.type === 'weekday')?.value ?? ''
+  const hour = Number(parts.find((p) => p.type === 'hour')?.value ?? 0)
+  const minute = Number(parts.find((p) => p.type === 'minute')?.value ?? 0)
+  const minutesNow = hour * 60 + minute
+
+  if (market === 'crypto') return true
+  if (weekday === 'Sat' || weekday === 'Sun') return false
+
+  for (const [start, end] of SESSIONS[market]) {
+    const sMin = _hhmmToMinutes(start)
+    const eMin = end === '24:00' ? 24 * 60 : _hhmmToMinutes(end)
+    if (minutesNow >= sMin && minutesNow <= eMin) return true
+  }
+  return false
+}
