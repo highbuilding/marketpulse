@@ -90,7 +90,8 @@ async def test_fetch_intraday_uses_alpaca():
         bars = await adapter.fetch_intraday("AAPL", freq="60")
     assert len(bars) == 2
     assert bars[0].interval == "60m"
-    assert bars[0].ts == datetime(2026, 5, 20, 13, 30, tzinfo=timezone.utc)
+    # 雷区 3: bar.ts = close 时刻 = Alpaca 返回的 START + 60min
+    assert bars[0].ts == datetime(2026, 5, 20, 14, 30, tzinfo=timezone.utc)
     assert bars[1].close == Decimal("301.5")
 
 
@@ -118,6 +119,55 @@ async def test_fetch_intraday_invalid_freq_raises():
     adapter = USAdapter()
     with pytest.raises(ValueError, match="unsupported freq"):
         await adapter.fetch_intraday("AAPL", freq="2")
+
+
+@pytest.mark.asyncio
+async def test_fetch_intraday_drops_unsealed_last_bar():
+    """SIP 安全窗保护: 末根 bar 的 close > end_safe(=now-20min)→ 该桶尚未封口, Alpaca
+    可能返回残缺部分桶, 必须丢弃, 让前端 placeholder 用 livePrice 实时占位。"""
+    from datetime import timedelta
+    adapter = USAdapter()
+    adapter.has_primary = True
+    now_utc = datetime.now(timezone.utc)
+    # 末根 START=now-5min, 加 60min → close=now+55min (远超 end_safe=now-20min)
+    # → 该桶未封口, 应丢弃
+    unsealed_start = now_utc - timedelta(minutes=5)
+    sealed_start = now_utc - timedelta(minutes=90)  # close=now-30min, 在 end_safe 之前, 保留
+    fake_bars = [
+        _mock_alpaca_bar(sealed_start, 300, 301, 299, 300.5, 1000),
+        _mock_alpaca_bar(unsealed_start, 300.5, 302, 300, 301, 2000),
+    ]
+    fake_resp = MagicMock()
+    fake_resp.data = {"AAPL": fake_bars}
+    fake_client = MagicMock()
+    fake_client.get_stock_bars = MagicMock(return_value=fake_resp)
+    with patch("alpaca.data.historical.StockHistoricalDataClient",
+               return_value=fake_client):
+        bars = await adapter.fetch_intraday("AAPL", freq="60")
+    # 只保留 sealed 那根, unsealed 末根被丢
+    assert len(bars) == 1
+    assert bars[0].close == Decimal("300.5")
+
+
+@pytest.mark.asyncio
+async def test_fetch_intraday_1m_does_not_drop():
+    """1m freq 不做安全窗丢弃 (ts 仍是 START, 不参与雷区 3 改造)。"""
+    from datetime import timedelta
+    adapter = USAdapter()
+    adapter.has_primary = True
+    now_utc = datetime.now(timezone.utc)
+    fake_bars = [
+        _mock_alpaca_bar(now_utc - timedelta(minutes=5), 300, 301, 299, 300.5, 1000),
+    ]
+    fake_resp = MagicMock()
+    fake_resp.data = {"AAPL": fake_bars}
+    fake_client = MagicMock()
+    fake_client.get_stock_bars = MagicMock(return_value=fake_resp)
+    with patch("alpaca.data.historical.StockHistoricalDataClient",
+               return_value=fake_client):
+        bars = await adapter.fetch_intraday("AAPL", freq="1")
+    # 1m: ts 不移位, 也不丢, 让分时图能拿到最新 1m
+    assert len(bars) == 1
 
 
 @pytest.mark.asyncio

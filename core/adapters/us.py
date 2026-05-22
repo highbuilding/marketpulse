@@ -153,9 +153,18 @@ class USAdapter:
         raw_bars = resp.data.get(yf_symbol, [])
         out: list[Bar] = []
         interval = interval_map[freq]
+        # ts 语义: Alpaca 返回 bar START, 我们 +freq 转成 bar CLOSE (雷区 3:
+        # 所有 intraday(1m 除外)bar.ts = close 时刻 → UTC). 1m 不动
+        ts_shift = timedelta(minutes=int(freq)) if freq != "1" else timedelta(0)
         for b in raw_bars:
+            close_ts = b.timestamp + ts_shift
+            # SIP 安全窗保护: 如果 bar 的 close 时刻 > end_safe, 说明这根桶尚未封口
+            # (Alpaca 对 30m/60m/4h 等大桶会返回残缺数据 - 用前若干分钟拼凑出"截至 end_safe"
+            #  的部分内容, close 价不准). 丢弃这根, 让前端 placeholder 用 livePrice 实时占位
+            if freq != "1" and close_ts > end_safe:
+                continue
             out.append(Bar(
-                market="us", symbol=symbol, ts=b.timestamp,
+                market="us", symbol=symbol, ts=close_ts,
                 open=Decimal(str(float(b.open))),
                 high=Decimal(str(float(b.high))),
                 low=Decimal(str(float(b.low))),
@@ -196,8 +205,9 @@ class USAdapter:
             ) from e
 
     def _fetch_history_alpaca(self, symbol: str, start: datetime, end: datetime) -> list[Bar]:
-        """Alpaca IEX 拿 1d。
+        """Alpaca SIP 拿 1d (RTH only, 不含盘前盘后)。
         Alpaca 1d timestamp 已是 ET 自然交易日 00:00 → UTC, 满足雷区 3 对称。
+        SIP daily bar 在 RTH 16:00 ET closing auction 后定稿, 后续盘后不更新这根。
         """
         from alpaca.data.historical import StockHistoricalDataClient
         from alpaca.data.requests import StockBarsRequest
@@ -205,13 +215,13 @@ class USAdapter:
 
         client = StockHistoricalDataClient(self.api_key, self.secret)
         yf_symbol = _to_yfinance_ticker(symbol)
-        # IEX 实时数据有 15 min 延迟, end 留 20 min 余量
+        # SIP free tier 实时数据有 15 min 延迟, end 留 20 min 余量
         now = datetime.now(timezone.utc)
         end_safe = min(end, now - timedelta(minutes=20))
         req = StockBarsRequest(
             symbol_or_symbols=yf_symbol,
             timeframe=TimeFrame.Day,
-            start=start, end=end_safe, feed="sip",  # SIP: 全美 16 交易所; free tier end_safe=now-20min 余量
+            start=start, end=end_safe, feed="sip",
             adjustment="all",  # 前复权: split + dividend 都按当前股本回算
         )
         resp = client.get_stock_bars(req)
@@ -227,6 +237,15 @@ class USAdapter:
                 volume=int(b.volume) if b.volume else 0,
                 interval="1d",
             ))
+        # 追溯日志: 5/20 daily 类问题 grep "us.daily.fetched" data/logs/api.log
+        latest_ts = out[-1].ts.isoformat() if out else None
+        latest_close = float(out[-1].close) if out else None
+        log.info(
+            "us.daily.fetched", symbol=symbol,
+            req_start=start.isoformat(), req_end=end.isoformat(),
+            end_safe=end_safe.isoformat(), now_utc=now.isoformat(),
+            bars=len(out), latest_ts=latest_ts, latest_close=latest_close,
+        )
         return out
 
     async def _fetch_history_yfinance(self, symbol: str, start: datetime, end: datetime) -> list[Bar]:

@@ -189,6 +189,14 @@ class AShareAdapter:
                 volume=int(row["volume"]),
                 interval="1d",
             ))
+        # 追溯日志: A 股 daily 类问题 grep "ashare.daily.fetched" data/logs/api.log
+        latest_ts = out[-1].ts.isoformat() if out else None
+        latest_close = float(out[-1].close) if out else None
+        log.info(
+            "ashare.daily.fetched", symbol=symbol, kind=kind,
+            req_start=start.isoformat(), req_end=end.isoformat(),
+            bars=len(out), latest_ts=latest_ts, latest_close=latest_close,
+        )
         return out
 
     async def fetch_intraday(self, symbol: str, freq: str = "5") -> list[Bar]:
@@ -196,6 +204,11 @@ class AShareAdapter:
 
         sina 当日复权因子盘中可能未入表,导致 adjust='qfq' 当日 OHLC 全部 NaN。
         T 日 qfq 数学上 = 不复权价(因子=1),所以 NaN 行用 adjust='' 当日数据兜底。
+
+        ts 语义: sina `day` 字段实际是 bar **CLOSE** 时刻 (实测 5m 首根 = 09:35
+        即 09:30-09:35 的 close, 末根 = 15:00 即 14:55-15:00 的 close)。
+        雷区 3 要求 intraday bar.ts = close → UTC, 与 sina 语义天然吻合, **不需要 +interval**。
+        1m 同样直通(详情图用)。
         """
         sina_code = _to_sina_code(symbol)
         df = await ak_call(
@@ -211,7 +224,7 @@ class AShareAdapter:
         for _, row in df.iterrows():
             if pd.isna(row["open"]) or pd.isna(row["high"]) or pd.isna(row["low"]) or pd.isna(row["close"]):
                 continue
-            # sina 返回北京时间 "2026-05-13 14:55:00",标 +08:00 后转 UTC
+            # sina `day` 已是 close 时刻 (北京时间 wall-clock),标 +08:00 后转 UTC
             naive = datetime.fromisoformat(str(row["day"]).replace(" ", "T"))
             ts = naive.replace(tzinfo=_CN_TZ).astimezone(timezone.utc)
             out.append(Bar(

@@ -95,13 +95,30 @@ sleep 6 && curl -s -m 3 http://localhost:8787/api/health | grep -o '"status":"[^
 
 **反模式**(已踩过,2026-05-20):e2e 测试 plan 末尾 `pkill -9` 收尾但忘了重启,16 分钟后用户报"加载失败",实际仅服务没起来。任何 task plan 里 `pkill` 一定要配套 nohup 重启。
 
-### 雷区 3:1d bar 的时间戳约定(踩坑历史:UI 一度显示早一天)
+### 雷区 3:bar 的时间戳约定(1d 踩坑历史:UI 一度显示早一天;intraday 富途口径)
 
-**当前约定**:adapter (`core/adapters/ashare.py:180`) 把 1d bar 的 `ts` normalize 为 **BJT 自然交易日 00:00**(= UTC `(D-1) 16:00`)。所以 ts=`2026-05-17T16:00Z` 表示 **交易日 5/18**(BJT 转换为 `5/18 00:00`)。`bjtDateKey(ts)` 直接得到正确交易日,**不需要任何偏移**。
+**1d 约定**:adapter (`core/adapters/ashare.py:180`) 把 1d bar 的 `ts` normalize 为 **BJT 自然交易日 00:00**(= UTC `(D-1) 16:00`)。所以 ts=`2026-05-17T16:00Z` 表示 **交易日 5/18**(BJT 转换为 `5/18 00:00`)。`bjtDateKey(ts)` 直接得到正确交易日,**不需要任何偏移**。
 
-**历史坑**:早期 `signal_time.ts::effectiveTsIso` 错误地假设 ts 是 sina 原始 "收盘日 16:00 UTC = BJT 次日 00:00",在前端做了 `-8h` 还原,反而把 5/18 显示成了 5/17。2026-05-18 已修复为直通(`effectiveTsIso` 改成 noop)。
+**Intraday 约定**(2026-05-22 起统一):**所有 intraday bar.ts = 该 bar close 时刻(本市场 wall-clock → UTC),1m 除外**。
+- 5m / 15m / 30m:adapter 出口处理,**不同源行为不同**:
+  - **sina (A 股)**: `day` 字段已是 close 时刻 → 直通,**不需要 +interval**
+  - **Alpaca (美股)**: `b.timestamp` 是 START → 出口 `+freq` 转 close
+  - **Binance (crypto)**: openTime 是 START → 出口 `+freq` 转 close (目前 crypto 无 fetch_intraday)
+- 60m / 4h:`core/services/intraday_aggregator.py::aggregate_intraday` 按 `core/domain/market_sessions.py` 的 SESSIONS + bucket_grid 切桶 (open, close]
+- 1m **不**改(详情页用,不入信号链路)
 
-**给未来 agent**:`bar_ts` 直接喂 `bjtDateKey` 或 `toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'})` 即可,不要再加任何 +/-8h 偏移。如果 adapter 切源后 ts 语义变了,改 adapter,**别在前端补偏移**。
+原则:
+- 每个 session 内按目标 interval 网格切;60m/4h 末尾不足整 interval 自动成半棒(港股 11:30-12:00、美股 09:00-09:30 + 15:30-16:00)
+- 不同 session 之间硬断,不混合 bar
+- 5m / 15m / 30m 走 adapter 原生数据,在出口加 +interval 把 START → CLOSE,不走 aggregator
+
+**历史坑**:早期 `signal_time.ts::effectiveTsIso` 错误地假设 1d ts 是 sina 原始 "收盘日 16:00 UTC = BJT 次日 00:00",在前端做了 `-8h` 还原,反而把 5/18 显示成了 5/17。2026-05-18 已修复为直通(`effectiveTsIso` 改成 noop)。
+
+**给未来 agent**:
+- 任何 intraday(1m 除外)/ 1d 的 `bar_ts` 直接喂 `bjtDateKey` 或 `toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'})`,**不要在前端加任何偏移**
+- adapter 切源时新源若是 START 语义,记得在出口 `ts + interval` 转 CLOSE
+- 如果发现 60m / 4h bar 数与富途不一致,先确认是不是 SESSIONS 表里某市场 session 写错了,而不是去改 aggregator 逻辑
+- 如果发现 5m/15m/30m 触发时间显示错位,检查 adapter 出口的 `+interval` 是否漏掉
 
 ### 雷区 4:directory bootstrap 跳过逻辑
 
