@@ -34,6 +34,14 @@ _DEFAULT_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 _fault_log_file = None  # 模块级 keep-alive(防 GC), faulthandler 持有的 fd 必须保持开
 
 
+def get_fault_log_file():
+    """暴露 fault.log 的文件对象, 给 ak_call watchdog 用 faulthandler.dump_traceback_later
+    在 mini_racer hang(雷区 1 hang 变种)时把所有线程栈直写到 fault.log。返回 None 表示
+    setup_logging 还没跑过(测试 / import 期), 调用方应安全跳过。
+    """
+    return _fault_log_file
+
+
 def _make_logs_dir() -> Path:
     data_dir = Path(os.getenv("APP_DATA_DIR", str(_DEFAULT_DATA_DIR)))
     logs_dir = data_dir / "logs"
