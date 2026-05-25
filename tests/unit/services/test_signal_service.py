@@ -21,7 +21,7 @@ def _bar(i: int) -> Bar:
 @pytest.mark.asyncio
 async def test_scan_symbol_writes_signals_through_repo(monkeypatch):
     kline = MagicMock()
-    kline.get_bars = AsyncMock(return_value=[_bar(i) for i in range(100)])
+    kline.fetch_fresh_bars = AsyncMock(return_value=[_bar(i) for i in range(100)])
     repo = MagicMock()
     repo.upsert_many = AsyncMock(return_value=2)
 
@@ -50,7 +50,7 @@ async def test_scan_symbol_writes_signals_through_repo(monkeypatch):
 @pytest.mark.asyncio
 async def test_scan_symbol_empty_bars_skips(monkeypatch):
     kline = MagicMock()
-    kline.get_bars = AsyncMock(return_value=[])
+    kline.fetch_fresh_bars = AsyncMock(return_value=[])
     repo = MagicMock()
     repo.upsert_many = AsyncMock(return_value=0)
     svc = SignalScanService(kline, repo)
@@ -62,7 +62,7 @@ async def test_scan_symbol_empty_bars_skips(monkeypatch):
 @pytest.mark.asyncio
 async def test_scan_many_continues_after_per_symbol_error(monkeypatch):
     kline = MagicMock()
-    kline.get_bars = AsyncMock(side_effect=[
+    kline.fetch_fresh_bars = AsyncMock(side_effect=[
         Exception("network"),                  # 第一个 symbol 失败
         [_bar(i) for i in range(100)],         # 第二个成功
     ])

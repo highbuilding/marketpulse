@@ -13,8 +13,9 @@ from core.scheduler.fundamentals_jobs import (
     purge_fund_flow_job, refresh_sectors_job,
 )
 from core.scheduler.jobs import flush_quotes_to_duckdb, tick_snapshot_once
-from core.scheduler.signal_jobs import scan_cd_job
+from core.scheduler.signal_jobs import fetch_intraday_job, scan_cd_job
 from core.services.fund_flow_service import FundFlowService
+from core.services.kline_service import KLineService
 from core.services.notification_service import NotificationService
 from core.services.sector_service import SectorService
 from core.services.signal_service import SignalScanService
@@ -75,6 +76,7 @@ def attach_signal_jobs(
     sched: AsyncIOScheduler,
     *, signal_scan: SignalScanService, watchlist: WatchlistService,
     notify_service: NotificationService | None = None,
+    kline: KLineService | None = None,
 ) -> None:
     """CD 信号扫描 — A 股交易日北京时间触发。
 
@@ -119,6 +121,17 @@ def attach_signal_jobs(
         scan_cd_job, CronTrigger(day_of_week="mon-fri", hour=7, minute=30),
         id="cd:1d", kwargs={"interval": "1d", "market_filter": "ashare"}, **common,
     )
+    # 5m: is_signal=False, 不扫信号, 只入库给详情页 K 线用。BJT 09:30-15:00,
+    # 每 15 min 跑一次(sina 不限频, 但太密无意义)
+    if kline is not None:
+        sched.add_job(
+            fetch_intraday_job,
+            CronTrigger(day_of_week="mon-fri", hour="1-7", minute="*/15"),
+            args=(kline, watchlist),
+            kwargs={"interval": "5m", "market_filter": "ashare"},
+            id="fetch:ashare:5m",
+            max_instances=1, coalesce=True, misfire_grace_time=300,
+        )
     log.info("scheduler.signal_jobs_attached")
 
 
@@ -126,6 +139,7 @@ def attach_us_signal_jobs(
     sched: AsyncIOScheduler,
     *, signal_scan: SignalScanService, watchlist: WatchlistService,
     notify_service: NotificationService | None = None,
+    kline: KLineService | None = None,
 ) -> None:
     """美股 CD 信号扫描 cron(ET 时区, APScheduler 自动跟夏/冬令时)。
 
@@ -136,7 +150,8 @@ def attach_us_signal_jobs(
                   max_instances=1, coalesce=True, misfire_grace_time=300)
     et = "America/New_York"
 
-    # 15m: ET 04:00-19:45 每 15 分钟
+    # 15m: ET 04:00-19:45 每 15 分钟, + 20:30 收尾扫 (盘后末根 close=20:00,
+    # end_safe=20:10 时刚封口能拿到)
     sched.add_job(
         scan_cd_job,
         CronTrigger(day_of_week="mon-fri", hour="4-19", minute="*/15", timezone=et),
@@ -144,12 +159,26 @@ def attach_us_signal_jobs(
         kwargs={"interval": "15m", "market_filter": "us"},
         **common,
     )
+    sched.add_job(
+        scan_cd_job,
+        CronTrigger(day_of_week="mon-fri", hour=20, minute=30, timezone=et),
+        id="cd:us:15m:close",
+        kwargs={"interval": "15m", "market_filter": "us"},
+        **common,
+    )
 
-    # 30m: ET 04:00-19:30 每 30 分钟
+    # 30m: ET 04:00-19:30 每 30 分钟, + 20:30 收尾扫
     sched.add_job(
         scan_cd_job,
         CronTrigger(day_of_week="mon-fri", hour="4-19", minute="*/30", timezone=et),
         id="cd:us:30m",
+        kwargs={"interval": "30m", "market_filter": "us"},
+        **common,
+    )
+    sched.add_job(
+        scan_cd_job,
+        CronTrigger(day_of_week="mon-fri", hour=20, minute=30, timezone=et),
+        id="cd:us:30m:close",
         kwargs={"interval": "30m", "market_filter": "us"},
         **common,
     )
@@ -202,4 +231,24 @@ def attach_us_signal_jobs(
         kwargs={"interval": "1d", "market_filter": "us"},
         **common,
     )
+    # 5m: is_signal=False, 不扫信号; 但 watchlist 美股 K 线需要每日补齐, 否则
+    # 详情页 5m chart 永远缺末几根。每 15 min 拉一次 (Alpaca SIP end_safe=now-20min,
+    # 跑得太密没意义), 加 20:30 收尾扫盘后末根
+    if kline is not None:
+        sched.add_job(
+            fetch_intraday_job,
+            CronTrigger(day_of_week="mon-fri", hour="4-19", minute="*/15", timezone=et),
+            args=(kline, watchlist),
+            kwargs={"interval": "5m", "market_filter": "us"},
+            id="fetch:us:5m",
+            max_instances=1, coalesce=True, misfire_grace_time=300,
+        )
+        sched.add_job(
+            fetch_intraday_job,
+            CronTrigger(day_of_week="mon-fri", hour=20, minute=30, timezone=et),
+            args=(kline, watchlist),
+            kwargs={"interval": "5m", "market_filter": "us"},
+            id="fetch:us:5m:close",
+            max_instances=1, coalesce=True, misfire_grace_time=300,
+        )
     log.info("scheduler.us_signal_jobs_attached")

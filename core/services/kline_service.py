@@ -133,6 +133,38 @@ class KLineService:
             self.repo.insert_bars(agg)
         return [b for b in agg if start <= b.ts <= end]
 
+    async def fetch_fresh_bars(
+        self, symbol: str, *, interval: Interval,
+        start: datetime, end: datetime,
+    ) -> list[Bar]:
+        """绕过 cache, 强制 adapter 拉最新, 写库(UNIQUE 幂等), 返回。
+
+        用于 SignalScanService scan cron — `_covers` 4 天 buffer 设计给 1d 用,
+        intraday 不收紧会导致跨周末 / 节假日时 scan cron 短路返回 stale cache,
+        新 bar 永远写不进 DB(走 scan 路径就是为了拿新数据)。
+
+        详情页 / chart 走 `get_bars` 享受 cache 短路, scan 走这里永远 fresh。
+        """
+        if interval == "1d":
+            bars = await self._adapter_for(symbol).fetch_history(symbol, start, end)
+            self.repo.insert_bars(bars)
+            return bars
+        if interval in _INTRADAY_RAW and interval != "1m":
+            freq = interval.replace("m", "")
+            bars = await self._adapter_for(symbol).fetch_intraday(symbol, freq=freq)
+            self.repo.insert_bars(bars)
+            return [b for b in bars if start <= b.ts <= end]
+        if interval in _INTRADAY_AGG:
+            market = infer_market(symbol)
+            raw = await self._adapter_for(symbol).fetch_intraday(symbol, freq="5")
+            interval_minutes = 60 if interval == "60m" else 240
+            agg = aggregate_intraday(raw, market, interval_minutes)
+            if agg:
+                self.repo.insert_bars(agg)
+            return [b for b in agg if start <= b.ts <= end]
+        # 1wk / 1mo / 1m 不在 scan 路径, 回落到带 cache 的 get_bars
+        return await self.get_bars(symbol, interval=interval, start=start, end=end)
+
 
 def _resample(daily: list[Bar], interval: str) -> list[Bar]:
     if not daily:

@@ -66,6 +66,6 @@ class SignalScanService:
         # 转成"日历天数", 给周末/节假日留一倍 buffer
         days = max(lookback // BARS_PER_DAY.get(interval, 1) * 2, 30)
         start = end - timedelta(days=days)
-        return await self.kline.get_bars(
+        return await self.kline.fetch_fresh_bars(
             symbol, interval=interval, start=start, end=end,
         )

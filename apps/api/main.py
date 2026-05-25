@@ -17,8 +17,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from apps.api.deps import (
-    get_bar_repo, get_fund_flow_service, get_notification_service,
-    get_quote_cache, get_registry,
+    get_bar_repo, get_fund_flow_service, get_kline_service,
+    get_notification_service, get_quote_cache, get_registry,
     get_sector_service, get_signal_scan_service, get_state_repo,
     get_symbol_directory_service, get_watchlist_service,
 )
@@ -82,12 +82,14 @@ async def lifespan(app: FastAPI):
         signal_scan=get_signal_scan_service(),
         watchlist=get_watchlist_service(),
         notify_service=get_notification_service(),
+        kline=get_kline_service(),
     )
     attach_us_signal_jobs(
         sched,
         signal_scan=get_signal_scan_service(),
         watchlist=get_watchlist_service(),
         notify_service=get_notification_service(),
+        kline=get_kline_service(),
     )
     sched.start()
     log.info("app.started", markets=registry.markets())
