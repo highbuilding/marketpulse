@@ -55,3 +55,9 @@ def flush_quotes_to_duckdb(market: str, cache: QuoteCache, repo: BarRepo) -> Non
         repo.insert_bars(bars)
     except Exception as e:  # noqa: BLE001
         log.warning("flush.failed", market=market, error=str(e))
+
+
+def flush_all_quotes_to_duckdb(markets: list[str], cache: QuoteCache, repo: BarRepo) -> None:
+    """顺序 flush 所有市场 quote, 避免多个 APScheduler 线程并发写 DuckDB。"""
+    for market in markets:
+        flush_quotes_to_duckdb(market, cache, repo)

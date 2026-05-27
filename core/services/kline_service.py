@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Literal
@@ -29,6 +30,9 @@ class KLineService:
     ) -> None:
         self.repo = bar_repo
         self.adapters = adapters
+        self._one_minute_ttl_s = 55
+        self._one_minute_cache: dict[str, tuple[datetime, list[Bar]]] = {}
+        self._one_minute_inflight: dict[str, asyncio.Task[list[Bar]]] = {}
 
     def _adapter_for(self, symbol: str) -> MarketAdapter:
         m = infer_market(symbol)
@@ -57,7 +61,13 @@ class KLineService:
         cached = self.repo.fetch_history(market, symbol, start, end, interval="1d")
         # 只有当缓存覆盖了请求窗口才命中,否则重拉
         covers = self._covers(cached, start, end) if cached else False
-        if cached and covers:
+        metrics_missing = (
+            market == "ashare"
+            and cached
+            and covers
+            and self._missing_ashare_daily_metrics(cached)
+        )
+        if cached and covers and not metrics_missing:
             log.debug("kline.daily.cache_hit", symbol=symbol, market=market,
                       bars=len(cached),
                       first_ts=cached[0].ts.isoformat(),
@@ -66,6 +76,7 @@ class KLineService:
         log.info("kline.daily.cache_miss", symbol=symbol, market=market,
                  cached_bars=len(cached) if cached else 0,
                  covers=covers,
+                 metrics_missing=metrics_missing,
                  req_start=start.isoformat(), req_end=end.isoformat(),
                  cached_first=cached[0].ts.isoformat() if cached else None,
                  cached_last=cached[-1].ts.isoformat() if cached else None)
@@ -100,12 +111,16 @@ class KLineService:
         cache_span = (last - first).total_seconds()
         return req_span > 0 and cache_span / req_span >= 0.8
 
+    @staticmethod
+    def _missing_ashare_daily_metrics(bars: list[Bar]) -> bool:
+        recent = bars[-20:]
+        return any(b.amount is None or b.turnover is None for b in recent)
+
     async def _get_intraday(
         self, symbol: str, interval: str, start: datetime, end: datetime,
     ) -> list[Bar]:
-        # 1m 不缓存,总是拿最新
         if interval == "1m":
-            bars = await self._adapter_for(symbol).fetch_intraday(symbol, freq="1")
+            bars = await self._get_one_minute_bars(symbol)
             return [b for b in bars if start <= b.ts <= end]
         market = infer_market(symbol)
         cached = self.repo.fetch_history(market, symbol, start, end, interval=interval)
@@ -115,6 +130,39 @@ class KLineService:
         bars = await self._adapter_for(symbol).fetch_intraday(symbol, freq=freq)
         self.repo.insert_bars(bars)
         return [b for b in bars if start <= b.ts <= end]
+
+    async def _get_one_minute_bars(self, symbol: str) -> list[Bar]:
+        """1m 分时短缓存 + 同 symbol 请求合并。
+
+        1m 图本身只按分钟更新；页面刷新、量能面板和用户切 tab 容易在数秒内触发多次
+        相同请求。这里保留"不落库"策略，只在进程内缓存最近一次结果，避免 AKShare
+        全局锁排队导致 Next 代理连接先断开。
+        """
+        now = datetime.now(timezone.utc)
+        cached = self._one_minute_cache.get(symbol)
+        if cached is not None:
+            fetched_at, bars = cached
+            age_s = (now - fetched_at).total_seconds()
+            if age_s <= self._one_minute_ttl_s:
+                log.debug("kline.1m.cache_hit", symbol=symbol, bars=len(bars), age_s=round(age_s, 1))
+                return bars
+
+        task = self._one_minute_inflight.get(symbol)
+        if task is None or task.done():
+            task = asyncio.create_task(self._adapter_for(symbol).fetch_intraday(symbol, freq="1"))
+            self._one_minute_inflight[symbol] = task
+            log.info("kline.1m.fetch_start", symbol=symbol)
+        else:
+            log.info("kline.1m.join_inflight", symbol=symbol)
+
+        try:
+            bars = await asyncio.shield(task)
+        finally:
+            if self._one_minute_inflight.get(symbol) is task and task.done():
+                self._one_minute_inflight.pop(symbol, None)
+        self._one_minute_cache[symbol] = (datetime.now(timezone.utc), bars)
+        log.info("kline.1m.fetch_done", symbol=symbol, bars=len(bars))
+        return bars
 
     async def _get_intraday_aggregated(
         self, symbol: str, interval: str, start: datetime, end: datetime,

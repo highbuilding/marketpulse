@@ -58,6 +58,26 @@ def _classify(symbol: str) -> str:
     return "stock"
 
 
+def _num(row, *names: str) -> float | None:
+    for name in names:
+        if name not in row:
+            continue
+        v = row[name]
+        if pd.isna(v):
+            continue
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _date_key(value) -> str:
+    if hasattr(value, "strftime"):
+        return value.strftime("%Y-%m-%d")
+    return str(value)[:10]
+
+
 class AShareAdapter:
     market = "ashare"
     name = "ashare"
@@ -174,6 +194,7 @@ class AShareAdapter:
                 symbol=sina_code, start_date=sd, end_date=ed, adjust="qfq",
                 caller=f"ashare.fetch_history:{symbol}:stock",
             )
+            df = await self._supplement_stock_daily_metrics(symbol, sd, ed, df)
 
         out: list[Bar] = []
         for _, row in df.iterrows():
@@ -188,6 +209,9 @@ class AShareAdapter:
                 close=Decimal(str(row["close"])),
                 volume=int(row["volume"]),
                 interval="1d",
+                amount=_num(row, "amount", "成交额"),
+                turnover=_num(row, "turnover", "换手率"),
+                outstanding_share=_num(row, "outstanding_share", "流通股本"),
             ))
         # 追溯日志: A 股 daily 类问题 grep "ashare.daily.fetched" data/logs/api.log
         latest_ts = out[-1].ts.isoformat() if out else None
@@ -198,6 +222,50 @@ class AShareAdapter:
             bars=len(out), latest_ts=latest_ts, latest_close=latest_close,
         )
         return out
+
+    async def _supplement_stock_daily_metrics(
+        self, symbol: str, start_date: str, end_date: str, daily_df: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """用 stock_zh_a_hist 补 A 股日线成交额/换手率。
+
+        stock_zh_a_daily 稳定但字段通常只有 OHLCV；stock_zh_a_hist 有成交额和换手率。
+        这里仅在缺字段时低频补充，失败不影响 K 线返回。
+        """
+        has_amount = "amount" in daily_df.columns or "成交额" in daily_df.columns
+        has_turnover = "turnover" in daily_df.columns or "换手率" in daily_df.columns
+        if has_amount and has_turnover:
+            return daily_df
+        try:
+            hist = await ak_call(
+                "stock_zh_a_hist",
+                symbol=_denormalize(symbol),
+                period="daily",
+                start_date=start_date,
+                end_date=end_date,
+                adjust="qfq",
+                caller=f"ashare.fetch_history:{symbol}:stock_metrics",
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("ashare.daily_metrics_failed", symbol=symbol, error=str(e))
+            return daily_df
+        if hist is None or hist.empty or "日期" not in hist.columns:
+            return daily_df
+
+        metrics = {
+            _date_key(row["日期"]): row
+            for _, row in hist.iterrows()
+        }
+        rows = []
+        for _, row in daily_df.iterrows():
+            merged = row.to_dict()
+            metric_row = metrics.get(_date_key(row["date"]))
+            if metric_row is not None:
+                if "amount" not in merged and "成交额" in metric_row:
+                    merged["amount"] = metric_row["成交额"]
+                if "turnover" not in merged and "换手率" in metric_row:
+                    merged["turnover"] = metric_row["换手率"]
+            rows.append(merged)
+        return pd.DataFrame(rows)
 
     async def fetch_intraday(self, symbol: str, freq: str = "5") -> list[Bar]:
         """freq: '1'/'5'/'15'/'30'/'60' min。

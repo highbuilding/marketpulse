@@ -31,6 +31,9 @@ class Bar:
     close: Decimal
     volume: int
     interval: str
+    amount: float | None = None
+    turnover: float | None = None
+    outstanding_share: float | None = None
     def __post_init__(self) -> None:
         if self.high < self.low:
             raise ValueError(f"high {self.high} < low {self.low}")
@@ -110,3 +113,18 @@ class IndicatorSignal:
     d_value: float | None = None
     acknowledged: bool = False
     id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ChipSummary:
+    """东方财富日线筹码分布摘要。"""
+    symbol: str
+    trade_date: datetime
+    profit_ratio: float | None
+    avg_cost: float | None
+    cost_90_low: float | None
+    cost_90_high: float | None
+    concentration_90: float | None
+    cost_70_low: float | None
+    cost_70_high: float | None
+    concentration_70: float | None

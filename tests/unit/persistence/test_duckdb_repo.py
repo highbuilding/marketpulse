@@ -13,6 +13,7 @@ def _bar(market, symbol, day_offset, close):
         market=market, symbol=symbol, ts=ts,
         open=Decimal("1"), high=Decimal("2"), low=Decimal("0.5"),
         close=Decimal(str(close)), volume=100, interval="1d",
+        amount=12345.6, turnover=1.23, outstanding_share=1_000_000,
     )
 
 
@@ -25,6 +26,8 @@ def test_insert_and_select(tmp_path):
                                end=datetime(2026, 5, 2, tzinfo=timezone.utc))
     assert len(rows) == 2
     assert rows[0].close == Decimal("100")
+    assert rows[0].amount == pytest.approx(12345.6)
+    assert rows[0].turnover == pytest.approx(1.23)
 
 
 def test_upsert_replaces_same_ts(tmp_path):

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from core.adapters.ashare import AShareAdapter, _to_sina_code
+from core.adapters.ashare import AShareAdapter, _classify, _to_sina_code
 
 
 _SINA_RESPONSE = (
@@ -79,9 +79,9 @@ async def test_health_reports_ok_when_sina_responds():
 
 _DAILY_DF = pd.DataFrame([
     {"date": date(2026, 5, 12), "open": 1340.0, "high": 1360.0, "low": 1330.0,
-     "close": 1354.55, "volume": 5_000_000},
+     "close": 1354.55, "volume": 5_000_000, "amount": 6_700_000_000, "turnover": 0.41},
     {"date": date(2026, 5, 13), "open": 1354.5, "high": 1358.6, "low": 1338.0,
-     "close": 1344.09, "volume": 5_696_787},
+     "close": 1344.09, "volume": 5_696_787, "amount": 7_653_257_144, "turnover": 0.47},
 ])
 
 _5MIN_DF = pd.DataFrame([
@@ -93,7 +93,7 @@ _5MIN_DF = pd.DataFrame([
 @pytest.mark.asyncio
 async def test_fetch_history_uses_sina_daily():
     adapter = AShareAdapter()
-    with patch("core.adapters.ashare.ak.stock_zh_a_daily", return_value=_DAILY_DF):
+    with patch("core.integrations.akshare.ak.stock_zh_a_daily", return_value=_DAILY_DF):
         bars = await adapter.fetch_history(
             "600519.SH",
             datetime(2026, 5, 1, tzinfo=timezone.utc),
@@ -107,7 +107,7 @@ async def test_fetch_history_uses_sina_daily():
 @pytest.mark.asyncio
 async def test_fetch_intraday_5min():
     adapter = AShareAdapter()
-    with patch("core.adapters.ashare.ak.stock_zh_a_minute", return_value=_5MIN_DF):
+    with patch("core.integrations.akshare.ak.stock_zh_a_minute", return_value=_5MIN_DF):
         bars = await adapter.fetch_intraday("600519.SH", freq="5")
     assert len(bars) == 1
     assert bars[0].interval == "5m"
@@ -115,8 +115,6 @@ async def test_fetch_intraday_5min():
 
 
 # ============== _classify 多标的回归 ==============
-
-from core.adapters.ashare import _classify
 
 
 @pytest.mark.parametrize("symbol,expected", [
@@ -151,27 +149,24 @@ def test_classify_various_symbols(symbol, expected):
 
 # ============== fetch_history 多源分发(stock / etf / index)==============
 
-import pandas as pd
-from datetime import date as _date
-
 _STOCK_DAILY_DF = pd.DataFrame([
-    {"date": _date(2020, 1, 2), "open": 10.0, "high": 10.5, "low": 9.8,
-     "close": 10.3, "volume": 1_000_000},
-    {"date": _date(2026, 5, 13), "open": 18.0, "high": 18.5, "low": 17.5,
-     "close": 18.2, "volume": 2_000_000},
+    {"date": date(2020, 1, 2), "open": 10.0, "high": 10.5, "low": 9.8,
+     "close": 10.3, "volume": 1_000_000, "amount": 10_000_000, "turnover": 1.1},
+    {"date": date(2026, 5, 13), "open": 18.0, "high": 18.5, "low": 17.5,
+     "close": 18.2, "volume": 2_000_000, "amount": 36_000_000, "turnover": 2.2},
 ])
 
 _ETF_DAILY_DF = pd.DataFrame([
-    {"date": _date(2020, 1, 2), "open": 3.0, "high": 3.1, "low": 2.95,
+    {"date": date(2020, 1, 2), "open": 3.0, "high": 3.1, "low": 2.95,
      "close": 3.05, "volume": 1_000_000_000},
-    {"date": _date(2026, 5, 13), "open": 4.9, "high": 5.0, "low": 4.85,
+    {"date": date(2026, 5, 13), "open": 4.9, "high": 5.0, "low": 4.85,
      "close": 4.95, "volume": 2_000_000_000},
 ])
 
 _INDEX_DAILY_DF = pd.DataFrame([
-    {"date": _date(2020, 1, 2), "open": 3050, "high": 3080, "low": 3040,
+    {"date": date(2020, 1, 2), "open": 3050, "high": 3080, "low": 3040,
      "close": 3070, "volume": 100_000_000},
-    {"date": _date(2026, 5, 13), "open": 4190, "high": 4245, "low": 4190,
+    {"date": date(2026, 5, 13), "open": 4190, "high": 4245, "low": 4190,
      "close": 4242.57, "volume": 700_000_000},
 ])
 
@@ -179,9 +174,9 @@ _INDEX_DAILY_DF = pd.DataFrame([
 @pytest.mark.asyncio
 async def test_fetch_history_stock_routes_to_stock_zh_a_daily():
     adapter = AShareAdapter()
-    with patch("core.adapters.ashare.ak.stock_zh_a_daily", return_value=_STOCK_DAILY_DF) as m, \
-         patch("core.adapters.ashare.ak.fund_etf_hist_sina", side_effect=AssertionError("should not be called")), \
-         patch("core.adapters.ashare.ak.stock_zh_index_daily", side_effect=AssertionError("should not be called")):
+    with patch("core.integrations.akshare.ak.stock_zh_a_daily", return_value=_STOCK_DAILY_DF) as m, \
+         patch("core.integrations.akshare.ak.fund_etf_hist_sina", side_effect=AssertionError("should not be called")), \
+         patch("core.integrations.akshare.ak.stock_zh_index_daily", side_effect=AssertionError("should not be called")):
         bars = await adapter.fetch_history(
             "600004.SH",  # 白云机场
             datetime(2020, 1, 1, tzinfo=timezone.utc),
@@ -190,14 +185,38 @@ async def test_fetch_history_stock_routes_to_stock_zh_a_daily():
     m.assert_called_once()
     assert len(bars) == 2
     assert bars[0].close == Decimal("10.3")
+    assert bars[0].amount == 10_000_000
+    assert bars[0].turnover == 1.1
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_stock_supplements_amount_and_turnover_from_hist():
+    daily_df = pd.DataFrame([
+        {"date": date(2026, 5, 13), "open": 18.0, "high": 18.5, "low": 17.5,
+         "close": 18.2, "volume": 2_000_000},
+    ])
+    hist_df = pd.DataFrame([
+        {"日期": "2026-05-13", "成交额": 36_000_000, "换手率": 2.2},
+    ])
+    adapter = AShareAdapter()
+    with patch("core.integrations.akshare.ak.stock_zh_a_daily", return_value=daily_df), \
+         patch("core.integrations.akshare.ak.stock_zh_a_hist", return_value=hist_df) as hist:
+        bars = await adapter.fetch_history(
+            "600004.SH",
+            datetime(2026, 5, 1, tzinfo=timezone.utc),
+            datetime(2026, 5, 14, tzinfo=timezone.utc),
+        )
+    hist.assert_called_once()
+    assert bars[0].amount == 36_000_000
+    assert bars[0].turnover == 2.2
 
 
 @pytest.mark.asyncio
 async def test_fetch_history_etf_routes_to_fund_etf_hist_sina():
     adapter = AShareAdapter()
-    with patch("core.adapters.ashare.ak.fund_etf_hist_sina", return_value=_ETF_DAILY_DF) as m, \
-         patch("core.adapters.ashare.ak.stock_zh_a_daily", side_effect=AssertionError("should not be called")), \
-         patch("core.adapters.ashare.ak.stock_zh_index_daily", side_effect=AssertionError("should not be called")):
+    with patch("core.integrations.akshare.ak.fund_etf_hist_sina", return_value=_ETF_DAILY_DF) as m, \
+         patch("core.integrations.akshare.ak.stock_zh_a_daily", side_effect=AssertionError("should not be called")), \
+         patch("core.integrations.akshare.ak.stock_zh_index_daily", side_effect=AssertionError("should not be called")):
         bars = await adapter.fetch_history(
             "510300.SH",  # 沪深300ETF
             datetime(2020, 1, 1, tzinfo=timezone.utc),
@@ -211,9 +230,9 @@ async def test_fetch_history_etf_routes_to_fund_etf_hist_sina():
 @pytest.mark.asyncio
 async def test_fetch_history_index_routes_to_stock_zh_index_daily():
     adapter = AShareAdapter()
-    with patch("core.adapters.ashare.ak.stock_zh_index_daily", return_value=_INDEX_DAILY_DF) as m, \
-         patch("core.adapters.ashare.ak.stock_zh_a_daily", side_effect=AssertionError("should not be called")), \
-         patch("core.adapters.ashare.ak.fund_etf_hist_sina", side_effect=AssertionError("should not be called")):
+    with patch("core.integrations.akshare.ak.stock_zh_index_daily", return_value=_INDEX_DAILY_DF) as m, \
+         patch("core.integrations.akshare.ak.stock_zh_a_daily", side_effect=AssertionError("should not be called")), \
+         patch("core.integrations.akshare.ak.fund_etf_hist_sina", side_effect=AssertionError("should not be called")):
         bars = await adapter.fetch_history(
             "000001.SH",  # 上证指数
             datetime(2020, 1, 1, tzinfo=timezone.utc),
@@ -228,12 +247,12 @@ async def test_fetch_history_index_routes_to_stock_zh_index_daily():
 async def test_fetch_history_etf_filters_by_date_range():
     """ETF 接口返回全部历史(从 2012 起),需要按 [start, end] 后置过滤。"""
     big_df = pd.DataFrame([
-        {"date": _date(2015, 1, 1), "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1},
-        {"date": _date(2020, 6, 1), "open": 2, "high": 2, "low": 2, "close": 2, "volume": 2},
-        {"date": _date(2026, 5, 13), "open": 5, "high": 5, "low": 5, "close": 5, "volume": 5},
+        {"date": date(2015, 1, 1), "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1},
+        {"date": date(2020, 6, 1), "open": 2, "high": 2, "low": 2, "close": 2, "volume": 2},
+        {"date": date(2026, 5, 13), "open": 5, "high": 5, "low": 5, "close": 5, "volume": 5},
     ])
     adapter = AShareAdapter()
-    with patch("core.adapters.ashare.ak.fund_etf_hist_sina", return_value=big_df):
+    with patch("core.integrations.akshare.ak.fund_etf_hist_sina", return_value=big_df):
         bars = await adapter.fetch_history(
             "510300.SH",
             datetime(2020, 1, 1, tzinfo=timezone.utc),

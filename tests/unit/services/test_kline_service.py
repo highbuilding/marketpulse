@@ -8,13 +8,14 @@ from core.domain.models import Bar
 from core.services.kline_service import KLineService
 
 
-def _bar(symbol, day_offset, interval="1d", close=100.0):
+def _bar(symbol, day_offset, interval="1d", close=100.0, amount=10_000_000.0, turnover=1.2):
     ts = datetime(2026, 5, 1, tzinfo=timezone.utc) + timedelta(days=day_offset)
     return Bar(
         market="ashare", symbol=symbol, ts=ts,
         open=Decimal(str(close - 1)), high=Decimal(str(close + 2)),
         low=Decimal(str(close - 2)), close=Decimal(str(close)),
         volume=1_000_000, interval=interval,
+        amount=amount, turnover=turnover,
     )
 
 
@@ -50,6 +51,30 @@ async def test_get_bars_cache_miss_calls_adapter_then_writes_back():
     adapter.fetch_history.assert_called_once()
     repo.insert_bars.assert_called_once()
     assert len(bars) == 5
+
+
+@pytest.mark.asyncio
+async def test_get_bars_refetches_ashare_daily_when_cached_metrics_missing():
+    repo = MagicMock()
+    repo.fetch_history.return_value = [
+        _bar("600519.SH", i, close=100 + i, amount=None, turnover=None)
+        for i in range(10)
+    ]
+    adapter = MagicMock()
+    adapter.fetch_history = AsyncMock(return_value=[
+        _bar("600519.SH", i, close=100 + i)
+        for i in range(10)
+    ])
+    svc = KLineService(repo, {"ashare": adapter})
+    bars = await svc.get_bars(
+        "600519.SH",
+        interval="1d",
+        start=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        end=datetime(2026, 5, 10, tzinfo=timezone.utc),
+    )
+    adapter.fetch_history.assert_called_once()
+    repo.insert_bars.assert_called_once()
+    assert bars[-1].amount == 10_000_000.0
 
 
 @pytest.mark.asyncio

@@ -124,3 +124,22 @@ CREATE TABLE IF NOT EXISTS notification_audit (
   error TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_audit_market_time ON notification_audit(market, triggered_at DESC);
+
+-- A 股日线筹码分布摘要(东方财富 stock_cyq_em)
+CREATE TABLE IF NOT EXISTS chip_summary (
+  symbol TEXT NOT NULL,
+  trade_date TIMESTAMP NOT NULL,
+  profit_ratio REAL,
+  avg_cost REAL,
+  cost_90_low REAL,
+  cost_90_high REAL,
+  concentration_90 REAL,
+  cost_70_low REAL,
+  cost_70_high REAL,
+  concentration_70 REAL,
+  updated_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (symbol, trade_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chip_symbol_date
+  ON chip_summary(symbol, trade_date DESC);
