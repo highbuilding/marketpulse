@@ -1,0 +1,20 @@
+# docker-compose.dev.yml
+# 本地 dev 用,生产请用 systemd 管理 redis-server 或托管服务。
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: marketpulse-redis-dev
+    ports:
+      - "127.0.0.1:6379:6379"
+    command: >
+      redis-server
+      --appendonly no
+      --save ""
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
