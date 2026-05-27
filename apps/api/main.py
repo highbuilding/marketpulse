@@ -47,6 +47,15 @@ async def _async_refresh_directory(svc) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Plan 1: ping Redis,失败仅 warning 不阻塞 (优雅降级)
+    from apps.api.deps import get_redis_cache
+    redis_ok = await get_redis_cache().ping()
+    if redis_ok:
+        log.info("redis.connected")
+    else:
+        log.warning("redis.unavailable_at_startup",
+                    note="api 将退化到 DB 直读模式,直到 Redis 恢复")
+
     state_repo = get_state_repo()
     await state_repo.init()
 

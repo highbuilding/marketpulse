@@ -149,3 +149,11 @@ def get_notification_service() -> NotificationService:
         channels=channels,
         directory_service=get_symbol_directory_service(),
     )
+
+
+# === Redis cache (Plan 1 stage 1) ===
+@lru_cache(maxsize=1)
+def get_redis_cache():  # -> RedisCache
+    from core.cache.redis_client import RedisCache, make_redis  # noqa: PLC0415
+    url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+    return RedisCache(make_redis(url))
