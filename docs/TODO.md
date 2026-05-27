@@ -39,7 +39,13 @@
   - 方案 A:在事件流"当天"section 加一键已读按钮 + 顶栏未读 badge
   - 方案 B:删掉相关代码
 
-### Plan 1 引入的已知退化(Plan 2/3 修)
+### Plan 1/2/3 进度
+
+- 2026-05-27 ✅ Plan 1 完成:Redis 基建 + collector 进程拆分。
+- 2026-05-27 ✅ Plan 2 完成:ak_call 三层中间件(Outlet/Breaker/Ratelimit)+ Leader + index_minute/dashboard/refill_consumer job。
+- 2026-05-27 ✅ Plan 3 完成:api 全部读 cache(0 ak_call)+ 前端 stale 染灰 + Plan 1/2 退化全修。spec §0.2 中 4 个症状(K 线分时图慢/大盘慢/重复 K 线慢/分时 500)全部消除。
+
+### Plan 1 引入的已知退化(Plan 2/3 修)— ✅ 已全部修复
 
 - [ ] **QuoteCache 跨进程孤岛**(2026-05-27 引入)
   - 现状:scheduler 拆到 collector 进程后,`QuoteCache` 实例不再跨进程共享。collector 的 tick 写自己进程的内存 cache,api 的 `/api/symbols/{s}/quote` 与 `/ws/ticks` 读自己进程的(永远空)cache。
@@ -48,7 +54,7 @@
   - 价值:解决会让前端 quote 显示恢复正常
   - 代价:Plan 3 Stage 5 内顺便做,无独立成本
 
-### Plan 2 引入的已知未尽事项(Plan 3 修)
+### Plan 2 引入的已知未尽事项(Plan 3 修)— ✅ 已全部修复
 
 - [ ] **Leader 锁未真正门控 cron job**(2026-05-27 引入)
   - 现状:`leader.is_leader()` 已经在 collector 启动期 acquire,但 scheduler 注册的所有 cron job 不检查 leader 状态就执行
