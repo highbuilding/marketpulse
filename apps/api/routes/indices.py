@@ -1,24 +1,22 @@
-"""指数分时数据端点,给市场页的 mini chart 用。
+"""指数分时数据端点 — Plan 3: 全部读 Redis cache,不调外部 API。
 
-A 股指数:走 ak.stock_zh_a_minute(period=5) 拿当日 5 分钟线
-港股指数:走 ak.stock_hk_index_daily_sina 拿近 N 日日线(港股分时接口不通)
+A 股指数:collector 的 index_minute job 每 30s 预先把 5min 序列写到
+cache:index:{symbol}:minute:1。本路由只 GET cache,无 cache 则返回 stale meta。
+港股指数:collector 暂未实装 HK job,统一返回 stale 兜底。
+
+参考: docs/superpowers/specs/2026-05-27-stable-data-collection-and-fast-read-design.md §3.2
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
-
 import structlog
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from core.integrations.akshare import ak_call
+from apps.api.deps import get_redis_cache
+from core.cache import keys
 
 log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api/indices", tags=["indices"])
-
-_CN_TZ = ZoneInfo("Asia/Shanghai")
-_HK_TZ = ZoneInfo("Asia/Hong_Kong")
 
 
 class MinutePoint(BaseModel):
@@ -27,11 +25,18 @@ class MinutePoint(BaseModel):
     volume: int
 
 
+class IndexMeta(BaseModel):
+    stale: bool = False
+    reason: str | None = None
+    fresh_at: str | None = None
+
+
 class IndexMinuteResponse(BaseModel):
     symbol: str
     name: str
     granularity: str  # "5m" 或 "1d"
     points: list[MinutePoint]
+    meta: IndexMeta = IndexMeta()
 
 
 _INDEX_NAME = {
@@ -49,80 +54,48 @@ _INDEX_NAME = {
 }
 
 
-def _to_sina_a(symbol: str) -> str:
-    """000001.SH → sh000001."""
-    code, mkt = symbol.split(".")
-    return f"{mkt.lower()}{code}"
-
-
-def _to_hk_label(symbol: str) -> str:
-    """HSI.HK → HSI."""
-    return symbol.split(".")[0]
-
-
 @router.get("/{symbol}/minute", response_model=IndexMinuteResponse)
-async def index_minute(symbol: str, days: int = Query(1, ge=1, le=30)) -> IndexMinuteResponse:
+async def index_minute(
+    symbol: str,
+    days: int = Query(1, ge=1, le=30),
+    cache=Depends(get_redis_cache),
+) -> IndexMinuteResponse:
     if symbol not in _INDEX_NAME:
         raise HTTPException(404, f"unknown index: {symbol}")
     name = _INDEX_NAME[symbol]
-
     if symbol.endswith(".HK"):
-        return await _hk_index_daily(symbol, name, days=30)
-    return await _ashare_index_5min(symbol, name, days=days)
+        return await _hk_index_daily(symbol, name, days=days, cache=cache)
+    return await _ashare_index_5min(symbol, name, days=days, cache=cache)
 
 
-async def _ashare_index_5min(symbol: str, name: str, days: int) -> IndexMinuteResponse:
-    sina_code = _to_sina_a(symbol)
-    period = "1" if days == 1 else "5"
-    df = await ak_call(
-        "stock_zh_a_minute", symbol=sina_code, period=period, adjust="",
-        caller=f"indices.ashare_5min:{symbol}",
+async def _ashare_index_5min(symbol: str, name: str, *, days: int, cache) -> IndexMinuteResponse:
+    payload = await cache.get_msgpack(keys.cache_index_minute(symbol, days=days))
+    if payload is None:
+        log.info("indices.minute.cache_miss", symbol=symbol, days=days)
+        return IndexMinuteResponse(
+            symbol=symbol, name=name, granularity="5m",
+            points=[], meta=IndexMeta(stale=True, reason="warming_up"),
+        )
+    points = [MinutePoint(**p) for p in payload.get("points", [])]
+    fresh_at = payload.get("meta", {}).get("fresh_at")
+    return IndexMinuteResponse(
+        symbol=symbol, name=name,
+        granularity=payload.get("granularity", "5m"),
+        points=points,
+        meta=IndexMeta(stale=False, fresh_at=fresh_at),
     )
-    cutoff_utc = datetime.now(timezone.utc) - timedelta(days=days + 1)
-    points: list[MinutePoint] = []
-    for _, row in df.iterrows():
-        naive = datetime.fromisoformat(str(row["day"]).replace(" ", "T"))
-        ts = naive.replace(tzinfo=_CN_TZ).astimezone(timezone.utc)
-        if ts < cutoff_utc:
-            continue
-        points.append(MinutePoint(
-            ts=ts.isoformat(),
-            close=float(row["close"]),
-            volume=int(float(row["volume"])),
-        ))
-    if days == 1 and points:
-        # 取最近一个交易日(按北京时间日期)
-        last_date_cn = points[-1].ts  # iso UTC
-        last_date_cn_obj = datetime.fromisoformat(last_date_cn).astimezone(_CN_TZ).date()
-        points = [
-            p for p in points
-            if datetime.fromisoformat(p.ts).astimezone(_CN_TZ).date() == last_date_cn_obj
-        ]
-    granularity = f"{period}m"
-    return IndexMinuteResponse(symbol=symbol, name=name, granularity=granularity, points=points)
 
 
-async def _hk_index_daily(symbol: str, name: str, days: int) -> IndexMinuteResponse:
-    label = _to_hk_label(symbol)
-    df = await ak_call(
-        "stock_hk_index_daily_sina", symbol=label,
-        caller=f"indices.hk_daily:{symbol}",
+async def _hk_index_daily(symbol: str, name: str, *, days: int, cache) -> IndexMinuteResponse:
+    """HK 指数 collector job 暂未实装(Plan 4 补)。读 cache 命中则用,否则 stale 兜底。"""
+    payload = await cache.get_msgpack(keys.cache_index_minute(symbol, days=days))
+    if payload is None:
+        return IndexMinuteResponse(
+            symbol=symbol, name=name, granularity="1d",
+            points=[], meta=IndexMeta(stale=True, reason="hk_index_collector_pending"),
+        )
+    points = [MinutePoint(**p) for p in payload.get("points", [])]
+    return IndexMinuteResponse(
+        symbol=symbol, name=name, granularity="1d",
+        points=points, meta=IndexMeta(stale=False),
     )
-    df_tail = df.tail(days)
-    points: list[MinutePoint] = []
-    for _, row in df_tail.iterrows():
-        d = row["date"]
-        if hasattr(d, "date"):  # pandas Timestamp
-            d_obj = d.date()
-        elif hasattr(d, "isoformat") and not isinstance(d, str):  # date
-            d_obj = d
-        else:
-            d_obj = datetime.fromisoformat(str(d)).date()
-        # 港股日期 → 当地午夜 → UTC
-        ts = datetime.combine(d_obj, datetime.min.time(), tzinfo=_HK_TZ).astimezone(timezone.utc)
-        points.append(MinutePoint(
-            ts=ts.isoformat(),
-            close=float(row["close"]),
-            volume=int(float(row["volume"])),
-        ))
-    return IndexMinuteResponse(symbol=symbol, name=name, granularity="1d", points=points)
