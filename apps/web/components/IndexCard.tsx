@@ -70,7 +70,7 @@ export function IndexCard({ symbol }: { symbol: string }) {
     if (firstClose > 0) changePct = ((lastClose - firstClose) / firstClose) * 100
   }
   const up = (changePct ?? 0) >= 0
-  const color = up ? '#22c55e' : '#ef4444'
+  const color = up ? '#ef4444' : '#22c55e'
 
   return (
     <a
@@ -83,10 +83,10 @@ export function IndexCard({ symbol }: { symbol: string }) {
           <div className="font-mono text-xs text-neutral-500">{symbol}</div>
         </div>
         <div className="text-right">
-          <div className={clsx('text-xl font-bold tabular-nums', up ? 'text-green-400' : 'text-red-400')}>
+          <div className={clsx('text-xl font-bold tabular-nums', up ? 'text-red-400' : 'text-green-400')}>
             {lastClose != null ? lastClose.toFixed(2) : '—'}
           </div>
-          <div className={clsx('text-xs tabular-nums', up ? 'text-green-400' : 'text-red-400')}>
+          <div className={clsx('text-xs tabular-nums', up ? 'text-red-400' : 'text-green-400')}>
             {changePct != null ? `${up ? '+' : ''}${changePct.toFixed(2)}%` : '—'}
           </div>
         </div>

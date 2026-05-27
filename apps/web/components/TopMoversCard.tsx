@@ -32,7 +32,7 @@ function Row({ row }: { row: RankRow }) {
         <span className="font-mono text-neutral-400 shrink-0">{row.symbol}</span>
         <span className="truncate">{row.name}</span>
       </div>
-      <span className={clsx('tabular-nums shrink-0 ml-2', up ? 'text-green-400' : 'text-red-400')}>
+      <span className={clsx('tabular-nums shrink-0 ml-2', up ? 'text-red-400' : 'text-green-400')}>
         {row.price.toFixed(2)} ({up ? '+' : ''}{row.change_pct.toFixed(2)}%)
       </span>
     </div>
@@ -54,11 +54,11 @@ export function TopMoversCard({ market }: { market: 'ashare' | 'hk' }) {
       {data && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div>
-            <h3 className="text-xs text-green-400 uppercase mb-1">涨幅榜</h3>
+            <h3 className="text-xs text-red-400 uppercase mb-1">涨幅榜</h3>
             {data.gainers.map((r) => <Row key={r.symbol} row={r} />)}
           </div>
           <div>
-            <h3 className="text-xs text-red-400 uppercase mb-1">跌幅榜</h3>
+            <h3 className="text-xs text-green-400 uppercase mb-1">跌幅榜</h3>
             {data.losers.map((r) => <Row key={r.symbol} row={r} />)}
           </div>
         </div>

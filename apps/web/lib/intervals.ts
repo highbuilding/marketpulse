@@ -35,6 +35,12 @@ export function intervalLabel(key: Interval): string {
 export function klineTabsForMarket(
   market: string | null,
 ): { key: Interval; label: string }[] {
+  // A 股详情页只暴露常用看盘周期；分钟级数据源与 CD 扫描仍由后端保留。
+  if (market === 'ashare') {
+    return INTERVAL_SPECS
+      .filter((s) => ['1m', '1d', '1wk'].includes(s.key))
+      .map((s) => ({ key: s.key, label: s.labelCn }))
+  }
   // 4h: crypto + 美股 SIP(16 60m bars/day → 4 根/日);A 股/HK 4h ≡ 1d 无意义
   const allowFourH = market === 'crypto' || market === 'us'
   return INTERVAL_SPECS
