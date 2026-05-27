@@ -7,12 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from apps.api.deps import (
-    get_chip_service, get_fund_flow_service, get_kline_service, get_quote_cache,
-    get_registry, get_symbol_directory_service,
+    get_chip_service, get_fund_flow_service, get_kline_service,
+    get_redis_cache, get_registry, get_symbol_directory_service,
     get_volume_indicator_service,
 )
 from core.adapters.registry import AdapterRegistry
-from core.cache.quote_cache import QuoteCache
+from core.cache import keys
 from core.domain.intervals import KLINE_INTERVALS
 from core.domain.markets import infer_market
 from core.services.fund_flow_service import FundFlowService
@@ -111,12 +111,19 @@ class ProfilesResponse(BaseModel):
     profiles: list[ProfileResponse]
 
 
+class QuoteMeta(BaseModel):
+    stale: bool = False
+    reason: str | None = None
+    data_age_seconds: float | None = None
+
+
 class QuoteResponse(BaseModel):
     symbol: str
     price: float | None
     change_pct: float | None
     volume: int | None
     ts: str | None
+    meta: QuoteMeta = QuoteMeta()
 
 
 class SearchHit(BaseModel):
@@ -191,15 +198,29 @@ async def profile(
 @router.get("/{symbol}/quote", response_model=QuoteResponse)
 async def quote(
     symbol: str,
-    cache: QuoteCache = Depends(get_quote_cache),
+    redis_cache=Depends(get_redis_cache),
 ) -> QuoteResponse:
     market = infer_market(symbol)
-    q = cache.get(market, symbol) if market else None
-    if q is None:
-        return QuoteResponse(symbol=symbol, price=None, change_pct=None, volume=None, ts=None)
+    if not market:
+        return QuoteResponse(
+            symbol=symbol, price=None, change_pct=None, volume=None, ts=None,
+            meta=QuoteMeta(stale=True, reason="unknown_market"),
+        )
+    payload = await redis_cache.get_msgpack(keys.cache_quote(market, symbol))
+    if payload is None:
+        return QuoteResponse(
+            symbol=symbol, price=None, change_pct=None, volume=None, ts=None,
+            meta=QuoteMeta(stale=True, reason="warming_up"),
+        )
+    ts = datetime.fromisoformat(payload["ts"])
+    age_s = (datetime.now(timezone.utc) - ts).total_seconds()
     return QuoteResponse(
-        symbol=symbol, price=float(q.price), change_pct=q.change_pct,
-        volume=q.volume, ts=q.ts.isoformat(),
+        symbol=payload["symbol"],
+        price=payload.get("price"),
+        change_pct=payload.get("change_pct"),
+        volume=payload.get("volume"),
+        ts=payload["ts"],
+        meta=QuoteMeta(stale=age_s > 60, data_age_seconds=age_s),
     )
 
 
