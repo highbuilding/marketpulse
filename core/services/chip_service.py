@@ -52,6 +52,25 @@ class ChipService:
             return rows[-days:]
         return []
 
+    async def preload_watchlist_chip_summary(
+        self, watchlist, *, days: int = 90,
+    ) -> int:
+        """日终全量预热: 把 watchlist 中所有 A 股标的的筹码摘要一次性算完写库。
+
+        返回成功 preload 的标的数。单条失败不影响后续。
+        """
+        syms = await watchlist.dynamic_universe()
+        ashare = [s for s in syms if s.endswith(".SH") or s.endswith(".SZ")]
+        ok_count = 0
+        for s in ashare:
+            try:
+                await self.get_summary(s, days=days)
+                ok_count += 1
+            except Exception as e:  # noqa: BLE001
+                log.warning("chip.preload_failed", symbol=s, error=str(e))
+        log.info("chip.preload_done", total=len(ashare), ok=ok_count)
+        return ok_count
+
     async def pull_summary(self, symbol: str) -> list[ChipSummary]:
         if infer_market(symbol) != "ashare":
             return []

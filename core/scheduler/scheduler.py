@@ -49,7 +49,7 @@ def attach_fundamentals_jobs(
     *, fund_flow: FundFlowService, watchlist: WatchlistService,
 ) -> None:
     sched.add_job(
-        pull_north_flow_job, IntervalTrigger(minutes=1),
+        pull_north_flow_job, IntervalTrigger(minutes=2),
         args=(fund_flow,),
         id="ff:north", max_instances=1, coalesce=True,
     )
@@ -278,3 +278,18 @@ def attach_market_dashboard_job(
         misfire_grace_time=30,
     )
     log.info("scheduler.market_dashboard_attached")
+
+
+def attach_chip_preload_job(
+    sched: AsyncIOScheduler,
+    *, chip_service, watchlist,
+) -> None:
+    """A 股收盘后 15:35 (BJT) 全量预热筹码摘要。"""
+    async def _job():
+        await chip_service.preload_watchlist_chip_summary(watchlist)
+    sched.add_job(
+        _job, CronTrigger(hour=7, minute=35),  # 15:35 BJT = 07:35 UTC
+        id="chip:preload", max_instances=1, coalesce=True,
+        misfire_grace_time=600,
+    )
+    log.info("scheduler.chip_preload_attached")
