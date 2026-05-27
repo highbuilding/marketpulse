@@ -246,3 +246,21 @@ def attach_us_signal_jobs(
             max_instances=1, coalesce=True, misfire_grace_time=300,
         )
     log.info("scheduler.us_signal_jobs_attached")
+
+
+def attach_index_minute_job(
+    sched: AsyncIOScheduler,
+    *, cache,  # RedisCache
+) -> None:
+    """index_minute: 每 30s 刷一次 (交易/非交易时段统一)。
+
+    单跑 30s 简化策略 — 真正不需要刷的时段(夜里) cache 已有最近一次结果, 重复写无害。
+    """
+    from apps.collector.jobs.index_minute import refresh_all_indices
+    sched.add_job(
+        refresh_all_indices, IntervalTrigger(seconds=30),
+        args=(cache,),
+        id="index_minute:ashare", max_instances=1, coalesce=True,
+        misfire_grace_time=20,
+    )
+    log.info("scheduler.index_minute_attached")
