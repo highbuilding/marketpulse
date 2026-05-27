@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from apps.api.deps import get_state_repo
 from apps.api.routes import (
-    ai_market, cd_signals, health, indices, market_extras, north_flow,
+    ai_market, cd_signals, dashboard, health, indices, market_extras, north_flow,
     notifications, symbols, watchlists,
 )
 from apps.api.ws import ticks
@@ -52,6 +52,7 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(ai_market.router)
 app.include_router(market_extras.router)
+app.include_router(dashboard.router)
 app.include_router(symbols.router)
 app.include_router(watchlists.router)
 app.include_router(north_flow.router)
