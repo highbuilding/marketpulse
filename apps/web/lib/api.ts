@@ -1,4 +1,4 @@
-import type { HealthResponse, Market, OverviewResponse } from './types'
+import type { AIMarketPacket, HealthResponse } from './types'
 
 async function j<T>(path: string): Promise<T> {
   const res = await fetch(path, { cache: 'no-store' })
@@ -7,4 +7,4 @@ async function j<T>(path: string): Promise<T> {
 }
 
 export const fetchHealth = () => j<HealthResponse>('/api/health')
-export const fetchOverview = (m: Market) => j<OverviewResponse>(`/api/markets/${m}/overview`)
+export const fetchAIMarketPacket = () => j<AIMarketPacket>('/api/ai/ashare/market-packet')

@@ -1,0 +1,2 @@
+"""Pure market metric calculations."""
+

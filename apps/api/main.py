@@ -19,12 +19,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from apps.api.deps import (
     get_bar_repo, get_fund_flow_service, get_kline_service,
     get_notification_service, get_quote_cache, get_registry,
-    get_sector_service, get_signal_scan_service, get_state_repo,
+    get_signal_scan_service, get_state_repo,
     get_symbol_directory_service, get_watchlist_service,
 )
 from apps.api.routes import (
-    cd_signals, health, indices, market_extras, markets, north_flow,
-    notifications, sectors, symbols, watchlists,
+    ai_market, cd_signals, health, indices, market_extras, north_flow,
+    notifications, symbols, watchlists,
 )
 from apps.api.ws import ticks
 from core.scheduler.scheduler import (
@@ -75,7 +75,6 @@ async def lifespan(app: FastAPI):
         sched,
         fund_flow=get_fund_flow_service(),
         watchlist=get_watchlist_service(),
-        sector=get_sector_service(),
     )
     attach_signal_jobs(
         sched,
@@ -107,10 +106,9 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
-app.include_router(markets.router)
+app.include_router(ai_market.router)
 app.include_router(market_extras.router)
 app.include_router(symbols.router)
-app.include_router(sectors.router)
 app.include_router(watchlists.router)
 app.include_router(north_flow.router)
 app.include_router(indices.router)

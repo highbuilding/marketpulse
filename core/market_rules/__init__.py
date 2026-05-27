@@ -1,0 +1,2 @@
+"""Adjustable market judgement rules."""
+

@@ -1,24 +1,6 @@
 import type { Market } from './markets'
 export type { Market }
 
-export interface QuoteDTO {
-  symbol: string
-  price: number
-  change_pct: number
-  volume: number
-  source: string
-  ts: string
-}
-
-export interface OverviewResponse {
-  market: Market
-  status: 'ok' | 'warming' | 'degraded'
-  quotes: QuoteDTO[]
-  top_gainers: QuoteDTO[]
-  top_losers: QuoteDTO[]
-  indices: QuoteDTO[]
-}
-
 export interface AdapterHealth {
   state: 'ok' | 'degraded' | 'disabled' | 'down'
   detail: string | null
@@ -167,4 +149,84 @@ export interface IndexMinuteResponse {
   name: string
   granularity: '1m' | '5m' | '1d'
   points: IndexMinutePoint[]
+}
+
+export interface AIMarketBreadth {
+  total: number
+  advancers: number
+  decliners: number
+  flat: number
+  up_limit: number
+  down_limit: number
+  total_amount: number
+  up_ratio: number
+  down_ratio: number
+  net_width: number
+}
+
+export interface AIMarketSymbol {
+  symbol: string
+  name: string | null
+  price: number | null
+  change_pct: number | null
+  volume: number | null
+  sectors: string[]
+}
+
+export interface AIMarketRank {
+  symbol: string
+  name: string
+  price: number
+  change_pct: number
+  volume: number
+  amount: number
+}
+
+export interface AIMarketSector {
+  code: string
+  name: string
+  change_pct: number
+  company_count: number
+  leader_name: string
+  leader_change_pct: number
+  leader_symbol: string | null
+  main_net: number | null
+  constituents: AIMarketSymbol[] | null
+  up_count: number | null
+  down_count: number | null
+  up_ratio: number | null
+  avg_change_pct: number | null
+  leader_dominance_pct: number | null
+  breadth_label: string
+}
+
+export interface AIMarketEvent {
+  level: string
+  category: string
+  title: string
+  detail: string
+  symbols: string[]
+  score: number
+}
+
+export interface AIMarketIndexStrength {
+  ranking: Array<{ symbol: string; name: string | null; change_pct: number | null }>
+  small_vs_large_pct: number | null
+  growth_vs_large_pct: number | null
+}
+
+export interface AIMarketPacket {
+  generated_at: string
+  market: 'ashare'
+  indices: AIMarketSymbol[]
+  breadth: AIMarketBreadth
+  top_gainers: AIMarketRank[]
+  top_losers: AIMarketRank[]
+  hot_sectors: AIMarketSector[]
+  weak_sectors: AIMarketSector[]
+  watchlist: AIMarketSymbol[]
+  index_strength: AIMarketIndexStrength
+  events: AIMarketEvent[]
+  ai_brief: Record<string, unknown>
+  degraded: string[]
 }

@@ -8,20 +8,23 @@ from core.adapters.registry import AdapterRegistry, load_sources_config
 from core.cache.quote_cache import QuoteCache
 from core.notifications import EmailChannel, WeChatChannel
 from core.persistence.duckdb_repo import BarRepo
+from core.persistence.chip_repo import ChipRepo
 from core.persistence.fund_flow_repo import FundFlowRepo
 from core.persistence.notification_repo import NotificationRepo
-from core.persistence.sector_repo import SectorRepo
 from core.persistence.signal_repo import SignalRepo
 from core.persistence.sqlite_repo import StateRepo
 from core.persistence.symbol_directory_repo import SymbolDirectoryRepo
 from core.persistence.watchlist_repo import WatchlistRepo
 from core.services.fund_flow_service import FundFlowService
+from core.services.chip_service import ChipService
+from core.services.ai_market_service import AIMarketService
 from core.services.kline_service import KLineService
+from core.services.market_query import MarketQueryService
 from core.services.notification_service import NotificationService
-from core.services.sector_service import SectorService
 from core.services.signal_service import SignalScanService
 from core.services.symbol_directory_service import SymbolDirectoryService
 from core.services.watchlist_service import WatchlistService
+from core.services.volume_indicator_service import VolumeIndicatorService
 
 
 _BASE = Path(__file__).resolve().parents[2]
@@ -69,16 +72,6 @@ def get_watchlist_service() -> WatchlistService:
 
 
 @lru_cache(maxsize=1)
-def get_sector_repo() -> SectorRepo:
-    return SectorRepo(str(_DATA / "state.db"))
-
-
-@lru_cache(maxsize=1)
-def get_sector_service() -> SectorService:
-    return SectorService(get_sector_repo())
-
-
-@lru_cache(maxsize=1)
 def get_fund_flow_repo() -> FundFlowRepo:
     return FundFlowRepo(str(_DATA / "state.db"))
 
@@ -86,6 +79,37 @@ def get_fund_flow_repo() -> FundFlowRepo:
 @lru_cache(maxsize=1)
 def get_fund_flow_service() -> FundFlowService:
     return FundFlowService(get_fund_flow_repo())
+
+
+@lru_cache(maxsize=1)
+def get_chip_repo() -> ChipRepo:
+    return ChipRepo(str(_DATA / "state.db"))
+
+
+@lru_cache(maxsize=1)
+def get_chip_service() -> ChipService:
+    return ChipService(get_chip_repo())
+
+
+@lru_cache(maxsize=1)
+def get_volume_indicator_service() -> VolumeIndicatorService:
+    return VolumeIndicatorService()
+
+
+@lru_cache(maxsize=1)
+def get_market_query_service() -> MarketQueryService:
+    return MarketQueryService()
+
+
+@lru_cache(maxsize=1)
+def get_ai_market_service() -> AIMarketService:
+    return AIMarketService(
+        registry=get_registry(),
+        cache=get_quote_cache(),
+        watchlist=get_watchlist_service(),
+        directory=get_symbol_directory_service(),
+        market_query=get_market_query_service(),
+    )
 
 
 @lru_cache(maxsize=1)
