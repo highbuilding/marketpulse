@@ -10,14 +10,13 @@ from core.cache.quote_cache import QuoteCache
 from core.persistence.duckdb_repo import BarRepo
 from core.scheduler.fundamentals_jobs import (
     pull_north_flow_job, pull_watchlist_symbol_flow_job,
-    purge_fund_flow_job, refresh_sectors_job,
+    purge_fund_flow_job,
 )
-from core.scheduler.jobs import flush_quotes_to_duckdb, tick_snapshot_once
+from core.scheduler.jobs import flush_all_quotes_to_duckdb, tick_snapshot_once
 from core.scheduler.signal_jobs import fetch_intraday_job, scan_cd_job
 from core.services.fund_flow_service import FundFlowService
 from core.services.kline_service import KLineService
 from core.services.notification_service import NotificationService
-from core.services.sector_service import SectorService
 from core.services.signal_service import SignalScanService
 from core.services.watchlist_service import WatchlistService
 
@@ -36,18 +35,18 @@ def build_scheduler(
             id=f"tick:{market}", max_instances=1, coalesce=True,
             misfire_grace_time=30,
         )
-        sched.add_job(
-            flush_quotes_to_duckdb, IntervalTrigger(seconds=60),
-            args=(market, cache, bar_repo),
-            id=f"flush:{market}", max_instances=1, coalesce=True,
-        )
+    sched.add_job(
+        flush_all_quotes_to_duckdb, IntervalTrigger(seconds=60),
+        args=(registry.markets(), cache, bar_repo),
+        id="flush:all", max_instances=1, coalesce=True,
+    )
     log.info("scheduler.built", markets=registry.markets())
     return sched
 
 
 def attach_fundamentals_jobs(
     sched: AsyncIOScheduler,
-    *, fund_flow: FundFlowService, watchlist: WatchlistService, sector: SectorService,
+    *, fund_flow: FundFlowService, watchlist: WatchlistService,
 ) -> None:
     sched.add_job(
         pull_north_flow_job, IntervalTrigger(minutes=1),
@@ -58,11 +57,6 @@ def attach_fundamentals_jobs(
         pull_watchlist_symbol_flow_job, IntervalTrigger(minutes=30),
         args=(fund_flow, watchlist),
         id="ff:symbols", max_instances=1, coalesce=True,
-    )
-    sched.add_job(
-        refresh_sectors_job, CronTrigger(hour=9, minute=25),
-        args=(sector,),
-        id="sectors:refresh", max_instances=1, coalesce=True,
     )
     sched.add_job(
         purge_fund_flow_job, CronTrigger(hour=2, minute=0),

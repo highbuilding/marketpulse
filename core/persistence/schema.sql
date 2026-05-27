@@ -31,21 +31,6 @@ CREATE TABLE IF NOT EXISTS watchlist_items (
   FOREIGN KEY (watchlist_id) REFERENCES watchlists(id) ON DELETE CASCADE
 );
 
--- Plan 2: 板块
-CREATE TABLE IF NOT EXISTS sectors (
-  name TEXT PRIMARY KEY,
-  classification TEXT NOT NULL,
-  updated_at TIMESTAMP NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS sector_constituents (
-  sector_name TEXT NOT NULL,
-  symbol TEXT NOT NULL,
-  PRIMARY KEY (sector_name, symbol)
-);
-
-CREATE INDEX IF NOT EXISTS idx_sector_const_symbol ON sector_constituents(symbol);
-
 -- Plan 2: 资金流
 CREATE TABLE IF NOT EXISTS fund_flow_symbol (
   symbol TEXT NOT NULL,

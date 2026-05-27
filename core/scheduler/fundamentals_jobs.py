@@ -3,7 +3,6 @@ from __future__ import annotations
 import structlog
 
 from core.services.fund_flow_service import FundFlowService
-from core.services.sector_service import SectorService
 from core.services.watchlist_service import WatchlistService
 
 log = structlog.get_logger(__name__)
@@ -28,14 +27,6 @@ async def pull_watchlist_symbol_flow_job(
         except Exception as e:  # noqa: BLE001
             log.warning("symbol_flow.failed", symbol=s, error=str(e))
     log.info("symbol_flow.batch_done", symbols=len(symbols), rows=pulled)
-
-
-async def refresh_sectors_job(svc: SectorService) -> None:
-    try:
-        total = await svc.refresh_all_sina()
-        log.info("sectors.refreshed", total=total)
-    except Exception as e:  # noqa: BLE001
-        log.warning("sectors.refresh_failed", error=str(e))
 
 
 async def purge_fund_flow_job(ff: FundFlowService) -> None:

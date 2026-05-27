@@ -1,15 +1,14 @@
-"""全市场行情/板块查询(独立于 Adapter 的 universe 快照,用于 dashboard)。
+"""全市场行情/板块查询。
 
-数据走 sina vip.stock.finance.sina.com.cn 与 akshare sina 行业通道。
+A 股实时榜单、全市场快照、行业/概念板块统一走 AKShare 封装接口，
+调用入口必须经 `core.integrations.akshare.ak_call`，避免业务层散点直接请求。
 """
 from __future__ import annotations
 
-import asyncio
-import json
 from dataclasses import dataclass
 from typing import Literal
 
-import requests
+import pandas as pd
 import structlog
 
 from core.integrations.akshare import ak_call
@@ -32,119 +31,178 @@ class RankRow:
 
 @dataclass(frozen=True, slots=True)
 class SectorRow:
+    code: str
     name: str
     change_pct: float
     avg_price: float
     company_count: int
     leader_name: str
     leader_change_pct: float
-
-
-def _make_session() -> requests.Session:
-    s = requests.Session()
-    s.trust_env = False
-    s.proxies = {}
-    s.headers.update({
-        "Referer": "https://finance.sina.com.cn/",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    })
-    return s
-
-
-_A_RANK_URL = (
-    "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
-    "Market_Center.getHQNodeData"
-)
-_HK_RANK_URL = (
-    "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
-    "Market_Center.getHKStockData"
-)
+    leader_symbol: str | None = None
 
 
 class MarketQueryService:
-    def __init__(self) -> None:
-        self._session = _make_session()
-
     async def top_ashare(self, direction: SORT_DIR = "desc", limit: int = 10) -> list[RankRow]:
-        return await asyncio.to_thread(self._top_ashare_sync, direction, limit)
+        rows = await self.all_ashare()
+        return sorted(rows, key=lambda row: row.change_pct, reverse=(direction == "desc"))[:limit]
 
-    def _top_ashare_sync(self, direction: SORT_DIR, limit: int) -> list[RankRow]:
-        r = self._session.get(_A_RANK_URL, params={
-            "page": 1, "num": limit,
-            "sort": "changepercent",
-            "asc": 0 if direction == "desc" else 1,
-            "node": "hs_a", "_s_r_a": "page",
-        }, timeout=5)
-        r.raise_for_status()
-        data = json.loads(r.text)
-        out: list[RankRow] = []
-        for row in data:
-            try:
-                out.append(RankRow(
-                    symbol=_sina_to_symbol(row["symbol"]),
-                    name=row["name"],
-                    price=float(row["trade"]),
-                    change_pct=float(row["changepercent"]),
-                    volume=int(row["volume"]),
-                    amount=float(row["amount"]),
-                ))
-            except (KeyError, ValueError, TypeError) as e:  # noqa: PERF203
-                log.warning("top_ashare.parse_row_failed", error=str(e))
-        return out
-
-    async def top_hk(self, direction: SORT_DIR = "desc", limit: int = 10) -> list[RankRow]:
-        return await asyncio.to_thread(self._top_hk_sync, direction, limit)
-
-    def _top_hk_sync(self, direction: SORT_DIR, limit: int) -> list[RankRow]:
-        r = self._session.get(_HK_RANK_URL, params={
-            "page": 1, "num": limit,
-            "sort": "changepercent",
-            "asc": 0 if direction == "desc" else 1,
-            "node": "qbgg_hk",
-        }, timeout=5)
-        r.raise_for_status()
-        data = json.loads(r.text)
-        out: list[RankRow] = []
-        for row in data:
-            try:
-                out.append(RankRow(
-                    symbol=f"{row['symbol'].zfill(5)}.HK",
-                    name=row["name"],
-                    price=float(row["lasttrade"]),
-                    change_pct=float(row["changepercent"]),
-                    volume=int(row["volume"]) if row.get("volume") else 0,
-                    amount=float(row["amount"]) if row.get("amount") else 0.0,
-                ))
-            except (KeyError, ValueError, TypeError) as e:
-                log.warning("top_hk.parse_row_failed", error=str(e))
-        return out
+    async def all_ashare(self, limit: int = 5000) -> list[RankRow]:
+        df = await ak_call(
+            "stock_zh_a_spot_em",
+            caller=f"market_query.all_ashare:limit={limit}",
+            ak_timeout_s=8,
+        )
+        rows = self._parse_spot_em_rows(df)
+        return sorted(rows[:limit], key=lambda row: row.change_pct, reverse=True)
 
     async def sectors_ashare(self) -> list[SectorRow]:
-        df = await ak_call("stock_sector_spot", indicator="新浪行业",
-                           caller="market_query.sectors_ashare")
+        rows: list[SectorRow] = []
+        try:
+            industry_df = await ak_call(
+                "stock_board_industry_name_em",
+                caller="market_query.sectors_ashare:industry",
+                ak_timeout_s=8,
+            )
+            rows.extend(self._parse_sector_name_rows(industry_df, kind="industry"))
+        except Exception as e:  # noqa: BLE001
+            log.warning("market_query.sectors_ashare.industry_failed", error=str(e))
+        try:
+            concept_df = await ak_call(
+                "stock_board_concept_name_em",
+                caller="market_query.sectors_ashare:concept",
+                ak_timeout_s=8,
+            )
+            rows.extend(self._parse_sector_name_rows(concept_df, kind="concept"))
+        except Exception as e:  # noqa: BLE001
+            log.warning("market_query.sectors_ashare.concept_failed", error=str(e))
+        if not rows:
+            raise RuntimeError("AKShare 行业/概念板块接口均获取失败")
+        return sorted(rows, key=lambda s: s.change_pct, reverse=True)
+
+    async def sector_constituents_ashare(self, sector_code: str, limit: int = 8) -> list[RankRow]:
+        kind, name = _split_sector_code(sector_code)
+        func_name = (
+            "stock_board_concept_cons_em"
+            if kind == "concept"
+            else "stock_board_industry_cons_em"
+        )
+        df = await ak_call(
+            func_name,
+            symbol=name,
+            caller=f"market_query.sector_constituents:{sector_code}:limit={limit}",
+            ak_timeout_s=6,
+        )
+        return sorted(
+            self._parse_spot_em_rows(df),
+            key=lambda row: row.change_pct,
+            reverse=True,
+        )[:limit]
+
+    async def top_hk(self, direction: SORT_DIR = "desc", limit: int = 10) -> list[RankRow]:
+        df = await ak_call(
+            "stock_hk_spot_em",
+            caller=f"market_query.top_hk:{direction}:limit={limit}",
+            ak_timeout_s=8,
+        )
+        rows = self._parse_hk_spot_rows(df)
+        return sorted(rows, key=lambda row: row.change_pct, reverse=(direction == "desc"))[:limit]
+
+    @staticmethod
+    def _parse_spot_em_rows(df: pd.DataFrame) -> list[RankRow]:
+        out: list[RankRow] = []
+        for _, row in df.iterrows():
+            try:
+                code = _text(row, "代码")
+                price = _float(row, "最新价")
+                change_pct = _float(row, "涨跌幅")
+                if code is None or price is None or change_pct is None:
+                    continue
+                out.append(RankRow(
+                    symbol=_code_to_symbol(code),
+                    name=_text(row, "名称") or code,
+                    price=price,
+                    change_pct=change_pct,
+                    volume=int(_float(row, "成交量") or 0),
+                    amount=_float(row, "成交额") or 0.0,
+                ))
+            except (KeyError, ValueError, TypeError) as e:  # noqa: PERF203
+                log.warning("market_query.spot_row_parse_failed", error=str(e))
+        return out
+
+    @staticmethod
+    def _parse_sector_name_rows(df: pd.DataFrame, *, kind: Literal["industry", "concept"]) -> list[SectorRow]:
         out: list[SectorRow] = []
         for _, row in df.iterrows():
             try:
+                name = _text(row, "板块名称")
+                if not name:
+                    continue
+                up_count = int(_float(row, "上涨家数") or 0)
+                down_count = int(_float(row, "下跌家数") or 0)
                 out.append(SectorRow(
-                    name=str(row["板块"]),
-                    change_pct=float(row["涨跌幅"]),
-                    avg_price=float(row["平均价格"]),
-                    company_count=int(row["公司家数"]),
-                    leader_name=str(row["股票名称"]),
-                    leader_change_pct=float(row["个股-涨跌幅"]),
+                    code=f"{kind}:{name}",
+                    name=name,
+                    company_count=up_count + down_count,
+                    avg_price=_float(row, "最新价") or 0.0,
+                    change_pct=_float(row, "涨跌幅") or 0.0,
+                    leader_change_pct=_float(row, "领涨股票-涨跌幅") or 0.0,
+                    leader_name=_text(row, "领涨股票") or "",
+                    leader_symbol=None,
                 ))
-            except (KeyError, ValueError, TypeError) as e:
-                log.warning("sectors_ashare.parse_row_failed", error=str(e))
+            except (KeyError, ValueError, TypeError) as e:  # noqa: PERF203
+                log.warning("market_query.sector_row_parse_failed", kind=kind, error=str(e))
+        return out
+
+    @staticmethod
+    def _parse_hk_spot_rows(df: pd.DataFrame) -> list[RankRow]:
+        out: list[RankRow] = []
+        for _, row in df.iterrows():
+            try:
+                code = _text(row, "代码")
+                price = _float(row, "最新价")
+                change_pct = _float(row, "涨跌幅")
+                if code is None or price is None or change_pct is None:
+                    continue
+                out.append(RankRow(
+                    symbol=f"{code.zfill(5)}.HK",
+                    name=_text(row, "名称") or code,
+                    price=price,
+                    change_pct=change_pct,
+                    volume=int(_float(row, "成交量") or 0),
+                    amount=_float(row, "成交额") or 0.0,
+                ))
+            except (KeyError, ValueError, TypeError) as e:  # noqa: PERF203
+                log.warning("market_query.hk_spot_row_parse_failed", error=str(e))
         return out
 
 
-def _sina_to_symbol(sina_code: str) -> str:
-    """sh600519 → 600519.SH; sz000858 → 000858.SZ; bj920469 → 920469.BJ."""
-    if len(sina_code) < 3:
-        return sina_code
-    mkt = sina_code[:2].upper()
-    code = sina_code[2:]
-    if mkt in {"SH", "SZ", "BJ"}:
-        return f"{code}.{mkt}"
-    return sina_code
+def _text(row, key: str) -> str | None:
+    value = row.get(key)
+    if value is None or pd.isna(value) or str(value) == "-":
+        return None
+    return str(value).strip()
+
+
+def _float(row, key: str) -> float | None:
+    value = row.get(key)
+    if value is None or pd.isna(value) or str(value) == "-":
+        return None
+    return float(value)
+
+
+def _code_to_symbol(code: str) -> str:
+    code = str(code).strip().zfill(6)
+    if code.startswith(("4", "8", "9")):
+        return f"{code}.BJ"
+    if code.startswith(("6", "5", "11", "13", "68")):
+        return f"{code}.SH"
+    return f"{code}.SZ"
+
+
+def _split_sector_code(sector_code: str) -> tuple[Literal["industry", "concept"], str]:
+    if ":" not in sector_code:
+        return "industry", sector_code
+    kind, name = sector_code.split(":", 1)
+    if kind == "concept":
+        return "concept", name
+    return "industry", name
