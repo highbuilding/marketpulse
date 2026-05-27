@@ -23,6 +23,17 @@ def test_cache_bars_tail_key():
     )
 
 
+def test_cache_bars_full_key():
+    assert (
+        keys.cache_bars_full("ashare", "600519.SH", "1d", "abc123")
+        == "cache:bars:ashare:600519.SH:1d:full:abc123"
+    )
+
+
+def test_cache_fundflow_key():
+    assert keys.cache_fundflow("600519.SH", days=30) == "cache:fundflow:600519.SH:30d"
+
+
 def test_state_leader_collector_key():
     assert keys.state_leader_collector() == "state:leader:collector"
 
@@ -41,6 +52,10 @@ def test_state_inflight_key():
 
 def test_ratelimit_source_key():
     assert keys.ratelimit_source("sina") == "ratelimit:source:sina"
+
+
+def test_ratelimit_outlet_key():
+    assert keys.ratelimit_outlet("local") == "ratelimit:outlet:local"
 
 
 def test_bus_topic_constants():
