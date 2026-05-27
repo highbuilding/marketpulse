@@ -27,17 +27,27 @@ def test_bars_returns_400_for_bad_interval():
 
 
 def test_bars_returns_ok(monkeypatch):
+    import fakeredis.aioredis
+    from apps.api.deps import get_redis_cache
+    from core.cache.redis_client import RedisCache
+
+    fake = fakeredis.aioredis.FakeRedis(decode_responses=False)
+    cache = RedisCache(fake)
     svc = get_kline_service()
-    monkeypatch.setattr(svc, "get_bars",
-                        AsyncMock(return_value=[_bar("600519.SH", 13, 1344.09)]))
-    with TestClient(app) as client:
-        resp = client.get("/api/symbols/600519.SH/bars?interval=1d&days=30")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["symbol"] == "600519.SH"
-    assert len(body["bars"]) == 1
-    assert body["bars"][0]["close"] == pytest.approx(1344.09)
-    assert body["bars"][0]["amount"] == pytest.approx(20_000_000)
+    monkeypatch.setattr(svc, "get_bars_cache_only",
+                        AsyncMock(return_value=([_bar("600519.SH", 13, 1344.09)], False)))
+    app.dependency_overrides[get_redis_cache] = lambda: cache
+    try:
+        with TestClient(app) as client:
+            resp = client.get("/api/symbols/600519.SH/bars?interval=1d&days=30")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["symbol"] == "600519.SH"
+        assert len(body["bars"]) == 1
+        assert body["bars"][0]["close"] == pytest.approx(1344.09)
+        assert body["bars"][0]["amount"] == pytest.approx(20_000_000)
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_fund_flow_returns_ok(monkeypatch):

@@ -43,10 +43,17 @@ class BarDTO(BaseModel):
     outstanding_share: float | None = None
 
 
+class BarsResponseMeta(BaseModel):
+    stale: bool = False
+    partial: bool = False
+    reason: str | None = None
+
+
 class BarsResponse(BaseModel):
     symbol: str
     interval: str
     bars: list[BarDTO]
+    meta: BarsResponseMeta = BarsResponseMeta()
 
 
 class FundFlowRowDTO(BaseModel):
@@ -230,12 +237,27 @@ async def bars(
     interval: str = Query("1d"),
     days: int = Query(365, ge=1, le=3650),
     svc: KLineService = Depends(get_kline_service),
+    redis_cache=Depends(get_redis_cache),
 ) -> BarsResponse:
     if interval not in KLINE_INTERVALS:
         raise HTTPException(400, f"invalid interval: {interval}")
+
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days)
-    bars = await svc.get_bars(symbol, interval=interval, start=start, end=end)
+
+    bars_list, partial = await svc.get_bars_cache_only(
+        symbol, interval=interval, start=start, end=end,
+    )
+    if not bars_list:
+        # 触发 collector 后台 refill (不阻塞)
+        try:
+            await _publish_refill_request(redis_cache, symbol, interval, days)
+        except Exception:  # noqa: BLE001
+            pass
+        return BarsResponse(
+            symbol=symbol, interval=interval, bars=[],
+            meta=BarsResponseMeta(stale=True, reason="warming_up"),
+        )
     return BarsResponse(
         symbol=symbol, interval=interval,
         bars=[BarDTO(
@@ -246,7 +268,23 @@ async def bars(
             amount=b.amount,
             turnover=b.turnover,
             outstanding_share=b.outstanding_share,
-        ) for b in bars],
+        ) for b in bars_list],
+        meta=BarsResponseMeta(partial=partial),
+    )
+
+
+async def _publish_refill_request(redis_cache, symbol: str, interval: str, days: int) -> None:
+    """发 bus:bars.refill_request,collector refill_consumer 收到后拉数据写库 + 写 cache。"""
+    import json
+    from core.cache import keys as ck
+    payload = {
+        "market": infer_market(symbol) or "unknown",
+        "symbol": symbol, "interval": interval, "days": days,
+    }
+    await redis_cache._r.xadd(
+        ck.BUS_BARS_REFILL_REQUEST,
+        {"data": json.dumps(payload)},
+        maxlen=100, approximate=True,
     )
 
 
