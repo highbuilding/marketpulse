@@ -203,6 +203,7 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
             signals={signalInterval ? markers : undefined}
             livePrice={isKlineMode ? livePrice : null}
             chipLevels={chipLevels}
+            meta={data.meta}
           />
         )}
         {interval !== '1m' && data && data.bars.length === 0 && (

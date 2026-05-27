@@ -10,6 +10,8 @@ import { isMarketOpenNow, marketTz, tzOffsetSeconds, type Market } from '@/lib/m
 import { makeChartCrosshairFormatter, makeChartTickFormatter } from '@/lib/chart_time'
 import { intervalSeconds } from '@/lib/intervals'
 import type { BarDTO, Interval } from '@/lib/types'
+import type { ResponseMeta } from '@/lib/types'
+import { StaleBadge } from './StaleBadge'
 
 export interface SignalMarker {
   ts: string                 // ISO UTC, 与 bar.ts 同源
@@ -30,6 +32,7 @@ export interface KLineChartProps {
     cost90Low?: number | null
     cost90High?: number | null
   } | null
+  meta?: ResponseMeta
 }
 
 const INTRADAY: ReadonlySet<Interval> = new Set(['1m', '5m', '15m', '30m', '60m', '4h'])
@@ -82,7 +85,7 @@ function computeStats(bars: BarDTO[]): Stats | null {
 }
 
 export function KLineChart({
-  bars, interval, market, height = 400, signals, livePrice, chipLevels,
+  bars, interval, market, height = 400, signals, livePrice, chipLevels, meta,
 }: KLineChartProps) {
   const ref = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -304,6 +307,7 @@ export function KLineChart({
             <span className="ml-3">区间低 <span className="font-mono text-neutral-300">{fmtPrice(stats.low)}</span></span>
             <span className="ml-3">成交 <span className="font-mono text-neutral-300">{fmtVolume(stats.vol)}</span></span>
           </div>
+          <StaleBadge meta={meta} />
         </div>
       )}
       <div ref={ref} className="w-full" />

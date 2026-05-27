@@ -6,6 +6,7 @@ import useSWR from 'swr'
 import clsx from 'clsx'
 
 import { fetchIndexMinute } from '@/lib/symbol_api'
+import { StaleBadge } from './StaleBadge'
 
 function MiniChart({ points, color }: { points: { ts: string; close: number }[]; color: string }) {
   const ref = useRef<HTMLDivElement>(null)
@@ -75,11 +76,17 @@ export function IndexCard({ symbol }: { symbol: string }) {
   return (
     <a
       href={`/symbol/${encodeURIComponent(symbol)}`}
-      className="block rounded-lg border border-neutral-800 bg-neutral-950 p-4 hover:border-neutral-600 transition-colors"
+      className={clsx(
+        'block rounded-lg border border-neutral-800 bg-neutral-950 p-4 hover:border-neutral-600 transition-colors',
+        data?.meta?.stale && 'opacity-60',
+      )}
     >
       <div className="flex items-baseline justify-between mb-2">
         <div>
-          <div className="text-sm text-neutral-400">{data?.name || '加载中'}</div>
+          <div className="flex items-center gap-2">
+            <div className="text-sm text-neutral-400">{data?.name || '加载中'}</div>
+            <StaleBadge meta={data?.meta} />
+          </div>
           <div className="font-mono text-xs text-neutral-500">{symbol}</div>
         </div>
         <div className="text-right">

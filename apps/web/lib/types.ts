@@ -30,6 +30,7 @@ export interface BarsResponse {
   symbol: string
   interval: Interval
   bars: BarDTO[]
+  meta?: ResponseMeta
 }
 
 export interface FundFlowRow {
@@ -149,6 +150,7 @@ export interface IndexMinuteResponse {
   name: string
   granularity: '1m' | '5m' | '1d'
   points: IndexMinutePoint[]
+  meta?: ResponseMeta
 }
 
 export interface AIMarketBreadth {
