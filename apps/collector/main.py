@@ -143,7 +143,8 @@ async def lifespan(app: FastAPI):
     cache = get_quote_cache()
     bar_repo = get_bar_repo()
 
-    sched = build_scheduler(registry, cache, bar_repo, get_watchlist_service())
+    sched = build_scheduler(registry, cache, bar_repo, get_watchlist_service(),
+                            redis_cache=_redis_cache)
     attach_fundamentals_jobs(
         sched, fund_flow=get_fund_flow_service(),
         watchlist=get_watchlist_service(),
