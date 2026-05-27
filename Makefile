@@ -1,14 +1,23 @@
-.PHONY: install dev test test-integration test-full lint typecheck web-install web-dev clean
+.PHONY: install dev dev-redis dev-stop test test-integration test-full lint typecheck web-install web-dev clean warmup
 
 install:
 	python -m venv .venv && . .venv/bin/activate && pip install -e ".[dev]"
 
-dev:
-	# NOTE: uvicorn --reload 在本项目下不安全 — py_mini_racer V8 状态在 reload 后会污染
-	# 导致 worker SIGABRT (见 docs/TODO.md 和 memory/project_mini_racer_lock.md)。
-	# 代码变更请手动重启:pkill -f "uvicorn apps.api" + 重跑此命令。
-	. .venv/bin/activate && uvicorn apps.api.main:app --port 8787 & \
-	cd apps/web && npm run dev
+dev-redis:
+	docker compose -f docker-compose.dev.yml up -d redis
+
+dev: dev-redis
+	# 用 honcho 拉起 collector + api + web (Procfile 定义)
+	# Redis 单独由 docker-compose 管理(不进 honcho,Ctrl-C 不会停容器)
+	# 雷区 2: 不能加 uvicorn --reload — V8 状态会污染。
+	# 代码变更请 Ctrl-C 退出 honcho 再重新 make dev。
+	. .venv/bin/activate && honcho start -f Procfile
+
+dev-stop:
+	pkill -9 -f "apps.collector.main" 2>/dev/null || true
+	pkill -9 -f "uvicorn apps.api.main:app" 2>/dev/null || true
+	docker compose -f docker-compose.dev.yml stop redis
+	@echo "stopped collector / api / redis (web 由 honcho/Ctrl-C 管理)"
 
 test:
 	. .venv/bin/activate && pytest -m "not integration"

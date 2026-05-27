@@ -82,18 +82,29 @@ sleep 6 && tail -5 /tmp/api.log  # 看 "Application startup complete"
 干一段活前先 `pkill -9`,干完活后**统一重启一次**。中途不要让 API 服务停在挂掉状态去问用户问题或处理别的事 — 否则用户在浏览器看到"加载失败"会以为是新 bug,实际只是没重启。模板:
 
 ```bash
-# 开干前:停服务(避免运行中的进程被 commit / git checkout 影响)
-pkill -9 -f "uvicorn apps.api.main:app"; sleep 2
+# 停服务 — 三方都要停 (collector / api 都跑了 ak_call 相关或读 Redis)
+pkill -9 -f "apps.collector.main" 2>/dev/null
+pkill -9 -f "uvicorn apps.api.main:app" 2>/dev/null
+sleep 2
+
+# Redis 一直跑(由 docker-compose 管理),平时不需要重启它
 
 # ... 干活、改代码、commit、跑测试 ...
 
-# 收尾:必须重启,不要留 8787 空
+# 收尾:重启 collector + api,不要留任何端口空着
+docker compose -f docker-compose.dev.yml up -d redis
+nohup bash -c '. .venv/bin/activate && python -m apps.collector.main' >> /tmp/collector.log 2>&1 &
+disown
 nohup bash -c '. .venv/bin/activate && uvicorn apps.api.main:app --port 8787' >> /tmp/api.log 2>&1 &
 disown
-sleep 6 && curl -s -m 3 http://localhost:8787/api/health | grep -o '"status":"[^"]*"'
+sleep 8
+curl -s -m 3 http://localhost:8787/api/health | grep -o '"status":"[^"]*"'
+curl -s -m 3 http://localhost:8788/health | grep -o '"status":"[^"]*"'
 ```
 
 **反模式**(已踩过,2026-05-20):e2e 测试 plan 末尾 `pkill -9` 收尾但忘了重启,16 分钟后用户报"加载失败",实际仅服务没起来。任何 task plan 里 `pkill` 一定要配套 nohup 重启。
+
+**2026-05-27 之后**:scheduler 已搬到 collector 进程,任何重启 api 的操作都**不再影响采集**。但反之,collector 崩或重启会停掉所有 cron 任务,务必同步重启。`/tmp/collector.log` 是 collector 的 stdout,事实源仍是 `data/logs/api.log`(structlog 共用)。
 
 ### 雷区 3:bar 的时间戳约定(1d 踩坑历史:UI 一度显示早一天;intraday 富途口径)
 
