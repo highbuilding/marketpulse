@@ -105,6 +105,8 @@ async def lifespan(app: FastAPI):
     _node_id = f"{socket.gethostname()}-{os.getpid()}"
     leader = Leader(redis=_redis_for_mw, node_id=_node_id, ttl_s=15, renew_interval_s=5)
     await leader.try_acquire_once()
+    from core.scheduler.leader_gate import set_leader
+    set_leader(leader)
     _leader_task = asyncio.create_task(leader.acquire_loop())
     log.info("leader.bootstrapped", node=_node_id, is_leader=leader.is_leader())
 
@@ -185,6 +187,10 @@ async def lifespan(app: FastAPI):
         except (asyncio.CancelledError, Exception):
             pass
         sched.shutdown(wait=False)
+        try:
+            await _redis_for_mw.aclose()
+        except Exception:  # noqa: BLE001
+            pass
         log.info("collector.shutdown")
 
 

@@ -76,6 +76,16 @@ async def refresh_one_index(symbol: str, *, cache: RedisCache) -> None:
 
 
 async def refresh_all_indices(cache: RedisCache) -> None:
-    """循环刷新 8 个指数。单条失败不影响后续。"""
+    """循环刷新 8 个指数。单条失败不影响后续。
+
+    非交易时段 (BJT 09:00-16:00 之外) / 周末跳过 — 避免无意义 sina 调用。
+    """
+    now_bjt = datetime.now(_CN_TZ)
+    if now_bjt.weekday() >= 5:  # 周末 (Mon=0, Sat=5, Sun=6)
+        log.debug("index_minute.skip_weekend")
+        return
+    if not (9 <= now_bjt.hour < 16):
+        log.debug("index_minute.skip_off_hours", hour=now_bjt.hour)
+        return
     for symbol in INDEX_SYMBOLS:
         await refresh_one_index(symbol, cache=cache)

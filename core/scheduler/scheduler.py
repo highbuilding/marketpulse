@@ -14,6 +14,7 @@ from core.scheduler.fundamentals_jobs import (
     purge_fund_flow_job,
 )
 from core.scheduler.jobs import flush_all_quotes_to_duckdb, tick_snapshot_once
+from core.scheduler.leader_gate import is_leader as _is_leader
 from core.scheduler.signal_jobs import fetch_intraday_job, scan_cd_job
 from core.services.fund_flow_service import FundFlowService
 from core.services.kline_service import KLineService
@@ -24,6 +25,23 @@ from core.services.watchlist_service import WatchlistService
 log = structlog.get_logger(__name__)
 
 
+def _leader_gated(coro_func):
+    """把 async cron 函数包一层:非 leader 立即 return。
+
+    保留原函数名 (debug 友好) + 不影响 args 透传。
+    """
+    name = getattr(coro_func, "__name__", "unknown")
+
+    async def _gated(*args, **kwargs):
+        if not _is_leader():
+            log.debug("scheduler.skip_non_leader", job=name)
+            return
+        return await coro_func(*args, **kwargs)
+
+    _gated.__name__ = f"gated_{name}"
+    return _gated
+
+
 def build_scheduler(
     registry: AdapterRegistry, cache: QuoteCache, bar_repo: BarRepo,
     watchlist: WatchlistService,
@@ -32,13 +50,13 @@ def build_scheduler(
     sched = AsyncIOScheduler(timezone="UTC")
     for market in registry.markets():
         sched.add_job(
-            tick_snapshot_once, IntervalTrigger(seconds=10),
+            _leader_gated(tick_snapshot_once), IntervalTrigger(seconds=10),
             args=(market, registry, cache, watchlist, redis_cache),
             id=f"tick:{market}", max_instances=1, coalesce=True,
             misfire_grace_time=30,
         )
     sched.add_job(
-        flush_all_quotes_to_duckdb, IntervalTrigger(seconds=60),
+        _leader_gated(flush_all_quotes_to_duckdb), IntervalTrigger(seconds=60),
         args=(registry.markets(), cache, bar_repo),
         id="flush:all", max_instances=1, coalesce=True,
     )
@@ -51,17 +69,17 @@ def attach_fundamentals_jobs(
     *, fund_flow: FundFlowService, watchlist: WatchlistService,
 ) -> None:
     sched.add_job(
-        pull_north_flow_job, IntervalTrigger(minutes=2),
+        _leader_gated(pull_north_flow_job), IntervalTrigger(minutes=2),
         args=(fund_flow,),
         id="ff:north", max_instances=1, coalesce=True,
     )
     sched.add_job(
-        pull_watchlist_symbol_flow_job, IntervalTrigger(minutes=30),
+        _leader_gated(pull_watchlist_symbol_flow_job), IntervalTrigger(minutes=30),
         args=(fund_flow, watchlist),
         id="ff:symbols", max_instances=1, coalesce=True,
     )
     sched.add_job(
-        purge_fund_flow_job, CronTrigger(hour=2, minute=0),
+        _leader_gated(purge_fund_flow_job), CronTrigger(hour=2, minute=0),
         args=(fund_flow,),
         id="ff:purge", max_instances=1, coalesce=True,
     )
@@ -85,14 +103,14 @@ def attach_signal_jobs(
     # 15m: BJT 10:00-15:30 ≈ UTC 02:00-07:30, 每 15 分钟扫一次
     # 跨午休/收盘时段顺带扫也无害(UNIQUE 幂等, 无新 bar 不写库)
     sched.add_job(
-        scan_cd_job,
+        _leader_gated(scan_cd_job),
         CronTrigger(day_of_week="mon-fri", hour="2-7", minute="*/15"),
         id="cd:15m", kwargs={"interval": "15m", "market_filter": "ashare"}, **common,
     )
 
     # 30m: 同区间每 30 分钟一次
     sched.add_job(
-        scan_cd_job,
+        _leader_gated(scan_cd_job),
         CronTrigger(day_of_week="mon-fri", hour="2-7", minute="*/30"),
         id="cd:30m", kwargs={"interval": "30m", "market_filter": "ashare"}, **common,
     )
@@ -101,27 +119,27 @@ def attach_signal_jobs(
     for h_utc, m_utc, tag in [(2, 35, "1030"), (3, 35, "1130"),
                                 (6, 5, "1400"), (7, 5, "1500")]:
         sched.add_job(
-            scan_cd_job, CronTrigger(day_of_week="mon-fri", hour=h_utc, minute=m_utc),
+            _leader_gated(scan_cd_job), CronTrigger(day_of_week="mon-fri", hour=h_utc, minute=m_utc),
             id=f"cd:60m:{tag}", kwargs={"interval": "60m", "market_filter": "ashare"}, **common,
         )
 
     # 4h: A 股富途口径 2 根/日 (close BJT 11:30 / 15:00)
     for h_utc, m_utc, tag in [(3, 35, "1130"), (7, 5, "1500")]:
         sched.add_job(
-            scan_cd_job, CronTrigger(day_of_week="mon-fri", hour=h_utc, minute=m_utc),
+            _leader_gated(scan_cd_job), CronTrigger(day_of_week="mon-fri", hour=h_utc, minute=m_utc),
             id=f"cd:4h:{tag}", kwargs={"interval": "4h", "market_filter": "ashare"}, **common,
         )
 
     # 1d:BJT 15:30
     sched.add_job(
-        scan_cd_job, CronTrigger(day_of_week="mon-fri", hour=7, minute=30),
+        _leader_gated(scan_cd_job), CronTrigger(day_of_week="mon-fri", hour=7, minute=30),
         id="cd:1d", kwargs={"interval": "1d", "market_filter": "ashare"}, **common,
     )
     # 5m: is_signal=False, 不扫信号, 只入库给详情页 K 线用。BJT 09:30-15:00,
     # 每 15 min 跑一次(sina 不限频, 但太密无意义)
     if kline is not None:
         sched.add_job(
-            fetch_intraday_job,
+            _leader_gated(fetch_intraday_job),
             CronTrigger(day_of_week="mon-fri", hour="1-7", minute="*/15"),
             args=(kline, watchlist),
             kwargs={"interval": "5m", "market_filter": "ashare"},
@@ -149,14 +167,14 @@ def attach_us_signal_jobs(
     # 15m: ET 04:00-19:45 每 15 分钟, + 20:30 收尾扫 (盘后末根 close=20:00,
     # end_safe=20:10 时刚封口能拿到)
     sched.add_job(
-        scan_cd_job,
+        _leader_gated(scan_cd_job),
         CronTrigger(day_of_week="mon-fri", hour="4-19", minute="*/15", timezone=et),
         id="cd:us:15m",
         kwargs={"interval": "15m", "market_filter": "us"},
         **common,
     )
     sched.add_job(
-        scan_cd_job,
+        _leader_gated(scan_cd_job),
         CronTrigger(day_of_week="mon-fri", hour=20, minute=30, timezone=et),
         id="cd:us:15m:close",
         kwargs={"interval": "15m", "market_filter": "us"},
@@ -165,14 +183,14 @@ def attach_us_signal_jobs(
 
     # 30m: ET 04:00-19:30 每 30 分钟, + 20:30 收尾扫
     sched.add_job(
-        scan_cd_job,
+        _leader_gated(scan_cd_job),
         CronTrigger(day_of_week="mon-fri", hour="4-19", minute="*/30", timezone=et),
         id="cd:us:30m",
         kwargs={"interval": "30m", "market_filter": "us"},
         **common,
     )
     sched.add_job(
-        scan_cd_job,
+        _leader_gated(scan_cd_job),
         CronTrigger(day_of_week="mon-fri", hour=20, minute=30, timezone=et),
         id="cd:us:30m:close",
         kwargs={"interval": "30m", "market_filter": "us"},
@@ -184,13 +202,13 @@ def attach_us_signal_jobs(
     # 09:30 半棒收盘 → 09:35; 16:00 半棒收盘 → 16:05; 其他整点 +5
     # 用两条 cron 合并: 盘前/盘后整点(5/6/7/8/9/17/18/19/20):05 + RTH 半小时(10/11/12/13/14/15):35 + 边界 9:35 / 16:05
     sched.add_job(
-        scan_cd_job,
+        _leader_gated(scan_cd_job),
         CronTrigger(day_of_week="mon-fri", hour="5-9,16-20", minute="5", timezone=et),
         id="cd:us:60m:hourly_05",
         kwargs={"interval": "60m", "market_filter": "us"}, **common,
     )
     sched.add_job(
-        scan_cd_job,
+        _leader_gated(scan_cd_job),
         CronTrigger(day_of_week="mon-fri", hour="9-15", minute="35", timezone=et),
         id="cd:us:60m:hourly_35",
         kwargs={"interval": "60m", "market_filter": "us"}, **common,
@@ -198,13 +216,13 @@ def attach_us_signal_jobs(
 
     # 4h: 富途口径 5 根/日 (close ET 08:00 / 09:30 / 13:30 / 16:00 / 20:00)
     sched.add_job(
-        scan_cd_job,
+        _leader_gated(scan_cd_job),
         CronTrigger(day_of_week="mon-fri", hour="8,16,20", minute="5", timezone=et),
         id="cd:us:4h:hourly",
         kwargs={"interval": "4h", "market_filter": "us"}, **common,
     )
     sched.add_job(
-        scan_cd_job,
+        _leader_gated(scan_cd_job),
         CronTrigger(day_of_week="mon-fri", hour="9,13", minute="35", timezone=et),
         id="cd:us:4h:half_hour",
         kwargs={"interval": "4h", "market_filter": "us"}, **common,
@@ -214,14 +232,14 @@ def attach_us_signal_jobs(
     # 留 30 min buffer (>20 min SIP free tier 延迟) → 主跑 16:30 ET
     # 兜底再跑一次 20:30 ET, 防 16:30 那次因网络/circuit 失败漏扫
     sched.add_job(
-        scan_cd_job,
+        _leader_gated(scan_cd_job),
         CronTrigger(day_of_week="mon-fri", hour="16", minute="30", timezone=et),
         id="cd:us:1d",
         kwargs={"interval": "1d", "market_filter": "us"},
         **common,
     )
     sched.add_job(
-        scan_cd_job,
+        _leader_gated(scan_cd_job),
         CronTrigger(day_of_week="mon-fri", hour="20", minute="30", timezone=et),
         id="cd:us:1d:fallback",
         kwargs={"interval": "1d", "market_filter": "us"},
@@ -232,7 +250,7 @@ def attach_us_signal_jobs(
     # 跑得太密没意义), 加 20:30 收尾扫盘后末根
     if kline is not None:
         sched.add_job(
-            fetch_intraday_job,
+            _leader_gated(fetch_intraday_job),
             CronTrigger(day_of_week="mon-fri", hour="4-19", minute="*/15", timezone=et),
             args=(kline, watchlist),
             kwargs={"interval": "5m", "market_filter": "us"},
@@ -240,7 +258,7 @@ def attach_us_signal_jobs(
             max_instances=1, coalesce=True, misfire_grace_time=300,
         )
         sched.add_job(
-            fetch_intraday_job,
+            _leader_gated(fetch_intraday_job),
             CronTrigger(day_of_week="mon-fri", hour=20, minute=30, timezone=et),
             args=(kline, watchlist),
             kwargs={"interval": "5m", "market_filter": "us"},
@@ -260,7 +278,7 @@ def attach_index_minute_job(
     """
     from apps.collector.jobs.index_minute import refresh_all_indices
     sched.add_job(
-        refresh_all_indices, IntervalTrigger(seconds=30),
+        _leader_gated(refresh_all_indices), IntervalTrigger(seconds=30),
         args=(cache,),
         id="index_minute:ashare", max_instances=1, coalesce=True,
         misfire_grace_time=20,
@@ -274,7 +292,7 @@ def attach_market_dashboard_job(
 ) -> None:
     from apps.collector.jobs.market_dashboard import refresh_dashboard_job
     sched.add_job(
-        refresh_dashboard_job, IntervalTrigger(seconds=60),
+        _leader_gated(refresh_dashboard_job), IntervalTrigger(seconds=60),
         args=(cache,),
         id="market_dashboard:ashare", max_instances=1, coalesce=True,
         misfire_grace_time=30,
@@ -290,7 +308,7 @@ def attach_chip_preload_job(
     async def _job():
         await chip_service.preload_watchlist_chip_summary(watchlist)
     sched.add_job(
-        _job, CronTrigger(hour=7, minute=35),  # 15:35 BJT = 07:35 UTC
+        _leader_gated(_job), CronTrigger(hour=7, minute=35),  # 15:35 BJT = 07:35 UTC
         id="chip:preload", max_instances=1, coalesce=True,
         misfire_grace_time=600,
     )
