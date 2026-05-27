@@ -1,11 +1,24 @@
 from datetime import datetime, timezone, date
 from decimal import Decimal
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
 import pytest
 
 from core.adapters.ashare import AShareAdapter, _classify, _to_sina_code
+
+
+def _ak_dispatch(mapping: dict) -> AsyncMock:
+    """构造一个 AsyncMock 替代 ak_call: 按首参 func_name 分发返回值。
+
+    未在 mapping 中的 func_name 会触发 AssertionError, 等价于旧测试里
+    `side_effect=AssertionError("should not be called")` 的禁用语义。
+    """
+    async def _fake(func_name, *args, **kwargs):
+        if func_name not in mapping:
+            raise AssertionError(f"unexpected ak_call: {func_name}")
+        return mapping[func_name]
+    return AsyncMock(side_effect=_fake)
 
 
 _SINA_RESPONSE = (
@@ -93,7 +106,12 @@ _5MIN_DF = pd.DataFrame([
 @pytest.mark.asyncio
 async def test_fetch_history_uses_sina_daily():
     adapter = AShareAdapter()
-    with patch("core.integrations.akshare.ak.stock_zh_a_daily", return_value=_DAILY_DF):
+    fake = _ak_dispatch({
+        "stock_zh_a_daily": _DAILY_DF,
+        # supplement 调用允许返回空,不影响主路径
+        "stock_zh_a_hist": pd.DataFrame(),
+    })
+    with patch("core.adapters.ashare.ak_call", fake):
         bars = await adapter.fetch_history(
             "600519.SH",
             datetime(2026, 5, 1, tzinfo=timezone.utc),
@@ -107,7 +125,8 @@ async def test_fetch_history_uses_sina_daily():
 @pytest.mark.asyncio
 async def test_fetch_intraday_5min():
     adapter = AShareAdapter()
-    with patch("core.integrations.akshare.ak.stock_zh_a_minute", return_value=_5MIN_DF):
+    fake = _ak_dispatch({"stock_zh_a_minute": _5MIN_DF})
+    with patch("core.adapters.ashare.ak_call", fake):
         bars = await adapter.fetch_intraday("600519.SH", freq="5")
     assert len(bars) == 1
     assert bars[0].interval == "5m"
@@ -174,15 +193,21 @@ _INDEX_DAILY_DF = pd.DataFrame([
 @pytest.mark.asyncio
 async def test_fetch_history_stock_routes_to_stock_zh_a_daily():
     adapter = AShareAdapter()
-    with patch("core.integrations.akshare.ak.stock_zh_a_daily", return_value=_STOCK_DAILY_DF) as m, \
-         patch("core.integrations.akshare.ak.fund_etf_hist_sina", side_effect=AssertionError("should not be called")), \
-         patch("core.integrations.akshare.ak.stock_zh_index_daily", side_effect=AssertionError("should not be called")):
+    fake = _ak_dispatch({
+        "stock_zh_a_daily": _STOCK_DAILY_DF,
+        "stock_zh_a_hist": pd.DataFrame(),  # supplement 路径,不影响主断言
+    })
+    with patch("core.adapters.ashare.ak_call", fake):
         bars = await adapter.fetch_history(
             "600004.SH",  # 白云机场
             datetime(2020, 1, 1, tzinfo=timezone.utc),
             datetime(2026, 12, 31, tzinfo=timezone.utc),
         )
-    m.assert_called_once()
+    # 主路径必须命中 stock_zh_a_daily
+    called_funcs = [c.args[0] for c in fake.call_args_list]
+    assert "stock_zh_a_daily" in called_funcs
+    assert "fund_etf_hist_sina" not in called_funcs
+    assert "stock_zh_index_daily" not in called_funcs
     assert len(bars) == 2
     assert bars[0].close == Decimal("10.3")
     assert bars[0].amount == 10_000_000
@@ -199,14 +224,18 @@ async def test_fetch_history_stock_supplements_amount_and_turnover_from_hist():
         {"日期": "2026-05-13", "成交额": 36_000_000, "换手率": 2.2},
     ])
     adapter = AShareAdapter()
-    with patch("core.integrations.akshare.ak.stock_zh_a_daily", return_value=daily_df), \
-         patch("core.integrations.akshare.ak.stock_zh_a_hist", return_value=hist_df) as hist:
+    fake = _ak_dispatch({
+        "stock_zh_a_daily": daily_df,
+        "stock_zh_a_hist": hist_df,
+    })
+    with patch("core.adapters.ashare.ak_call", fake):
         bars = await adapter.fetch_history(
             "600004.SH",
             datetime(2026, 5, 1, tzinfo=timezone.utc),
             datetime(2026, 5, 14, tzinfo=timezone.utc),
         )
-    hist.assert_called_once()
+    called_funcs = [c.args[0] for c in fake.call_args_list]
+    assert called_funcs.count("stock_zh_a_hist") == 1
     assert bars[0].amount == 36_000_000
     assert bars[0].turnover == 2.2
 
@@ -214,15 +243,18 @@ async def test_fetch_history_stock_supplements_amount_and_turnover_from_hist():
 @pytest.mark.asyncio
 async def test_fetch_history_etf_routes_to_fund_etf_hist_sina():
     adapter = AShareAdapter()
-    with patch("core.integrations.akshare.ak.fund_etf_hist_sina", return_value=_ETF_DAILY_DF) as m, \
-         patch("core.integrations.akshare.ak.stock_zh_a_daily", side_effect=AssertionError("should not be called")), \
-         patch("core.integrations.akshare.ak.stock_zh_index_daily", side_effect=AssertionError("should not be called")):
+    fake = _ak_dispatch({"fund_etf_hist_sina": _ETF_DAILY_DF})
+    with patch("core.adapters.ashare.ak_call", fake):
         bars = await adapter.fetch_history(
             "510300.SH",  # 沪深300ETF
             datetime(2020, 1, 1, tzinfo=timezone.utc),
             datetime(2026, 12, 31, tzinfo=timezone.utc),
         )
-    m.assert_called_once_with(symbol="sh510300")
+    # 仅命中 fund_etf_hist_sina, 且 symbol=sh510300
+    called = fake.call_args_list
+    assert len(called) == 1
+    assert called[0].args[0] == "fund_etf_hist_sina"
+    assert called[0].kwargs.get("symbol") == "sh510300"
     assert len(bars) == 2
     assert bars[0].close == Decimal("3.05")
 
@@ -230,15 +262,17 @@ async def test_fetch_history_etf_routes_to_fund_etf_hist_sina():
 @pytest.mark.asyncio
 async def test_fetch_history_index_routes_to_stock_zh_index_daily():
     adapter = AShareAdapter()
-    with patch("core.integrations.akshare.ak.stock_zh_index_daily", return_value=_INDEX_DAILY_DF) as m, \
-         patch("core.integrations.akshare.ak.stock_zh_a_daily", side_effect=AssertionError("should not be called")), \
-         patch("core.integrations.akshare.ak.fund_etf_hist_sina", side_effect=AssertionError("should not be called")):
+    fake = _ak_dispatch({"stock_zh_index_daily": _INDEX_DAILY_DF})
+    with patch("core.adapters.ashare.ak_call", fake):
         bars = await adapter.fetch_history(
             "000001.SH",  # 上证指数
             datetime(2020, 1, 1, tzinfo=timezone.utc),
             datetime(2026, 12, 31, tzinfo=timezone.utc),
         )
-    m.assert_called_once_with(symbol="sh000001")
+    called = fake.call_args_list
+    assert len(called) == 1
+    assert called[0].args[0] == "stock_zh_index_daily"
+    assert called[0].kwargs.get("symbol") == "sh000001"
     assert len(bars) == 2
     assert bars[0].close == Decimal("3070")
 
@@ -252,7 +286,8 @@ async def test_fetch_history_etf_filters_by_date_range():
         {"date": date(2026, 5, 13), "open": 5, "high": 5, "low": 5, "close": 5, "volume": 5},
     ])
     adapter = AShareAdapter()
-    with patch("core.integrations.akshare.ak.fund_etf_hist_sina", return_value=big_df):
+    fake = _ak_dispatch({"fund_etf_hist_sina": big_df})
+    with patch("core.adapters.ashare.ak_call", fake):
         bars = await adapter.fetch_history(
             "510300.SH",
             datetime(2020, 1, 1, tzinfo=timezone.utc),

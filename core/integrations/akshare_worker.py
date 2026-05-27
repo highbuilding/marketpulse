@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import os
 import pickle
 import sys
 import traceback
+
+# 子进程默认绕过系统代理:macOS 会把 127.0.0.1:7890 (Clash/V2Ray) 等系统级 SOCKS 代理
+# 注入到 urllib/requests; 当代理服务未启动时, EM/Sina 这类国内接口会全数 ProxyError。
+# 父进程 uvicorn 通常不读 macOS 系统代理(只读 env), 所以"主进程能通、子进程不通"
+# 的现象就是这个差异造成的。让子进程显式无代理直连最稳妥。
+os.environ.setdefault("NO_PROXY", "*")
+os.environ.setdefault("no_proxy", "*")
 
 
 def main() -> int:

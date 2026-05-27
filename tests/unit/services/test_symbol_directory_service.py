@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pandas as pd
 import pytest
@@ -7,6 +7,14 @@ import pytest
 from core.persistence.sqlite_repo import StateRepo
 from core.persistence.symbol_directory_repo import SymbolDirectoryRepo
 from core.services.symbol_directory_service import SymbolDirectoryService
+
+
+def _ak_dispatch(mapping: dict) -> AsyncMock:
+    async def _fake(func_name, *args, **kwargs):
+        if func_name not in mapping:
+            raise AssertionError(f"unexpected ak_call: {func_name}")
+        return mapping[func_name]
+    return AsyncMock(side_effect=_fake)
 
 
 @pytest.fixture
@@ -36,8 +44,11 @@ async def test_refresh_ashare_normalizes_codes(svc):
         {"代码": "sh510300", "名称": "沪深300ETF华泰柏瑞"},
         {"代码": "sz159915", "名称": "创业板ETF"},
     ])
-    with patch("core.services.symbol_directory_service.ak.stock_zh_a_spot", return_value=df), \
-         patch("core.services.symbol_directory_service.ak.fund_etf_category_sina", return_value=etf_df):
+    fake = _ak_dispatch({
+        "stock_zh_a_spot": df,
+        "fund_etf_category_sina": etf_df,
+    })
+    with patch("core.services.symbol_directory_service.ak_call", fake):
         n = await svc.refresh_ashare()
     assert n == 5
     assert await svc.get_name("600519.SH") == "贵州茅台"
@@ -55,8 +66,11 @@ async def test_search_by_name_or_symbol(svc):
         {"代码": "sh603288", "名称": "海天味业"},
     ])
     etf_df = pd.DataFrame([])
-    with patch("core.services.symbol_directory_service.ak.stock_zh_a_spot", return_value=df), \
-         patch("core.services.symbol_directory_service.ak.fund_etf_category_sina", return_value=etf_df):
+    fake = _ak_dispatch({
+        "stock_zh_a_spot": df,
+        "fund_etf_category_sina": etf_df,
+    })
+    with patch("core.services.symbol_directory_service.ak_call", fake):
         await svc.refresh_ashare()
     # 搜代码前缀
     results = await svc.search("600", limit=5)

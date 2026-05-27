@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pandas as pd
 import pytest
@@ -7,6 +7,14 @@ import pytest
 from core.persistence.fund_flow_repo import FundFlowRepo
 from core.persistence.sqlite_repo import StateRepo
 from core.services.fund_flow_service import FundFlowService
+
+
+def _ak_dispatch(mapping: dict) -> AsyncMock:
+    async def _fake(func_name, *args, **kwargs):
+        if func_name not in mapping:
+            raise AssertionError(f"unexpected ak_call: {func_name}")
+        return mapping[func_name]
+    return AsyncMock(side_effect=_fake)
 
 
 _SYMBOL_FLOW_DF = pd.DataFrame([
@@ -31,8 +39,8 @@ async def svc(tmp_path):
 
 @pytest.mark.asyncio
 async def test_pull_symbol_flow(svc):
-    with patch("core.services.fund_flow_service.ak.stock_individual_fund_flow",
-               return_value=_SYMBOL_FLOW_DF):
+    fake = _ak_dispatch({"stock_individual_fund_flow": _SYMBOL_FLOW_DF})
+    with patch("core.services.fund_flow_service.ak_call", fake):
         n = await svc.pull_symbol_flow("600519.SH")
     assert n == 1
     rows = await svc.query_symbol("600519.SH",
@@ -44,8 +52,8 @@ async def test_pull_symbol_flow(svc):
 
 @pytest.mark.asyncio
 async def test_pull_north_flow(svc):
-    with patch("core.services.fund_flow_service.ak.stock_hsgt_hist_em",
-               return_value=_NORTH_DF):
+    fake = _ak_dispatch({"stock_hsgt_hist_em": _NORTH_DF})
+    with patch("core.services.fund_flow_service.ak_call", fake):
         await svc.pull_north_flow()
     rows = await svc.query_north(
         start=datetime(2026, 5, 1, tzinfo=timezone.utc),

@@ -5,6 +5,14 @@ import pytest
 from core.notifications.email import EmailChannel
 
 
+@pytest.fixture(autouse=True)
+def _clean_smtp_env(monkeypatch):
+    """根目录 .env 里可能配了真实 SMTP_*, 测试前清干净避免污染。"""
+    for k in ("SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS",
+              "SMTP_FROM", "SMTP_USE_SSL"):
+        monkeypatch.delenv(k, raising=False)
+
+
 def test_disabled_when_env_missing(monkeypatch):
     monkeypatch.delenv("SMTP_HOST", raising=False)
     monkeypatch.delenv("SMTP_USER", raising=False)
