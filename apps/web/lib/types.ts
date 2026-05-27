@@ -230,3 +230,21 @@ export interface AIMarketPacket {
   ai_brief: Record<string, unknown>
   degraded: string[]
 }
+
+/**
+ * 响应元数据 — 后端 Plan 3 之后所有路由都可能带这个字段。
+ * stale: 数据陈旧(collector 没及时刷新)
+ * partial: 数据存在但部分字段缺失(如 A 股 daily 缺 amount/turnover)
+ * reason: 文字说明(warming_up / hk_index_collector_pending 等)
+ * data_age_seconds: 数据陈旧多久
+ * fresh_at: 数据最近一次更新时间(ISO)
+ * missing_sections: dashboard 路由缺失了哪些 section
+ */
+export interface ResponseMeta {
+  stale?: boolean
+  partial?: boolean
+  reason?: string
+  data_age_seconds?: number
+  fresh_at?: string
+  missing_sections?: string[]
+}
