@@ -33,8 +33,8 @@ from apps.api.deps import (
     get_watchlist_service,
 )
 from core.scheduler.scheduler import (
-    attach_fundamentals_jobs, attach_index_minute_job, attach_signal_jobs,
-    attach_us_signal_jobs, build_scheduler,
+    attach_fundamentals_jobs, attach_index_minute_job, attach_market_dashboard_job,
+    attach_signal_jobs, attach_us_signal_jobs, build_scheduler,
 )
 
 log = structlog.get_logger(__name__)
@@ -143,6 +143,7 @@ async def lifespan(app: FastAPI):
         kline=get_kline_service(),
     )
     attach_index_minute_job(sched, cache=_redis_cache)
+    attach_market_dashboard_job(sched, cache=_redis_cache)
     sched.start()
     log.info("collector.started", markets=registry.markets())
 

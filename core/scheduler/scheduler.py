@@ -264,3 +264,17 @@ def attach_index_minute_job(
         misfire_grace_time=20,
     )
     log.info("scheduler.index_minute_attached")
+
+
+def attach_market_dashboard_job(
+    sched: AsyncIOScheduler,
+    *, cache,  # RedisCache
+) -> None:
+    from apps.collector.jobs.market_dashboard import refresh_dashboard_job
+    sched.add_job(
+        refresh_dashboard_job, IntervalTrigger(seconds=60),
+        args=(cache,),
+        id="market_dashboard:ashare", max_instances=1, coalesce=True,
+        misfire_grace_time=30,
+    )
+    log.info("scheduler.market_dashboard_attached")
