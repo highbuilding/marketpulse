@@ -181,6 +181,39 @@ class KLineService:
             self.repo.insert_bars(agg)
         return [b for b in agg if start <= b.ts <= end]
 
+    async def get_bars_cache_only(
+        self, symbol: str, *, interval: str,
+        start: datetime, end: datetime,
+    ) -> tuple[list[Bar], bool]:
+        """只读 DuckDB cache, 不调 adapter, 不写库。
+
+        返回 (bars, partial), partial=True 表示数据有但部分字段缺失
+        (如 A 股 daily 缺 amount/turnover; 仍可绘 K 线但量能/换手缺)。
+
+        api 进程必须用这个方法; collector 用 get_bars 或 fetch_fresh_bars。
+        """
+        market = infer_market(symbol)
+        if interval == "1d":
+            cached = self.repo.fetch_history(market, symbol, start, end, interval="1d")
+            if not cached or not self._covers(cached, start, end):
+                return [], False
+            partial = self._missing_ashare_daily_metrics(cached) if market == "ashare" else False
+            return cached, partial
+        if interval in _RESAMPLED:
+            # weekly/monthly resample — 复用 daily cache
+            daily, partial = await self.get_bars_cache_only(
+                symbol, interval="1d", start=start, end=end,
+            )
+            if not daily:
+                return [], False
+            return _resample(daily, interval), partial
+        if interval in _INTRADAY_RAW or interval in _INTRADAY_AGG:
+            cached = self.repo.fetch_history(market, symbol, start, end, interval=interval)
+            if not cached or not self._covers(cached, start, end):
+                return [], False
+            return cached, False
+        return [], False
+
     async def fetch_fresh_bars(
         self, symbol: str, *, interval: Interval,
         start: datetime, end: datetime,
