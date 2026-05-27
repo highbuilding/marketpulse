@@ -67,11 +67,14 @@ grep -rn --include="*.py" "^import akshare\|^from akshare" core apps tests
 reload 时 V8 状态污染会触发 SIGABRT。`Makefile dev` 已去掉 `--reload`。**代码变更手动重启**:
 
 ```bash
-pkill -9 -f "uvicorn apps.api.main:app"; sleep 2
+pkill -9 -f "apps.collector.main"; pkill -9 -f "uvicorn apps.api.main:app"; sleep 2
 cd /Users/xiangrong/stock/marketpulse
+docker compose -f docker-compose.dev.yml up -d redis
+nohup bash -c '. .venv/bin/activate && python -m apps.collector.main' >> /tmp/collector.log 2>&1 &
+disown
 nohup bash -c '. .venv/bin/activate && uvicorn apps.api.main:app --port 8787' >> /tmp/api.log 2>&1 &
 disown
-sleep 6 && tail -5 /tmp/api.log  # 看 "Application startup complete"
+sleep 8 && tail -5 /tmp/api.log  # 看 "Application startup complete"
 ```
 
 注意 `>>` 是 append 模式(早期用 `>` 覆盖,崩溃日志会丢失)。**事实源是 `data/logs/api.log`**(见雷区 6),`/tmp/api.log` 仅作 stdout 镜像。

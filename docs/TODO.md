@@ -39,6 +39,15 @@
   - 方案 A:在事件流"当天"section 加一键已读按钮 + 顶栏未读 badge
   - 方案 B:删掉相关代码
 
+### Plan 1 引入的已知退化(Plan 2/3 修)
+
+- [ ] **QuoteCache 跨进程孤岛**(2026-05-27 引入)
+  - 现状:scheduler 拆到 collector 进程后,`QuoteCache` 实例不再跨进程共享。collector 的 tick 写自己进程的内存 cache,api 的 `/api/symbols/{s}/quote` 与 `/ws/ticks` 读自己进程的(永远空)cache。
+  - 表现:**api 的 quote 接口静默返回 `price: null`、ticks WebSocket 推空数组**。功能性退化,但用户体验上"加载中"也能看,不会 crash。
+  - 修复时机:**Plan 3 Stage 5** 把 quote 读路径切到 Redis cache(collector 写、api 读)即解决。在那之前,前端用 `/api/symbols/{s}/bars?days=1` 拿最新 bar 当快照可作 workaround。
+  - 价值:解决会让前端 quote 显示恢复正常
+  - 代价:Plan 3 Stage 5 内顺便做,无独立成本
+
 ---
 
 ## 中价值 / 中代价
