@@ -43,7 +43,12 @@ _DEFAULT_TIMEOUT_S = float(os.getenv("AK_CALL_TIMEOUT_S", "25"))
 _FUNC_TO_SOURCE = {
     # em 系
     "stock_zh_a_spot_em": "em",
+    "stock_hk_spot_em": "em",
+    "stock_cyq_em": "em",
+    "stock_zh_a_hist_em": "em",
+    "fund_etf_spot_em": "em",
     "stock_individual_fund_flow": "em",
+    "stock_individual_fund_flow_rank_em": "em",
     "stock_hsgt_hist_em": "em",
     "stock_board_industry_name_em": "em",
     "stock_board_concept_name_em": "em",
@@ -134,7 +139,7 @@ async def ak_call(
 async def _report_all(middleware, source, lease, outcome) -> None:
     if middleware is None:
         return
-    success = outcome == Outcome.ok
+    success = outcome in (Outcome.ok, Outcome.empty)
     if source in middleware.breakers:
         try:
             await middleware.breakers[source].report(success=success)

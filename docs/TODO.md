@@ -48,6 +48,31 @@
   - 价值:解决会让前端 quote 显示恢复正常
   - 代价:Plan 3 Stage 5 内顺便做,无独立成本
 
+### Plan 2 引入的已知未尽事项(Plan 3 修)
+
+- [ ] **Leader 锁未真正门控 cron job**(2026-05-27 引入)
+  - 现状:`leader.is_leader()` 已经在 collector 启动期 acquire,但 scheduler 注册的所有 cron job 不检查 leader 状态就执行
+  - 影响:单节点部署无害(永远是 leader);多节点部署时会双写
+  - 修复:在 `core/scheduler/scheduler.py` 的所有 `attach_*_job` 里包一层 `ensure_leader()` gate(从 leader 单例查 is_leader,非则 return)
+  - 代价:小,但要逐个 job 包一遍
+
+- [ ] **`_redis_for_mw` 连接 shutdown 未优雅关闭**(2026-05-27)
+  - 现状:`apps/collector/main.py` 在 finally 没有 `await _redis_for_mw.aclose()`,collector 退出前会有 ResourceWarning
+  - 影响:仅日志噪音,无功能问题
+  - 修复:在 finally 块末尾加 `await _redis_for_mw.aclose()`
+
+- [ ] **refill_consumer 无 DLQ 重试机制**(2026-05-27)
+  - 现状:`refill_consumer.consume_loop` 在 `finally` 块 xack 每条消息,即使 refill_fn 失败也会 ack,丢失重试机会
+  - 影响:api 发布的 refill 请求一次失败永远失败,前端只能下次访问再触发
+  - 修复:把 xack 移到成功路径;失败的消息留在 pending entries list (PEL),用 XCLAIM 重投或定期扫描
+  - 优先级:Plan 3 引入 api publisher 之前不紧迫
+
+- [ ] **index_minute 非交易时段无意义刷新**(2026-05-27)
+  - 现状:24/7 每 30s 调一次 sina,夜里也跑 ~700 次/晚
+  - 影响:浪费 sina 调用配额,可能引来限流
+  - 修复:在 `refresh_all_indices` 入口判断 BJT 是否在 09:00-16:00 范围,否则跳过
+  - 优先级:低,但 Plan 3 顺手做
+
 ---
 
 ## 中价值 / 中代价
