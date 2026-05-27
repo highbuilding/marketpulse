@@ -8,7 +8,9 @@ import { IntradayChart } from '@/components/IntradayChart'
 import { KLineChart, type SignalMarker } from '@/components/KLineChart'
 import { FundFlowPanel } from '@/components/FundFlowPanel'
 import { CDSignalPanel } from '@/components/CDSignalPanel'
-import { fetchBars, fetchSymbolProfile } from '@/lib/symbol_api'
+import { ChipSummaryPanel } from '@/components/ChipSummaryPanel'
+import { VolumeIndicatorsPanel } from '@/components/VolumeIndicatorsPanel'
+import { fetchBars, fetchChipSummary, fetchSymbolProfile } from '@/lib/symbol_api'
 import { listCDSignalsBySymbol } from '@/lib/cd_signals_api'
 import { CD_MARKER_INTERVALS, klineTabsForMarket } from '@/lib/intervals'
 import { inferMarket } from '@/lib/markets'
@@ -49,8 +51,8 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
   const { data: profile } = useSWR(`profile:${symbol}`, () => fetchSymbolProfile(symbol))
   const effectiveMarket = profile?.market ?? inferMarket(symbol)
   const intervalTabs = useMemo(
-    () => klineTabsForMarket(profile?.market ?? null),
-    [profile?.market],
+    () => klineTabsForMarket(effectiveMarket),
+    [effectiveMarket],
   )
 
   const isIntraday = ['1m', '5m', '15m', '30m', '60m'].includes(interval)
@@ -63,13 +65,31 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
     () => fetchBars(symbol, interval, days),
     {
       refreshInterval: () => {
-        if (interval === '1m') return isAshareTradingNow() ? 10_000 : 0
+        if (interval === '1m') return isAshareTradingNow() ? 60_000 : 0
         if (isIntraday) return 60_000
         return 0
       },
       revalidateOnFocus: interval === '1m',
     },
   )
+
+  const { data: chipSummary, error: chipError, isLoading: chipLoading } = useSWR(
+    effectiveMarket === 'ashare' ? `chip:${symbol}` : null,
+    () => fetchChipSummary(symbol, 90),
+  )
+  const latestChip = useMemo(
+    () => chipSummary && chipSummary.rows.length > 0
+      ? chipSummary.rows[chipSummary.rows.length - 1]
+      : null,
+    [chipSummary],
+  )
+  const chipLevels = useMemo(() => latestChip ? ({
+    avgCost: latestChip.avg_cost,
+    cost70Low: latestChip.cost_70_low,
+    cost70High: latestChip.cost_70_high,
+    cost90Low: latestChip.cost_90_low,
+    cost90High: latestChip.cost_90_high,
+  }) : null, [latestChip])
 
   // CD 信号(只对 60m/4h/1d 有意义),用于在 KLineChart 上叠 markers
   const signalInterval = CD_MARKER_INTERVALS.has(interval) ? interval : null
@@ -113,6 +133,11 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
     // 倒数第二根日线作昨收(最后一根可能就是今日实时不准)
     return daily.bars[daily.bars.length - 2]?.close ?? daily.bars[daily.bars.length - 1]?.close
   }, [daily])
+  const latestClose = useMemo(() => {
+    const source = interval === '1m' ? todayBars : data?.bars
+    if (!source || source.length === 0) return null
+    return source[source.length - 1]?.close ?? null
+  }, [data?.bars, interval, todayBars])
 
   // 当前价位指针(K 线模式用): 拉 1m 分时, 取最末根 close 作 livePrice
   // 在 5m/15m/30m/60m/4h K 线上画一条水平虚线, 让用户即使当前 bar 没收盘也能看到价位
@@ -152,8 +177,8 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
             </button>
           ))}
         </div>
-        {isLoading && <p className="text-sm text-neutral-500">加载中…</p>}
-        {error && <p className="text-sm text-red-400">加载失败:{String(error)}</p>}
+        {isLoading && !data && <p className="text-sm text-neutral-500">加载中…</p>}
+        {error && !data && <p className="text-sm text-red-400">加载失败:{String(error)}</p>}
 
         {/* 分时模式 */}
         {interval === '1m' && data && todayBars.length > 0 && (
@@ -177,6 +202,7 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
             height={420}
             signals={signalInterval ? markers : undefined}
             livePrice={isKlineMode ? livePrice : null}
+            chipLevels={chipLevels}
           />
         )}
         {interval !== '1m' && data && data.bars.length === 0 && (
@@ -184,6 +210,15 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
         )}
       </section>
 
+      {effectiveMarket === 'ashare' && (
+        <ChipSummaryPanel
+          data={chipSummary}
+          error={chipError}
+          isLoading={chipLoading}
+          currentPrice={latestClose}
+        />
+      )}
+      <VolumeIndicatorsPanel symbol={symbol} interval={interval} />
       {!isIndex && <FundFlowPanel symbol={symbol} />}
       <CDSignalPanel symbol={symbol} market={effectiveMarket} />
     </main>

@@ -1,4 +1,7 @@
-import type { BarsResponse, FundFlowResponse, IndexMinuteResponse, Interval, SearchHit, SymbolProfile, SymbolQuote } from './types'
+import type {
+  BarsResponse, ChipSummaryResponse, FundFlowResponse, IndexMinuteResponse,
+  Interval, SearchHit, SymbolProfile, SymbolQuote, VolumeIndicatorsResponse,
+} from './types'
 
 export async function fetchBars(symbol: string, interval: Interval, days: number): Promise<BarsResponse> {
   const r = await fetch(`/api/symbols/${symbol}/bars?interval=${interval}&days=${days}`, { cache: 'no-store' })
@@ -8,6 +11,20 @@ export async function fetchBars(symbol: string, interval: Interval, days: number
 
 export async function fetchSymbolFundFlow(symbol: string, days = 30): Promise<FundFlowResponse> {
   const r = await fetch(`/api/symbols/${symbol}/fund_flow?days=${days}`, { cache: 'no-store' })
+  if (!r.ok) throw new Error(`${r.status}`)
+  return r.json()
+}
+
+export async function fetchChipSummary(symbol: string, days = 90): Promise<ChipSummaryResponse> {
+  const r = await fetch(`/api/symbols/${symbol}/chip_summary?days=${days}`, { cache: 'no-store' })
+  if (!r.ok) throw new Error(`${r.status}`)
+  return r.json()
+}
+
+export async function fetchVolumeIndicators(
+  symbol: string, interval: Interval, days = 120,
+): Promise<VolumeIndicatorsResponse> {
+  const r = await fetch(`/api/symbols/${symbol}/volume_indicators?interval=${interval}&days=${days}`, { cache: 'no-store' })
   if (!r.ok) throw new Error(`${r.status}`)
   return r.json()
 }

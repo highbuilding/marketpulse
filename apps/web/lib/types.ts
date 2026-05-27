@@ -39,6 +39,9 @@ export interface BarDTO {
   low: number
   close: number
   volume: number
+  amount?: number | null
+  turnover?: number | null
+  outstanding_share?: number | null
 }
 
 export interface BarsResponse {
@@ -59,6 +62,44 @@ export interface FundFlowRow {
 export interface FundFlowResponse {
   symbol: string
   rows: FundFlowRow[]
+}
+
+export interface ChipSummaryRow {
+  trade_date: string
+  profit_ratio: number | null
+  avg_cost: number | null
+  cost_90_low: number | null
+  cost_90_high: number | null
+  concentration_90: number | null
+  cost_70_low: number | null
+  cost_70_high: number | null
+  concentration_70: number | null
+}
+
+export interface ChipSummaryResponse {
+  symbol: string
+  rows: ChipSummaryRow[]
+}
+
+export interface VolumeIndicatorRow {
+  ts: string
+  volume: number
+  amount: number | null
+  turnover: number | null
+  vol_ma5: number | null
+  vol_ma20: number | null
+  amount_ma20: number | null
+  volume_ratio: number | null
+  single_bar_volume_ratio: number | null
+  obv: number
+  is_volume_breakout: boolean
+  is_shrink_pullback: boolean
+}
+
+export interface VolumeIndicatorsResponse {
+  symbol: string
+  interval: Interval
+  rows: VolumeIndicatorRow[]
 }
 
 export interface NorthFlowRow {

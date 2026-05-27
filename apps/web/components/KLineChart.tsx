@@ -23,6 +23,13 @@ export interface KLineChartProps {
   height?: number
   signals?: SignalMarker[]
   livePrice?: number | null   // 当前最新价 (来自 1m 分时), 在图上画一条水平虚线 + 右轴标签
+  chipLevels?: {
+    avgCost?: number | null
+    cost70Low?: number | null
+    cost70High?: number | null
+    cost90Low?: number | null
+    cost90High?: number | null
+  } | null
 }
 
 const INTRADAY: ReadonlySet<Interval> = new Set(['1m', '5m', '15m', '30m', '60m', '4h'])
@@ -74,7 +81,9 @@ function computeStats(bars: BarDTO[]): Stats | null {
   return { last, first, diff, pct, high, low, vol }
 }
 
-export function KLineChart({ bars, interval, market, height = 400, signals, livePrice }: KLineChartProps) {
+export function KLineChart({
+  bars, interval, market, height = 400, signals, livePrice, chipLevels,
+}: KLineChartProps) {
   const ref = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const candleRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
@@ -228,16 +237,36 @@ export function KLineChart({ bars, interval, market, height = 400, signals, live
     }
 
     // 当前价位指针: livePrice 来自 1m 分时, 即使当前 interval 的 K 线还没收盘也能看到价位
-    let priceLineRef: IPriceLine | null = null
+    const priceLineRefs: IPriceLine[] = []
     if (livePrice !== undefined && livePrice !== null && Number.isFinite(livePrice)) {
-      priceLineRef = candle.createPriceLine({
+      priceLineRefs.push(candle.createPriceLine({
         price: livePrice,
         color: '#fbbf24',          // amber-400, 醒目但不与涨绿/跌红冲突
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
         axisLabelVisible: true,
         title: '现价',
-      })
+      }))
+    }
+    if (chipLevels && !intraday) {
+      const lines = [
+        { price: chipLevels.avgCost, color: '#60a5fa', title: '平均成本', width: 2 as const },
+        { price: chipLevels.cost70Low, color: '#a78bfa', title: '70%下沿', width: 1 as const },
+        { price: chipLevels.cost70High, color: '#a78bfa', title: '70%上沿', width: 1 as const },
+        { price: chipLevels.cost90Low, color: '#64748b', title: '90%下沿', width: 1 as const },
+        { price: chipLevels.cost90High, color: '#64748b', title: '90%上沿', width: 1 as const },
+      ]
+      for (const line of lines) {
+        if (line.price == null || !Number.isFinite(line.price)) continue
+        priceLineRefs.push(candle.createPriceLine({
+          price: line.price,
+          color: line.color,
+          lineWidth: line.width,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: line.title,
+        }))
+      }
     }
 
     chart.timeScale().fitContent()
@@ -249,14 +278,14 @@ export function KLineChart({ bars, interval, market, height = 400, signals, live
 
     return () => {
       ro.disconnect()
-      if (priceLineRef) {
-        try { candle.removePriceLine(priceLineRef) } catch { /* chart 已销毁可忽略 */ }
+      for (const line of priceLineRefs) {
+        try { candle.removePriceLine(line) } catch { /* chart 已销毁可忽略 */ }
       }
       chart.remove()
       chartRef.current = null
       candleRef.current = null
     }
-  }, [bars, height, interval, intraday, signals, market, livePrice, ticker])
+  }, [bars, height, interval, intraday, signals, market, livePrice, chipLevels, ticker])
 
   return (
     <div className="w-full">
