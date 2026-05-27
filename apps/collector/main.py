@@ -63,6 +63,50 @@ async def lifespan(app: FastAPI):
         log.warning("redis.unavailable_at_startup",
                     note="collector 将继续运行,熔断/限速降级到内存态")
 
+    # Plan 2: 初始化 ak_call 三层中间件 + Leader
+    from core.cache.redis_client import make_redis
+    from core.integrations import ak_middleware
+    from core.integrations.breaker import SourceBreaker
+    from core.integrations.outlets import LocalOutlet, OutletPool
+    from core.integrations.ratelimit import RedisTokenBucket
+    from apps.collector.leader import Leader
+    import socket
+
+    _redis_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+    _redis_for_mw = make_redis(_redis_url)
+    _redis_cache = get_redis_cache()
+
+    # Outlet: 单一 LocalOutlet (无代理)
+    _outlet_pool = OutletPool([LocalOutlet()], cache=_redis_cache, cooling_seconds=1800)
+
+    # Breakers: per-source
+    _breakers = {
+        "sina": SourceBreaker(source="sina", cache=_redis_cache),
+        "em": SourceBreaker(source="em", cache=_redis_cache),
+        "ths": SourceBreaker(source="ths", cache=_redis_cache),
+    }
+
+    # Ratelimits: per-source 令牌桶 (rate=tok/s, burst=最大瞬时)
+    _ratelimits = {
+        "sina": RedisTokenBucket(redis=_redis_for_mw, key="ratelimit:source:sina", rate=5, burst=20),
+        "em":   RedisTokenBucket(redis=_redis_for_mw, key="ratelimit:source:em",   rate=10, burst=50),
+        "ths":  RedisTokenBucket(redis=_redis_for_mw, key="ratelimit:source:ths",  rate=3, burst=10),
+    }
+
+    ak_middleware.setup(ak_middleware.AkMiddleware(
+        outlet_pool=_outlet_pool, breakers=_breakers, ratelimits=_ratelimits,
+    ))
+    log.info("ak_middleware.ready",
+             outlets=["local"], breakers=list(_breakers.keys()),
+             ratelimits=list(_ratelimits.keys()))
+
+    # Leader
+    _node_id = f"{socket.gethostname()}-{os.getpid()}"
+    leader = Leader(redis=_redis_for_mw, node_id=_node_id, ttl_s=15, renew_interval_s=5)
+    await leader.try_acquire_once()
+    _leader_task = asyncio.create_task(leader.acquire_loop())
+    log.info("leader.bootstrapped", node=_node_id, is_leader=leader.is_leader())
+
     state_repo = get_state_repo()
     await state_repo.init()
     await get_watchlist_service().bootstrap_default()
@@ -104,6 +148,13 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        leader._stopped = True
+        _leader_task.cancel()
+        try:
+            await _leader_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        await leader.release()
         sched.shutdown(wait=False)
         log.info("collector.shutdown")
 
