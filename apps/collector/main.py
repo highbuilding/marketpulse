@@ -107,6 +107,23 @@ async def lifespan(app: FastAPI):
     _leader_task = asyncio.create_task(leader.acquire_loop())
     log.info("leader.bootstrapped", node=_node_id, is_leader=leader.is_leader())
 
+    # Plan 2: refill consumer (订阅 bus:bars.refill_request, Plan 3 才有真正的 publisher)
+    from apps.collector.jobs.refill_consumer import consume_loop
+
+    kline = get_kline_service()
+
+    async def _refill_dispatch(market: str, symbol: str, interval: str, days: int) -> None:
+        from datetime import datetime, timedelta, timezone
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=days)
+        await kline.fetch_fresh_bars(symbol, interval=interval, start=start, end=end)
+
+    _refill_task = asyncio.create_task(
+        consume_loop(_redis_for_mw, consumer_id=f"refill-{os.getpid()}",
+                     refill_fn=_refill_dispatch),
+    )
+    log.info("refill_consumer.bootstrapped")
+
     state_repo = get_state_repo()
     await state_repo.init()
     await get_watchlist_service().bootstrap_default()
@@ -157,6 +174,11 @@ async def lifespan(app: FastAPI):
         except (asyncio.CancelledError, Exception):
             pass
         await leader.release()
+        _refill_task.cancel()
+        try:
+            await _refill_task
+        except (asyncio.CancelledError, Exception):
+            pass
         sched.shutdown(wait=False)
         log.info("collector.shutdown")
 
