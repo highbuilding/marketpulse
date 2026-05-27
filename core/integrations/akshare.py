@@ -14,17 +14,27 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import pickle
+import subprocess
+import sys
+import time
+import tempfile
 from typing import Any
 
-import akshare as ak
+import structlog
 
 from core.services._locks import acquire as _racer_acquire
+
+log = structlog.get_logger(__name__)
+_DEFAULT_TIMEOUT_S = float(os.getenv("AK_CALL_TIMEOUT_S", "25"))
 
 
 async def ak_call(
     func_name: str,
     *args: Any,
     caller: str | None = None,
+    ak_timeout_s: float | None = None,
     **kwargs: Any,
 ) -> Any:
     """串行化执行 akshare 接口。
@@ -32,9 +42,106 @@ async def ak_call(
     func_name: ak 模块下的函数名, 用字符串避免调用方再 `import akshare`。
     caller: 诊断字符串(默认用 func_name), 出现在 racer.* 日志里。
     """
-    func = getattr(ak, func_name, None)
-    if func is None or not callable(func):
-        raise AttributeError(f"akshare has no callable '{func_name}'")
     label = caller or func_name
     async with _racer_acquire(f"ak:{label}"):
-        return await asyncio.to_thread(func, *args, **kwargs)
+        started = time.monotonic()
+        timeout_s = ak_timeout_s or _DEFAULT_TIMEOUT_S
+        log.info(
+            "ak_call.start",
+            func=func_name,
+            caller=label,
+            timeout_s=timeout_s,
+            args_count=len(args),
+            kwargs=_safe_kwargs(kwargs),
+        )
+        try:
+            result = await asyncio.to_thread(
+                _run_ak_in_child_process,
+                func_name,
+                args,
+                kwargs,
+                timeout_s,
+            )
+        except Exception as e:
+            elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+            log.warning(
+                "ak_call.failed",
+                func=func_name,
+                caller=label,
+                elapsed_ms=elapsed_ms,
+                error_type=type(e).__name__,
+                error=str(e),
+            )
+            raise
+        elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+        log.info(
+            "ak_call.success",
+            func=func_name,
+            caller=label,
+            elapsed_ms=elapsed_ms,
+            result=_result_summary(result),
+        )
+        return result
+
+
+def _safe_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in kwargs.items():
+        text = str(value)
+        out[key] = text if len(text) <= 80 else f"{text[:77]}..."
+    return out
+
+
+def _result_summary(result: Any) -> dict[str, Any]:
+    shape = getattr(result, "shape", None)
+    if shape is not None:
+        try:
+            return {"type": type(result).__name__, "shape": tuple(shape)}
+        except TypeError:
+            return {"type": type(result).__name__}
+    if isinstance(result, (list, tuple, set, dict)):
+        return {"type": type(result).__name__, "len": len(result)}
+    return {"type": type(result).__name__}
+
+
+def _run_ak_in_child_process(
+    func_name: str,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    timeout_s: float,
+) -> Any:
+    with tempfile.TemporaryDirectory(prefix="marketpulse-ak-") as tmp:
+        input_path = os.path.join(tmp, "input.pkl")
+        output_path = os.path.join(tmp, "output.pkl")
+        with open(input_path, "wb") as fp:
+            pickle.dump((args, kwargs), fp)
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "core.integrations.akshare_worker",
+                func_name,
+                input_path,
+                output_path,
+            ],
+            cwd=os.getcwd(),
+            capture_output=True,
+            timeout=timeout_s,
+            check=False,
+        )
+        if proc.returncode != 0:
+            stderr = proc.stderr.decode("utf-8", errors="replace")[-4000:]
+            stdout = proc.stdout.decode("utf-8", errors="replace")[-1000:]
+            raise RuntimeError(
+                f"akshare worker failed rc={proc.returncode}: {func_name}; "
+                f"stdout={stdout!r}; stderr={stderr!r}"
+            )
+        if not os.path.exists(output_path):
+            raise RuntimeError(f"akshare worker produced no output: {func_name}")
+        with open(output_path, "rb") as fp:
+            status, payload = pickle.load(fp)
+        if status == "ok":
+            return payload
+        error_type, message, tb = payload
+        raise RuntimeError(f"{func_name} failed in child process: {error_type}: {message}\n{tb}")
+    # subprocess.run raises TimeoutExpired; keep error text concise and stable.
