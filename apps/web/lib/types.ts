@@ -145,11 +145,21 @@ export interface IndexMinutePoint {
   volume: number
 }
 
+export interface MarketExtras {
+  fund_inflow?: number | null
+  fund_inflow_label?: string | null
+  amount?: number | null
+  amount_unit?: string | null
+  amount_ratio?: number | null
+}
+
 export interface IndexMinuteResponse {
   symbol: string
   name: string
   granularity: '1m' | '5m' | '1d'
+  prev_close?: number | null
   points: IndexMinutePoint[]
+  market_extras?: MarketExtras
   meta?: ResponseMeta
 }
 

@@ -6,6 +6,7 @@ import useSWR from 'swr'
 import clsx from 'clsx'
 
 import { fetchIndexMinute } from '@/lib/symbol_api'
+import { formatAmount, formatFundInflow, formatRatioPct } from '@/lib/format_market'
 import { StaleBadge } from './StaleBadge'
 
 function MiniChart({ points, color }: { points: { ts: string; close: number }[]; color: string }) {
@@ -63,12 +64,12 @@ export function IndexCard({ symbol }: { symbol: string }) {
   )
 
   let lastClose: number | null = null
-  let firstClose: number | null = null
   let changePct: number | null = null
   if (data && data.points.length > 0) {
     lastClose = data.points[data.points.length - 1].close
-    firstClose = data.points[0].close
-    if (firstClose > 0) changePct = ((lastClose - firstClose) / firstClose) * 100
+    // 优先用昨收作基准 (今日涨跌口径); 缺失时退到序列首点 (近 30 日日线场景或冷启动)
+    const base = data.prev_close ?? data.points[0].close
+    if (base > 0 && lastClose != null) changePct = ((lastClose - base) / base) * 100
   }
   const up = (changePct ?? 0) >= 0
   const color = up ? '#ef4444' : '#22c55e'
@@ -107,6 +108,26 @@ export function IndexCard({ symbol }: { symbol: string }) {
       <div className="text-[10px] text-neutral-600 mt-1">
         {data?.granularity === '5m' || data?.granularity === '1m' ? '当日分时' : '近 30 日日线'}
       </div>
+      {data?.market_extras?.fund_inflow != null && data?.market_extras?.fund_inflow_label && (
+        <div className="text-xs text-neutral-400 mt-1 tabular-nums">
+          {data.market_extras.fund_inflow_label}: <span className={clsx(
+            data.market_extras.fund_inflow >= 0 ? 'text-red-400' : 'text-green-400',
+          )}>{formatFundInflow(data.market_extras.fund_inflow)}</span>
+        </div>
+      )}
+      {data?.market_extras?.amount != null && data?.market_extras?.amount_unit && (
+        <div className="text-xs text-neutral-400 tabular-nums">
+          成交 {formatAmount(data.market_extras.amount, data.market_extras.amount_unit)}
+          {data.market_extras.amount_ratio != null && (
+            <span className={clsx(
+              'ml-1',
+              data.market_extras.amount_ratio >= 0 ? 'text-red-400' : 'text-green-400',
+            )}>
+              同比 {formatRatioPct(data.market_extras.amount_ratio)}
+            </span>
+          )}
+        </div>
+      )}
     </a>
   )
 }
