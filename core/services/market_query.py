@@ -50,7 +50,7 @@ class MarketQueryService:
         df = await ak_call(
             "stock_zh_a_spot_em",
             caller=f"market_query.all_ashare:limit={limit}",
-            ak_timeout_s=8,
+            ak_timeout_s=30,
         )
         rows = self._parse_spot_em_rows(df)
         return sorted(rows[:limit], key=lambda row: row.change_pct, reverse=True)
@@ -102,7 +102,7 @@ class MarketQueryService:
         df = await ak_call(
             "stock_hk_spot_em",
             caller=f"market_query.top_hk:{direction}:limit={limit}",
-            ak_timeout_s=8,
+            ak_timeout_s=20,
         )
         rows = self._parse_hk_spot_rows(df)
         return sorted(rows, key=lambda row: row.change_pct, reverse=(direction == "desc"))[:limit]
