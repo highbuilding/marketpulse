@@ -82,9 +82,15 @@ class ChipSummaryDTO(BaseModel):
     concentration_70: float | None
 
 
+class ChipSummaryMeta(BaseModel):
+    stale: bool = False
+    reason: str | None = None
+
+
 class ChipSummaryResponse(BaseModel):
     symbol: str
     rows: list[ChipSummaryDTO]
+    meta: ChipSummaryMeta = ChipSummaryMeta()
 
 
 class VolumeIndicatorDTO(BaseModel):
@@ -295,8 +301,16 @@ async def chip_summary(
     svc: ChipService = Depends(get_chip_service),
 ) -> ChipSummaryResponse:
     if infer_market(symbol) != "ashare":
-        return ChipSummaryResponse(symbol=symbol, rows=[])
-    rows = await svc.get_summary(symbol, days=days)
+        return ChipSummaryResponse(
+            symbol=symbol, rows=[],
+            meta=ChipSummaryMeta(stale=True, reason="non_ashare"),
+        )
+    rows = await svc.get_summary_cache_only(symbol, days=days)
+    if not rows:
+        return ChipSummaryResponse(
+            symbol=symbol, rows=[],
+            meta=ChipSummaryMeta(stale=True, reason="warming_up"),
+        )
     return ChipSummaryResponse(
         symbol=symbol,
         rows=[ChipSummaryDTO(

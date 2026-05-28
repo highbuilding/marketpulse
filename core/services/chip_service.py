@@ -52,6 +52,21 @@ class ChipService:
             return rows[-days:]
         return []
 
+    async def get_summary_cache_only(
+        self, symbol: str, *, days: int = 90,
+    ) -> list[ChipSummary]:
+        """只读 DuckDB cache, 不触发 ak_call。
+
+        api 路由必须用这个方法; collector 的 chip:preload cron 用 get_summary 走全量
+        (cache miss 时拉 ak)。Plan 3 Hotfix B 引入。
+        """
+        if infer_market(symbol) != "ashare":
+            return []
+        cached = await self.repo.list_recent(symbol, limit=days)
+        if not cached:
+            return []
+        return cached[-days:]
+
     async def preload_watchlist_chip_summary(
         self, watchlist, *, days: int = 90,
     ) -> int:

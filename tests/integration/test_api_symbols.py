@@ -61,7 +61,7 @@ def test_fund_flow_returns_ok(monkeypatch):
 
 def test_chip_summary_returns_ok(monkeypatch):
     svc = get_chip_service()
-    monkeypatch.setattr(svc, "get_summary", AsyncMock(return_value=[
+    monkeypatch.setattr(svc, "get_summary_cache_only", AsyncMock(return_value=[
         ChipSummary(
             symbol="002415.SZ",
             trade_date=datetime(2026, 5, 20, tzinfo=timezone.utc),
