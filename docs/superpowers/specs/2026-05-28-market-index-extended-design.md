@@ -141,14 +141,15 @@ class IndexMinuteResponse(BaseModel):
 
 沿用现有 SSoT (`core/domain/markets.py::infer_market`),**零改动**:
 
-| 市场 | 大盘指数 symbol(对外+yfinance/Binance) |
+| 市场 | 大盘指数 symbol(对外+内部) |
 |---|---|
 | A 股 | `000001.SH` ... `399006.SZ` (8 个,已有) |
 | 港股 | `HSI.HK` `HSTECH.HK` `HSCEI.HK` (3 个,已注册) |
-| 美股 | `^DJI` `^IXIC` `^GSPC` (yfinance 原生,`infer_market` 落 us) |
+| 美股 | `SPY` `QQQ` `DIA` (ETF 代理,Alpaca 直接拿,与 Bloomberg/TradingView 在指数页显示的"Volume"口径一致) |
 | Crypto | `BTC/USDT` `ETH/USDT` (现 SSoT 用 `/` 表 crypto) |
 
-URL 安全性:`^GSPC` 在 URL 里编码成 `%5EGSPC`,前端 `encodeURIComponent` 已处理。
+**为什么美股用 ETF 而非指数 ticker**:Alpaca 不收 `^GSPC` 等指数(整批 400);yfinance 严重限频(实测 `.info`/`.history` 全 RateLimit)。SPY/QQQ/DIA 是 SPX/NDX/DJI 的对应 ETF,Alpaca 免费档支持,且 Bloomberg/TradingView 在指数页显示的"Volume"实际就是这些 ETF 成交额。
+URL 安全性:`BTC/USDT` 编码成 `BTC%2FUSDT`,前端 `encodeURIComponent` 已处理。
 
 ### 3.3 SQLite 新表 `market_amount_baseline`
 
@@ -186,42 +187,61 @@ ORDER BY trading_date DESC LIMIT 10;
 
 ### 4.1 A 股
 
-| 字段 | 数据源 | akshare 接口 | 频率 |
+| 字段 | 数据源 | 接口 | 频率 |
 |---|---|---|---|
 | 5m 序列 | sina(已有) | `stock_zh_a_minute` | 30s |
-| prev_close | sina spot(已有) | `hq_str_*` | 30s |
-| fund_inflow | akshare 北向 | `stock_hsgt_fund_flow_summary` | 30s(本身延迟 1min) |
-| amount | akshare 交易所摘要 | `stock_sse_summary` + `stock_szse_summary` | 30s |
+| prev_close + amount | sina spot(已有) | `hq_str_*` 第 3 列 prev_close + 第 10 列当日累计成交额(元) | 30s |
+| fund_inflow | akshare 北向 | `stock_hsgt_fund_flow_summary_em()`,filter `板块 in ('沪股通','深股通')` 求和 `资金净流入` | 30s |
 
-**为什么不用 `stock_zh_a_spot_em` 聚合个股**:5000+ 股票一次拉,EM 限频且耗时 8-30s,超 ak_call 默认超时;交易所摘要权威且单次调用。
+**为什么 amount 不用交易所摘要**:`stock_sse_deal_daily` / `stock_szse_summary` 实际是**日级数据**(收盘后才更新),盘中拿到的是上一交易日数据,延迟 1 天不可用。
+**为什么不聚合个股**:5000+ 股 spot 聚合代价大、易触限频。
+**sina 指数 spot 第 10 列**(`hq_str_sh000001` payload 索引 9)是当日累计成交额(单位:元),与 prev_close 同一 HTTP 响应共享,**零增量 ak_call**。该字段是**指数成分股加权成交额**,用户感知为"上证大盘成交额",符合预期。
 
 ### 4.2 港股
 
 | 字段 | 数据源 |
 |---|---|
-| 5m 序列 | akshare `stock_hk_index_daily_em(symbol)` |
-| prev_close | akshare `stock_hk_index_spot_em()` 摘要 |
-| fund_inflow | akshare `stock_hsgt_north_net_flow_in("北向")` 反向 = 南向 |
-| amount | akshare `stock_hk_index_spot_em()` 摘要 amount 字段 |
+| 5m 序列 | akshare `stock_hk_index_daily_sina(symbol="HSI")` (返回 `date,open,high,low,close,volume,amount` 日线;5m 由 sina 直拉补)|
+| 5m 实时(盘中) | sina HTTP `https://hq.sinajs.cn/list=hkHSI,hkHSCEI,hkHSTECH` (与 A 股复用 batch 拉取代码) |
+| prev_close + amount | 同 sina HTTP,payload 第 3 列 prev_close,第 12 列累计成交额(港元) |
+| fund_inflow | akshare `stock_hsgt_fund_flow_summary_em()` filter `板块 in ('港股通(沪)','港股通(深)')` 求和 `资金净流入` (= 南向资金) |
+
+**港股 sina spot payload 字段索引**(实测 `hq_str_hkHSI` 返回逗号分割,共 18 段):
+- `[0]` 代号 (HSI)
+- `[1]` 名称 (恒生指数)
+- `[2]` prev_close (昨收)
+- `[3]` 今开
+- `[4]` high
+- `[5]` low
+- `[6]` last(当前价,可能略滞后于 [3] 今开开盘几秒)
+- `[7]` 涨跌额
+- `[8]` 涨跌幅
+- `[10]` volume(股)
+- `[11]` amount(港元,累计)
+- `[16]` 日期
+- `[17]` 时间
+
+> **注意**:港股 sina spot 中 `[6]` 是"成交价"或"最新价",会随实时刷新;`[2]` 昨收稳定。
+> 5m 序列 spec 内沿用 A 股的"sina 直拉"思路,但 sina 港股**没有 5m 接口**,需用 `stock_hk_index_daily_em`(日线 5m 已不可得)。**Plan 中决策:港股不显示 5m 序列,IndexCard granularity 退化为 "1d" + 显示近 30 日日线**(同现行 stale 兜底已实现的 1d 路径,只是改为真有数据)。
 
 ### 4.3 美股
 
 | 字段 | 数据源 |
 |---|---|
-| 5m 序列 | yfinance `Ticker("^DJI").history(period="1d", interval="5m")` |
-| prev_close | yfinance `Ticker("^DJI").info["previousClose"]` |
+| 5m 序列(及当前价) | Alpaca `StockBarsRequest(SPY/QQQ/DIA, TimeFrame(5,Min), feed='iex')` 当日全部 5m 桶 |
+| prev_close | Alpaca `StockBarsRequest(timeframe=Day, limit=2)` 取倒数第 2 根 close |
 | fund_inflow | — 不显示 |
-| amount | **ETF 代理**: yfinance `Ticker("DIA"/"QQQ"/"SPY").history(...).Close × Volume 累加` |
+| amount | 同 5m 序列,`Σ(close × volume)` 累加(每个桶) |
 
-**为什么 amount 用 ETF 代理**:美股指数本身没有成交额(指数是计算结果)。Bloomberg/TradingView 在指数页显示的"Volume"实际就是对应 ETF 成交额。映射:
+**为什么 ETF 代理而非指数 ticker**:Alpaca 不支持 `^GSPC/^DJI/^IXIC` 这类指数(整批 400);yfinance 严重限频(`.info`/`.history` 实测 RateLimit)。SPY=S&P 500、QQQ=NASDAQ-100、DIA=道琼斯,与 Bloomberg/TradingView 显示的指数页"Volume"完全一致。
 
+**注意 Alpaca TimeFrame API**:
 ```python
-US_INDEX_VOLUME_PROXY = {
-    "^DJI":  "DIA",
-    "^IXIC": "QQQ",
-    "^GSPC": "SPY",
-}
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+tf = TimeFrame(5, TimeFrameUnit.Minute)  # 5min, 不是 TimeFrame.Minute (那是 1min)
 ```
+
+**IEX feed 限制**:Alpaca 免费档只给 IEX(部分流动性),美股盘中数据完整度尚可,SPY/QQQ/DIA 这种高流动性 ETF 影响小。
 
 ### 4.4 Crypto
 
