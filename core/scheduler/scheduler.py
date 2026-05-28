@@ -331,6 +331,22 @@ def attach_baseline_persist_jobs(
     log.info("scheduler.baseline_persist_attached")
 
 
+def attach_us_index_minute_job(
+    sched: AsyncIOScheduler,
+    *, cache,  # RedisCache
+    baseline_repo=None,
+) -> None:
+    """美股大盘 ETF 代理 (SPY/QQQ/DIA): 每 60s 刷一次, 仅 ET 9-17 交易时段。"""
+    from apps.collector.jobs.us_index_minute import refresh_all_us_indices
+    sched.add_job(
+        _leader_gated(refresh_all_us_indices), IntervalTrigger(seconds=60),
+        args=(cache, baseline_repo),
+        id="index_minute:us", max_instances=1, coalesce=True,
+        misfire_grace_time=30,
+    )
+    log.info("scheduler.us_index_minute_attached")
+
+
 def attach_market_dashboard_job(
     sched: AsyncIOScheduler,
     *, cache,  # RedisCache

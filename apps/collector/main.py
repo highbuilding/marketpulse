@@ -39,8 +39,8 @@ from apps.api.deps import (
 from core.scheduler.scheduler import (
     attach_ai_packet_job, attach_baseline_persist_jobs, attach_chip_preload_job,
     attach_fundamentals_jobs, attach_index_minute_job, attach_market_dashboard_job,
-    attach_market_top_job, attach_signal_jobs, attach_us_signal_jobs,
-    build_scheduler,
+    attach_market_top_job, attach_signal_jobs, attach_us_index_minute_job,
+    attach_us_signal_jobs, build_scheduler,
 )
 
 log = structlog.get_logger(__name__)
@@ -176,6 +176,7 @@ async def lifespan(app: FastAPI):
         kline=get_kline_service(),
     )
     attach_index_minute_job(sched, cache=_redis_cache, baseline_repo=_baseline_repo)
+    attach_us_index_minute_job(sched, cache=_redis_cache, baseline_repo=_baseline_repo)
     attach_baseline_persist_jobs(sched, baseline_repo=_baseline_repo)
     attach_market_dashboard_job(sched, cache=_redis_cache)
     attach_market_top_job(sched,

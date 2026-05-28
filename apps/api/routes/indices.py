@@ -62,6 +62,10 @@ _INDEX_NAME = {
     "HSI.HK": "恒生指数",
     "HSTECH.HK": "恒生科技指数",
     "HSCEI.HK": "恒生中国企业指数",
+    # 美股大盘 ETF 代理 (Plan C, 2026-05-28)
+    "SPY": "标普500 (SPY)",
+    "QQQ": "纳指100 (QQQ)",
+    "DIA": "道琼斯 (DIA)",
 }
 
 
@@ -76,6 +80,7 @@ async def index_minute(
     name = _INDEX_NAME[symbol]
     if symbol.endswith(".HK"):
         return await _hk_index_daily(symbol, name, days=days, cache=cache)
+    # A 股 / 美股 ETF / Crypto 全部走 5m 路径 (cache 命中则返回, 否则 stale)
     return await _ashare_index_5min(symbol, name, days=days, cache=cache)
 
 
