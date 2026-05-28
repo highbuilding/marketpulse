@@ -143,14 +143,20 @@ curl -s -m 3 http://localhost:8788/health | grep -o '"status":"[^"]*"'
 
 ### 雷区 5:日志持久化与崩溃排查
 
-**事实源**:`data/logs/api.log` / `api-errors.log`(WARNING+)/ `fault.log`(SIGABRT C 层栈)。`/tmp/api.log` 和 `/tmp/collector.log` 仅 stdout 镜像,**不是事实源**但因为 append 模式重启不丢。
+**事实源**:
+- `data/logs/api.log` / `api-errors.log`(WARNING+)— api 进程
+- `data/logs/collector.log` / `collector-errors.log`(WARNING+)— collector 进程
+- `data/logs/fault.log`(SIGABRT/SIGSEGV C 层栈,append 不 rotate,共享)
 
-`core/integrations/logging_setup.py::setup_logging()` 在 collector + api 启动早期各调一次。`faulthandler` fd 直写 fault.log,V8 SIGABRT 时 stdout 来不及 flush 但 fault.log 仍落盘。
+`/tmp/api.log` 和 `/tmp/collector.log` 仅 nohup stdout 镜像,**不是事实源**但因为 append 模式重启不丢。
+
+`core/integrations/logging_setup.py::setup_logging(process_name=...)` 在 collector + api 启动早期各调一次,`process_name` 决定文件名前缀。`faulthandler` fd 直写 fault.log,V8 SIGABRT 时 stdout 来不及 flush 但 fault.log 仍落盘。
 
 ```bash
-tail -100 data/logs/api-errors.log   # 警告/错误
-tail -50 data/logs/fault.log          # C 层崩溃栈(若有)
-grep "ak_call.failed\|breaker.opened" /tmp/collector.log  # 中间件状态
+tail -100 data/logs/api-errors.log         # api 警告/错误
+tail -100 data/logs/collector-errors.log   # collector 警告/错误 (含 ak_call.failed/empty/timeout)
+tail -50 data/logs/fault.log                # C 层崩溃栈(若有)
+grep "ak_call.failed\|breaker.opened" data/logs/collector.log  # 中间件状态
 ```
 
 ---
