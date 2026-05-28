@@ -11,9 +11,11 @@ from core.scheduler.jobs import flush_quotes_to_duckdb, tick_snapshot_once
 
 @pytest.fixture(autouse=True)
 def _force_session_open(monkeypatch):
-    # 测试时强制视为交易 session 内, 否则 tick_snapshot_once 会因为 hour gate 早退
+    # 测试时强制视为交易 session 内, 否则 tick_snapshot_once / flush 会因为 gate 早退
     import core.domain.market_sessions as ms
+    import core.domain.market_calendar as mc
     monkeypatch.setattr(ms, "is_market_session_open", lambda *a, **kw: True)
+    monkeypatch.setattr(mc, "is_trading_day", lambda *a, **kw: True)
 
 
 def _q(market, symbol, price):

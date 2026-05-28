@@ -126,6 +126,13 @@ async def persist_us_baseline(repo: MarketAmountBaselineRepo) -> int:
 
     Plan C 实装后填充。
     """
+    from core.domain.market_calendar import is_trading_day
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    if not is_trading_day("us", now_et):
+        log.debug("baseline.us.skip_non_trading_day", date=str(now_et.date()))
+        return 0
     log.info("baseline.us.skipped_pending_plan_c")
     return 0
 

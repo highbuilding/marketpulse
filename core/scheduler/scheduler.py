@@ -376,6 +376,11 @@ def attach_chip_preload_job(
 ) -> None:
     """A 股收盘后 15:35 (BJT) 全量预热筹码摘要。"""
     async def _job():
+        # 节假日跳过 — chip 数据来自 stock_zh_a_hist, 节假日打 em 无新数据
+        from core.domain.market_calendar import is_trading_day
+        if not is_trading_day("ashare"):
+            log.debug("chip.preload_skip_non_trading_day")
+            return
         await chip_service.preload_watchlist_chip_summary(watchlist)
     sched.add_job(
         _leader_gated(_job), CronTrigger(hour=7, minute=35),  # 15:35 BJT = 07:35 UTC

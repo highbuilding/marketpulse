@@ -59,7 +59,19 @@ async def build_dashboard(market: str, *, cache: RedisCache) -> dict:
 
 
 async def refresh_dashboard_job(cache: RedisCache) -> None:
-    """APScheduler 调用入口 — 目前只刷 A 股 dashboard。"""
+    """APScheduler 调用入口 — 目前只刷 A 股 dashboard。
+
+    非交易日 + 非 session 时段跳过 — 上游 cache (index_minute) 已经
+    被各自闸门停了, dashboard 只是聚合 cache, 盘外没有新数据可聚合。
+    """
+    from core.domain.market_calendar import is_trading_day
+    from core.domain.market_sessions import is_market_session_open
+    if not is_trading_day("ashare"):
+        log.debug("dashboard.skip_non_trading_day")
+        return
+    if not is_market_session_open("ashare"):
+        log.debug("dashboard.skip_off_session")
+        return
     try:
         await build_dashboard("ashare", cache=cache)
     except Exception as e:  # noqa: BLE001

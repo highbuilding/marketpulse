@@ -80,6 +80,13 @@ async def tick_snapshot_once(
 
 
 def flush_quotes_to_duckdb(market: str, cache: QuoteCache, repo: BarRepo) -> None:
+    # 非交易日 / 非 session 直接跳过 — tick 也不会写, quote cache 是空, flush 没意义
+    from core.domain.market_calendar import is_trading_day
+    from core.domain.market_sessions import is_market_session_open
+    if not is_trading_day(market):
+        return
+    if not is_market_session_open(market):
+        return
     quotes = cache.snapshot(market)
     if not quotes:
         return
