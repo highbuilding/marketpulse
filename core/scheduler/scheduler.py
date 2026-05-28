@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -273,9 +275,10 @@ def attach_index_minute_job(
     *, cache,  # RedisCache
     baseline_repo=None,  # MarketAmountBaselineRepo | None
 ) -> None:
-    """index_minute: 每 30s 刷一次 (交易/非交易时段统一)。
+    """index_minute: 交易日 9-17 BJT 每 30s 刷一次。
 
-    单跑 30s 简化策略 — 真正不需要刷的时段(夜里) cache 已有最近一次结果, 重复写无害。
+    cache TTL 24h, 收盘到次日开盘前用户看到"今日收盘价" 不是延迟。
+    next_run_time=now+5s 让冷启动立即回填 cache, 不用等 30s 第一轮。
     baseline_repo 传入时 amount_ratio 会被计算; 否则 ratio=None。
     """
     from apps.collector.jobs.index_minute import refresh_all_indices
@@ -284,6 +287,7 @@ def attach_index_minute_job(
         args=(cache, baseline_repo),
         id="index_minute:ashare", max_instances=1, coalesce=True,
         misfire_grace_time=20,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=5),
     )
     log.info("scheduler.index_minute_attached")
 
@@ -336,13 +340,18 @@ def attach_us_index_minute_job(
     *, cache,  # RedisCache
     baseline_repo=None,
 ) -> None:
-    """美股大盘 ETF 代理 (SPY/QQQ/DIA): 每 60s 刷一次, 仅 ET 9-17 交易时段。"""
+    """美股大盘 ETF 代理 (SPY/QQQ/DIA): 每 60s 刷一次, 仅 ET 4-21 交易时段。
+
+    cache TTL 24h, 收盘后用户看到"今日收盘价" 不是延迟。
+    next_run_time=now+5s 让冷启动立即回填 cache。
+    """
     from apps.collector.jobs.us_index_minute import refresh_all_us_indices
     sched.add_job(
         _leader_gated(refresh_all_us_indices), IntervalTrigger(seconds=60),
         args=(cache, baseline_repo),
         id="index_minute:us", max_instances=1, coalesce=True,
         misfire_grace_time=30,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=5),
     )
     log.info("scheduler.us_index_minute_attached")
 

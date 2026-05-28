@@ -33,7 +33,9 @@ INDEX_SYMBOLS = [
 ]
 
 _CN_TZ = ZoneInfo("Asia/Shanghai")
-_CACHE_TTL_S = 90  # 30s 写 + 90s TTL = 充足覆盖
+# 24h TTL: 收盘后到次日开盘前用户看到的是"今日收盘价", meta.stale=False
+# (us_index_minute 也是同样思路)
+_CACHE_TTL_S = 24 * 3600
 _SINA_SPOT_BASE = "https://hq.sinajs.cn/list="
 _SINA_HEADERS = {"Referer": "https://finance.sina.com.cn"}
 
@@ -206,8 +208,10 @@ async def refresh_all_indices(
 ) -> None:
     """循环刷新 8 个指数。单条失败不影响后续。
 
-    非 A 股交易日(周末/法定节假日)直接跳过, 交易日只在 BJT 09:00-16:00 内跑。
-    避免无意义 sina 调用。
+    非 A 股交易日(周末/法定节假日)直接跳过, 交易日只在 BJT 09:00-17:00 内跑。
+    16:00 后 1h 缓冲是为了让 sina spot 第 [9] 列收尾到当日最终成交额。
+    cache TTL 24h, 收盘后用户看到"今日收盘价" 而非延迟。
+    例外: cache 不存在时(冷启动/redis 重启)无视 hour gate 强制刷一次回填。
 
     baseline_repo: 传入则计算 amount_ratio (查上一日同 offset);否则 ratio=None。
     """
@@ -217,9 +221,13 @@ async def refresh_all_indices(
     if not is_trading_day("ashare", now_bjt):
         log.debug("index_minute.skip_non_trading_day", date=str(now_bjt.date()))
         return
-    if not (9 <= now_bjt.hour < 16):
-        log.debug("index_minute.skip_off_hours", hour=now_bjt.hour)
-        return
+    if not (9 <= now_bjt.hour < 17):
+        # 检查是否所有指数都已有 cache; 有则跳过 (TTL 24h 隔夜不丢), 否则回填一次
+        sample_key = keys.cache_index_minute(INDEX_SYMBOLS[0], days=1)
+        if await cache.get_msgpack(sample_key) is not None:
+            log.debug("index_minute.skip_off_hours_cache_warm", hour=now_bjt.hour)
+            return
+        log.info("index_minute.cold_start_refill", hour=now_bjt.hour)
 
     spot_map = await _fetch_spot_info_map()
     fund_inflow = await _fetch_north_fund_inflow_yiyuan()

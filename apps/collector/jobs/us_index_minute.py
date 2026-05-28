@@ -36,7 +36,8 @@ _INDEX_NAME = {
 }
 
 _ET_TZ = ZoneInfo("America/New_York")
-_CACHE_TTL_S = 120  # 60s 写 + 120s TTL
+# 24h TTL: 收盘后到次日开盘前用户看到的是"今日收盘价", meta.stale=False
+_CACHE_TTL_S = 24 * 3600
 _BASELINE_OFFSET_BUCKETS = 78  # 美股 9:30-16:00 ET = 6.5h × 12 buckets/h = 78
 
 
@@ -167,15 +168,22 @@ async def refresh_all_us_indices(
 ) -> None:
     """循环刷 SPY/QQQ/DIA。
 
-    非美股交易日跳过, 交易日 ET 9:00-17:00 内跑 (盘前盘后给 buffer)。
+    交易日 ET 4:00-21:00 内跑 (盘前 4:00 + 盘后 20:00 + 1h 收尾 buffer)。
+    cache TTL 24h, 收盘后用户看到"今日收盘价" 不是延迟。
+    例外: cache 不存在时(冷启动/redis 重启)无视 hour gate 强制刷一次回填。
     """
     from core.domain.market_calendar import is_trading_day
 
     now_et = datetime.now(_ET_TZ)
     if not is_trading_day("us", now_et):
-        # 非交易日 (周末/独立日等) 也允许刷一次, 避免 cache 过期变 stale
-        # 拉到的是上一交易日数据, 用户看到"昨日收盘"也比 stale 好
-        log.debug("us_index_minute.non_trading_day_still_refresh", date=str(now_et.date()))
+        log.debug("us_index_minute.skip_non_trading_day", date=str(now_et.date()))
+        return
+    if not (4 <= now_et.hour < 21):
+        sample_key = keys.cache_index_minute(US_INDEX_SYMBOLS[0], days=1)
+        if await cache.get_msgpack(sample_key) is not None:
+            log.debug("us_index_minute.skip_off_hours_cache_warm", hour=now_et.hour)
+            return
+        log.info("us_index_minute.cold_start_refill", hour=now_et.hour)
 
     data_map = await _fetch_us_data()
 
