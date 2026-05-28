@@ -44,20 +44,13 @@
 - 2026-05-27 ✅ Plan 1 完成:Redis 基建 + collector 进程拆分。
 - 2026-05-27 ✅ Plan 2 完成:ak_call 三层中间件(Outlet/Breaker/Ratelimit)+ Leader + index_minute/dashboard/refill_consumer job。
 - 2026-05-27 ✅ Plan 3 完成:api 全部读 cache(0 ak_call)+ 前端 stale 染灰 + Plan 1/2 退化全修。spec §0.2 中 4 个症状(K 线分时图慢/大盘慢/重复 K 线慢/分时 500)全部消除。
+- 2026-05-28 ✅ Plan 3 后续 hotfix(A/B/C):/top + /chip_summary + /ai/market-packet 走 cache,**apps/api/ 真正 0 ak_call(直接 + 间接)**。15 新单测,339 total passing。
 
-### Plan 3 后发现的 service 层 ak_call 间接调用(Plan 4 候选)
+### Plan 3 后发现的 service 层 ak_call 间接调用 — ✅ 已全部修复(2026-05-28)
 
-- [ ] **`/api/markets/{m}/top` 走 MarketQueryService.all_ashare → ak_call**(2026-05-28 发现)
-  - 现状:route 已经加 try/except 兜底,失败时返回 stale meta + 空 gainers/losers,**前端不再 500**
-  - 实质问题:`stock_zh_a_spot_em` 全 5000 标的一次拉取,8s 超时不够;每次访问 /market 页都触发
-  - 修法:collector 加 `top_movers` job,预聚合写 `cache:market:{m}:top`,api 改读 cache
-  - 价值:消除最后一条 api → ak_call 间接路径;/market 页 /top section 永远 < 50ms
-  - 代价:中,~1 个 Task
-
-- [ ] **`/api/symbols/{s}/chip_summary` 走 ChipService.get_summary → ak_call**(同上)
-  - chip preload 日终 15:35 已在 Plan 2 Task 11 引入,但 ChipService.get_summary 在 DB miss 时仍会 trigger ak_call
-  - 修法:加 `get_summary_cache_only`(类似 KLineService.get_bars_cache_only),api 路由改用 cache_only,真正补数据交给 collector 在 chip:preload cron 完成
-  - 代价:小,~30 行
+- [x] **`/api/markets/{m}/top`** — 已切到 collector market_top job + cache:market:{m}:top
+- [x] **`/api/symbols/{s}/chip_summary`** — 已加 ChipService.get_summary_cache_only,api 走 cache_only
+- [x] **`/api/ai/ashare/market-packet`** — 已切到 collector ai_packet job + cache:market:ashare:ai_packet
 
 ### Plan 1 引入的已知退化(Plan 2/3 修)— ✅ 已全部修复
 
