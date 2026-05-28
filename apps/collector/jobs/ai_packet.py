@@ -48,12 +48,16 @@ async def refresh_ai_packet(
 ) -> None:
     """拉一次 AI 大盘数据并写 cache。失败仅 warning, 不抛。
 
-    A 股非交易日跳过(链路上 spot_em + sector_em 多次调用浪费 + 拿不到新数据)。
+    A 股非交易日 + 非 session 时段跳过 (链路上 spot_em + sector_em 多次调用浪费)。
     """
     from core.domain.market_calendar import is_trading_day
+    from core.domain.market_sessions import is_market_session_open
 
     if not is_trading_day("ashare"):
         log.debug("ai_packet.skip_non_trading_day")
+        return
+    if not is_market_session_open("ashare"):
+        log.debug("ai_packet.skip_off_session")
         return
 
     try:

@@ -45,10 +45,15 @@ async def tick_snapshot_once(
     redis_cache: RedisCache | None = None,
 ) -> None:
     # 非交易日跳过 — sina/em/yfinance 在节假日返回历史/空数据,无意义打接口
-    # crypto 永远 trading,自动放行
+    # 交易日还要落在本市场 session 内 (避免夜里整宿打源)
+    # crypto 永远 trading + 24/7 session,自动放行
     from core.domain.market_calendar import is_trading_day
+    from core.domain.market_sessions import is_market_session_open
     if not is_trading_day(market):
         log.debug("tick.skip_non_trading_day", market=market)
+        return
+    if not is_market_session_open(market):
+        log.debug("tick.skip_off_session", market=market)
         return
 
     adapter = registry.get(market)

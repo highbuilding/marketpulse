@@ -72,3 +72,20 @@ def expected_bar_ts(
 ) -> list[datetime]:
     """便捷封装:只要 close_utc 序列(等价于 bar.ts)。"""
     return [close for _, close in bucket_grid(market, local_date, interval_minutes)]
+
+
+def is_market_session_open(market: Market, when: datetime | None = None) -> bool:
+    """当前是否在该市场交易 session 内 (本市场时区)。
+
+    crypto 永远 True; 其他市场要求落在 SESSIONS 任一区间内。
+    周末 / 节假日由调用方自行 is_trading_day 门控, 本函数只判时段。
+    """
+    tz = ZoneInfo(MARKET_TZ[market])
+    now_local = (when or datetime.now(timezone.utc)).astimezone(tz)
+    cur = now_local.time()
+    for s_str, e_str in SESSIONS[market]:
+        s = _hhmm_to_time(s_str)
+        e = _hhmm_to_time(e_str) if e_str != "24:00" else time(23, 59, 59, 999_999)
+        if s <= cur <= e:
+            return True
+    return False

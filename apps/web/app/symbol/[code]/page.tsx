@@ -13,19 +13,8 @@ import { VolumeIndicatorsPanel } from '@/components/VolumeIndicatorsPanel'
 import { fetchBars, fetchChipSummary, fetchSymbolProfile } from '@/lib/symbol_api'
 import { listCDSignalsBySymbol } from '@/lib/cd_signals_api'
 import { CD_MARKER_INTERVALS, klineTabsForMarket } from '@/lib/intervals'
-import { inferMarket } from '@/lib/markets'
+import { inferMarket, isMarketOpenNow } from '@/lib/markets'
 import type { Interval } from '@/lib/types'
-
-// A 股交易时段(北京时间):09:30–11:30 / 13:00–15:00,周一至周五
-function isAshareTradingNow(): boolean {
-  const now = new Date()
-  const beijing = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }))
-  const day = beijing.getDay()
-  if (day === 0 || day === 6) return false
-  const minutes = beijing.getHours() * 60 + beijing.getMinutes()
-  return (minutes >= 9 * 60 + 30 && minutes <= 11 * 60 + 30)
-    || (minutes >= 13 * 60 && minutes <= 15 * 60)
-}
 
 export default function SymbolPage({ params }: { params: { code: string } }) {
   const symbol = decodeURIComponent(params.code)
@@ -65,8 +54,9 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
     () => fetchBars(symbol, interval, days),
     {
       refreshInterval: () => {
-        if (interval === '1m') return isAshareTradingNow() ? 60_000 : 0
-        if (isIntraday) return 60_000
+        // 1m 分时 + 其他 intraday: 仅当本市场盘中才轮询, 否则停 (cache 也不会变)
+        if (interval === '1m') return isMarketOpenNow(effectiveMarket) ? 60_000 : 0
+        if (isIntraday) return isMarketOpenNow(effectiveMarket) ? 60_000 : 0
         return 0
       },
       revalidateOnFocus: interval === '1m',
@@ -145,7 +135,7 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
   const { data: live1m } = useSWR(
     isKlineMode ? `bars:${symbol}:1m:1` : null,
     () => fetchBars(symbol, '1m', 1),
-    { refreshInterval: 30_000 },
+    { refreshInterval: () => isMarketOpenNow(effectiveMarket) ? 30_000 : 0 },
   )
   const livePrice: number | null = useMemo(() => {
     if (!live1m || live1m.bars.length === 0) return null

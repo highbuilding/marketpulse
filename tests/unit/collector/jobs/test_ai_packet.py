@@ -12,6 +12,12 @@ from core.services.ai_market_service import AIPacket
 from apps.collector.jobs.ai_packet import packet_to_dict, refresh_ai_packet
 
 
+@pytest.fixture(autouse=True)
+def _force_session_open(monkeypatch):
+    import core.domain.market_sessions as ms
+    monkeypatch.setattr(ms, "is_market_session_open", lambda *a, **kw: True)
+
+
 @pytest.fixture
 async def cache():
     fake = fakeredis.aioredis.FakeRedis(decode_responses=False)

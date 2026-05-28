@@ -29,12 +29,16 @@ async def refresh_market_top(
 ) -> None:
     """拉一次涨跌榜并写 cache。失败仅 warning, 不抛。
 
-    非交易日直接跳过 — 避免节假日打 em 接口浪费配额 + 加剧反爬风险。
+    非交易日 + 非 session 时段跳过 — 避免节假日/夜里打 em 接口浪费配额。
     """
     from core.domain.market_calendar import is_trading_day
+    from core.domain.market_sessions import is_market_session_open
 
     if not is_trading_day(market):
         log.debug("market_top.skip_non_trading_day", market=market)
+        return
+    if not is_market_session_open(market):
+        log.debug("market_top.skip_off_session", market=market)
         return
 
     try:

@@ -9,6 +9,15 @@ log = structlog.get_logger(__name__)
 
 
 async def pull_north_flow_job(svc: FundFlowService) -> None:
+    """A 股北向资金, 仅交易日 session 时段拉。"""
+    from core.domain.market_calendar import is_trading_day
+    from core.domain.market_sessions import is_market_session_open
+    if not is_trading_day("ashare"):
+        log.debug("north_flow.skip_non_trading_day")
+        return
+    if not is_market_session_open("ashare"):
+        log.debug("north_flow.skip_off_session")
+        return
     try:
         await svc.pull_north_flow()
         log.info("north_flow.pulled")
@@ -19,6 +28,15 @@ async def pull_north_flow_job(svc: FundFlowService) -> None:
 async def pull_watchlist_symbol_flow_job(
     ff: FundFlowService, wl: WatchlistService,
 ) -> None:
+    """关注列表 symbol 资金流, 仅 A 股交易 session 时段拉。"""
+    from core.domain.market_calendar import is_trading_day
+    from core.domain.market_sessions import is_market_session_open
+    if not is_trading_day("ashare"):
+        log.debug("symbol_flow.skip_non_trading_day")
+        return
+    if not is_market_session_open("ashare"):
+        log.debug("symbol_flow.skip_off_session")
+        return
     symbols = await wl.dynamic_universe()
     pulled = 0
     for s in symbols:
