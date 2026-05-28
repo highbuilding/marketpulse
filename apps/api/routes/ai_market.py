@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime, timezone
 from typing import Any
 
+import structlog
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from apps.api.deps import get_ai_market_service
-from core.services.ai_market_service import AIMarketService
+from apps.api.deps import get_redis_cache
+from core.cache import keys
+from core.cache.redis_client import RedisCache
 from core.services.market_query import RankRow
 
+log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api/ai", tags=["ai-market"])
 
 
@@ -77,6 +81,12 @@ class IndexStrengthDTO(BaseModel):
     growth_vs_large_pct: float | None
 
 
+class AIPacketMeta(BaseModel):
+    stale: bool = False
+    reason: str | None = None
+    fresh_at: str | None = None
+
+
 class AIPacketResponse(BaseModel):
     generated_at: str
     market: str
@@ -91,36 +101,54 @@ class AIPacketResponse(BaseModel):
     events: list[AIPacketEventDTO]
     ai_brief: dict[str, Any]
     degraded: list[str]
+    meta: AIPacketMeta = AIPacketMeta()
+
+
+def _empty_response(market: str, reason: str) -> AIPacketResponse:
+    return AIPacketResponse(
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        market=market,
+        indices=[],
+        breadth=MarketBreadthDTO(
+            total=0, advancers=0, decliners=0, flat=0,
+            up_limit=0, down_limit=0, total_amount=0.0,
+            up_ratio=0.0, down_ratio=0.0, net_width=0,
+        ),
+        top_gainers=[], top_losers=[],
+        hot_sectors=[], weak_sectors=[],
+        watchlist=[],
+        index_strength=IndexStrengthDTO(
+            ranking=[], small_vs_large_pct=None, growth_vs_large_pct=None,
+        ),
+        events=[], ai_brief={}, degraded=[],
+        meta=AIPacketMeta(stale=True, reason=reason),
+    )
 
 
 @router.get("/ashare/market-packet", response_model=AIPacketResponse)
 async def ashare_market_packet(
-    svc: AIMarketService = Depends(get_ai_market_service),
+    cache: RedisCache = Depends(get_redis_cache),
 ) -> AIPacketResponse:
-    packet = await svc.build_ashare_packet()
+    """A 股 AI 大盘数据包 — 直读 Redis cache,无缓存返回 stale 兜底。"""
+    payload = await cache.get_msgpack(keys.cache_market_ai_packet("ashare"))
+    if payload is None:
+        log.info("ai_packet.cache_miss", market="ashare")
+        return _empty_response("ashare", "warming_up")
+
+    meta_in = payload.get("meta", {})
     return AIPacketResponse(
-        generated_at=packet.generated_at.isoformat(),
-        market=packet.market,
-        indices=[AIPacketSymbolDTO(**asdict(row)) for row in packet.indices],
-        breadth=MarketBreadthDTO(**asdict(packet.breadth)),
-        top_gainers=[_rank_dto(row) for row in packet.top_gainers],
-        top_losers=[_rank_dto(row) for row in packet.top_losers],
-        hot_sectors=[AIPacketSectorDTO(**asdict(row)) for row in packet.hot_sectors],
-        weak_sectors=[AIPacketSectorDTO(**asdict(row)) for row in packet.weak_sectors],
-        watchlist=[AIPacketSymbolDTO(**asdict(row)) for row in packet.watchlist],
-        index_strength=IndexStrengthDTO(**asdict(packet.index_strength)),
-        events=[AIPacketEventDTO(**asdict(row)) for row in packet.events],
-        ai_brief=packet.ai_brief,
-        degraded=packet.degraded,
-    )
-
-
-def _rank_dto(row: RankRow) -> AIPacketRankDTO:
-    return AIPacketRankDTO(
-        symbol=row.symbol,
-        name=row.name,
-        price=row.price,
-        change_pct=row.change_pct,
-        volume=row.volume,
-        amount=row.amount,
+        generated_at=payload["generated_at"],
+        market=payload["market"],
+        indices=[AIPacketSymbolDTO(**row) for row in payload.get("indices", [])],
+        breadth=MarketBreadthDTO(**payload["breadth"]),
+        top_gainers=[AIPacketRankDTO(**row) for row in payload.get("top_gainers", [])],
+        top_losers=[AIPacketRankDTO(**row) for row in payload.get("top_losers", [])],
+        hot_sectors=[AIPacketSectorDTO(**row) for row in payload.get("hot_sectors", [])],
+        weak_sectors=[AIPacketSectorDTO(**row) for row in payload.get("weak_sectors", [])],
+        watchlist=[AIPacketSymbolDTO(**row) for row in payload.get("watchlist", [])],
+        index_strength=IndexStrengthDTO(**payload["index_strength"]),
+        events=[AIPacketEventDTO(**row) for row in payload.get("events", [])],
+        ai_brief=payload.get("ai_brief", {}),
+        degraded=payload.get("degraded", []),
+        meta=AIPacketMeta(stale=False, fresh_at=meta_in.get("fresh_at")),
     )

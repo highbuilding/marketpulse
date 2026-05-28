@@ -331,3 +331,25 @@ def attach_market_top_job(
         misfire_grace_time=30,
     )
     log.info("scheduler.market_top_attached")
+
+
+def attach_ai_packet_job(
+    sched: AsyncIOScheduler,
+    *, ai_market, cache,
+) -> None:
+    """A 股 AI 大盘数据包每 60s 预聚合 → cache:market:ashare:ai_packet。
+
+    替代 /api/ai/ashare/market-packet 路由的同步 build_ashare_packet 调用
+    (内部多次 ak_call: spot_em + sector_em + sector_constituents + ...)。
+    """
+    from apps.collector.jobs.ai_packet import refresh_ai_packet
+
+    async def _job():
+        await refresh_ai_packet(svc=ai_market, cache=cache)
+
+    sched.add_job(
+        _leader_gated(_job), IntervalTrigger(seconds=60),
+        id="ai_packet:ashare", max_instances=1, coalesce=True,
+        misfire_grace_time=30,
+    )
+    log.info("scheduler.ai_packet_attached")
