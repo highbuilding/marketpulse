@@ -46,6 +46,9 @@
 - 2026-05-27 ✅ Plan 3 完成:api 全部读 cache(0 ak_call)+ 前端 stale 染灰 + Plan 1/2 退化全修。spec §0.2 中 4 个症状(K 线分时图慢/大盘慢/重复 K 线慢/分时 500)全部消除。
 - 2026-05-28 ✅ Plan 3 后续 hotfix(A/B/C):/top + /chip_summary + /ai/market-packet 走 cache,**apps/api/ 真正 0 ak_call(直接 + 间接)**。15 新单测,339 total passing。
 - 2026-05-28 ✅ **交易日历集成**(exchange_calendars):tick/index_minute/market_top/ai_packet 4 个高频 job 接入 `is_trading_day(market)`, A/HK/US 各自识别节假日 + 调休。节假日 ~30% sina + ~50% em 调用节流, 351 total tests passing。
+- 2026-05-28 ✅ **大盘 IndexCard 扩展字段**(全市场 market_extras): A 股 8 指数显示北向资金净流入 + 成交额 + 同比基线; 美股新增 SPY/QQQ/DIA ETF 代理(Alpaca + IEX feed)显示 prev_close + amount(亿美元)。修复 prev_close 涨跌幅计算 bug(原用首点跳空缺口算)。spec: docs/superpowers/specs/2026-05-28-market-index-extended-design.md
+  - **港股 IndexCard 仍未实装**(原计划 Plan B 候选): `/api/indices/HSI.HK/minute` 等仍返 `stale=true, reason="hk_index_collector_pending"`。 `stock_hk_index_spot_em` 不存在 + akshare 内未发现现成接口, 需要重新调研数据源
+  - **Crypto IndexCard 暂搁置**: 老 `apps/collector/jobs/crypto_index_minute.py` 已删除,coingecko 限频严重(429),需要切 Binance Spot API 或换源
 
 ### Plan 3 后发现的 service 层 ak_call 间接调用 — ✅ 已全部修复(2026-05-28)
 

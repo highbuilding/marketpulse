@@ -267,7 +267,8 @@ log.info("signal.scan_new", symbol=sym, interval=iv, new=n, total=len(records))
 |---|---|---|---|---|
 | **A 股 quote** | collector tick_snapshot(sina HTTP 直连,**不经 ak_call**) | api /quote | 10s | `cache:quote:ashare:*` |
 | **美股 quote** | collector tick_snapshot(Alpaca latest_quote) | api /quote | 10s | `cache:quote:us:*` |
-| **8 大指数 5m 序列** | collector index_minute job | api /indices/{s}/minute | 30s | `cache:index:*:minute:1` |
+| **A 股 8 指数 5m 序列**(prev_close + market_extras) | collector index_minute job | api /indices/{s}/minute | 30s | `cache:index:*:minute:1` |
+| **美股 ETF 大盘 SPY/QQQ/DIA 5m**(prev_close + amount) | collector us_index_minute job(Alpaca + ETF 代理) | api /indices/{SPY|QQQ|DIA}/minute | 60s | `cache:index:*:minute:1` |
 | **大盘聚合** | collector market_dashboard job | api /markets/{m}/dashboard | 60s | `cache:market:{m}:dashboard` |
 | **涨跌幅榜** | collector market_top job | api /markets/{m}/top | 60s | `cache:market:{m}:top` |
 | **AI 大盘** | collector ai_packet job | api /ai/ashare/market-packet | 60s | `cache:market:ashare:ai_packet` |
@@ -381,8 +382,9 @@ grep -c "ak_call.banned_signature\|breaker.opened" /tmp/collector.log  # 异常�
 
 - **进程拆分已完成**:collector(8788)+ api(8787)+ redis(6379,docker)+ web(3000)
 - **apps/api/ 真正 0 ak_call**(直接 + 通过 service 间接)— 一切读路径走 Redis cache
+- **大盘 IndexCard market_extras 已接入**(2026-05-28):A 股 8 指数显示北向资金净流入 + 成交额 + 同比;美股 SPY/QQQ/DIA ETF 代理显示 prev_close + amount (亿美元)。Crypto / HK 暂未实装
 - **HK 指数 collector job 暂未实装** — `/api/indices/HSI.HK/minute` 等返回 `stale=true, reason="hk_index_collector_pending"`,Plan 4 候选
-- **Crypto coingecko 现在限流**(HTTP 429),`tick:crypto` 大量 failed — adapter 改 Binance Spot API 在 TODO
+- **Crypto IndexCard 暂搁置** — 老 `crypto_index_minute.py` 已删除,coingecko 429 限频,后续考虑 Binance Spot API
 - **CD 信号 1d 有时连续几天无新信号**:不是 bug,公式特性(底/顶背离低频事件)
 - **scheduler 每 10s 读一次 sqlite 拿 watchlist**:浪费但单读 <1ms 可忽略
 - **`acknowledged` 字段** 后端建好但 UI 没用:死代码,留待"已读"功能或删
