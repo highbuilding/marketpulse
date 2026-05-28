@@ -31,11 +31,22 @@ class IndexMeta(BaseModel):
     fresh_at: str | None = None
 
 
+class MarketExtras(BaseModel):
+    """大盘附加字段。任一字段为 None → 前端整行隐藏。"""
+    fund_inflow: float | None = None        # 北向 / 南向 净流入(亿,正=流入)
+    fund_inflow_label: str | None = None    # "北向" / "南向" / None
+    amount: float | None = None              # 累计成交额(亿,本币)
+    amount_unit: str | None = None           # "亿元" / "亿港元" / "亿美元" / "亿USDT"
+    amount_ratio: float | None = None        # 今日 / 同时段基线 - 1.0
+
+
 class IndexMinuteResponse(BaseModel):
     symbol: str
     name: str
     granularity: str  # "5m" 或 "1d"
+    prev_close: float | None = None  # 昨收, 前端算今日涨跌幅基准
     points: list[MinutePoint]
+    market_extras: MarketExtras = MarketExtras()
     meta: IndexMeta = IndexMeta()
 
 
@@ -78,10 +89,13 @@ async def _ashare_index_5min(symbol: str, name: str, *, days: int, cache) -> Ind
         )
     points = [MinutePoint(**p) for p in payload.get("points", [])]
     fresh_at = payload.get("meta", {}).get("fresh_at")
+    me_dict = payload.get("market_extras") or {}
     return IndexMinuteResponse(
         symbol=symbol, name=name,
         granularity=payload.get("granularity", "5m"),
+        prev_close=payload.get("prev_close"),
         points=points,
+        market_extras=MarketExtras(**me_dict),
         meta=IndexMeta(stale=False, fresh_at=fresh_at),
     )
 
