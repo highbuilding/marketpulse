@@ -78,11 +78,14 @@ async def refresh_one_index(symbol: str, *, cache: RedisCache) -> None:
 async def refresh_all_indices(cache: RedisCache) -> None:
     """循环刷新 8 个指数。单条失败不影响后续。
 
-    非交易时段 (BJT 09:00-16:00 之外) / 周末跳过 — 避免无意义 sina 调用。
+    非 A 股交易日(周末/法定节假日)直接跳过, 交易日只在 BJT 09:00-16:00 内跑。
+    避免无意义 sina 调用。
     """
+    from core.domain.market_calendar import is_trading_day
+
     now_bjt = datetime.now(_CN_TZ)
-    if now_bjt.weekday() >= 5:  # 周末 (Mon=0, Sat=5, Sun=6)
-        log.debug("index_minute.skip_weekend")
+    if not is_trading_day("ashare", now_bjt):
+        log.debug("index_minute.skip_non_trading_day", date=str(now_bjt.date()))
         return
     if not (9 <= now_bjt.hour < 16):
         log.debug("index_minute.skip_off_hours", hour=now_bjt.hour)

@@ -27,7 +27,16 @@ _CACHE_TTL_S = 180  # 60s 写 + 180s TTL = 容许偶发 ak 失败
 async def refresh_market_top(
     market: str, *, svc: MarketQueryService, cache: RedisCache, limit: int = 10,
 ) -> None:
-    """拉一次涨跌榜并写 cache。失败仅 warning, 不抛。"""
+    """拉一次涨跌榜并写 cache。失败仅 warning, 不抛。
+
+    非交易日直接跳过 — 避免节假日打 em 接口浪费配额 + 加剧反爬风险。
+    """
+    from core.domain.market_calendar import is_trading_day
+
+    if not is_trading_day(market):
+        log.debug("market_top.skip_non_trading_day", market=market)
+        return
+
     try:
         if market == "ashare":
             gainers = await svc.top_ashare("desc", limit)

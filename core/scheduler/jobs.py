@@ -44,6 +44,13 @@ async def tick_snapshot_once(
     watchlist: WatchlistService,
     redis_cache: RedisCache | None = None,
 ) -> None:
+    # 非交易日跳过 — sina/em/yfinance 在节假日返回历史/空数据,无意义打接口
+    # crypto 永远 trading,自动放行
+    from core.domain.market_calendar import is_trading_day
+    if not is_trading_day(market):
+        log.debug("tick.skip_non_trading_day", market=market)
+        return
+
     adapter = registry.get(market)
     base = set(registry.universe(market)) | set(registry.index_symbols(market))
     # 关注列表里属于本 market 的标的也带上, 让用户加的任意 symbol 都能拿到 quote
