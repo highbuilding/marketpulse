@@ -2,12 +2,12 @@
 
 为什么必须收口:
 - akshare 的 sina 系接口内部用 py_mini_racer 解 JS, V8 析构有 race。
-- 我们靠 (1) 子进程隔离 (2) 全局 asyncio.Lock 串行化 + 收口减少入口面 (3) 三层中间件
+- 我们靠 (1) 子进程隔离 (彻底根治) (2) 三层中间件 (breaker/ratelimit/outlet)
   来兜住稳定性。
 
 约束:
 - 项目里不再允许 `import akshare` + 直接 `await asyncio.to_thread(ak.xxx, ...)`。
-- 所有调用都要走 `ak_call("xxx", ...)`, 锁/中间件/日志会自动加上。
+- 所有调用都要走 `ak_call("xxx", ...)`, 中间件/日志会自动加上。
 - caller 字符串便于诊断。
 
 三层中间件 (collector 启动时 ak_middleware.setup() 注入):
@@ -16,6 +16,9 @@
 3. OutletPool — 出口管理, env_extras (HTTP_PROXY 等) 注入子进程
 
 未注入中间件时 (api 进程 / 测试) ak_call 行为等价 Plan 1 末尾版本。
+
+历史: 2026-05-28 之前曾有进程级 asyncio.Lock 包住整个 ak_call 来防 V8 race,
+子进程化后已无意义 (主进程根本没 V8 实例), 反而让 cron 互相排队 → 已移除.
 """
 from __future__ import annotations
 
@@ -33,7 +36,6 @@ import structlog
 from core.integrations import ak_middleware
 from core.integrations.outlets import Outcome
 from core.integrations.response_eval import evaluate_response
-from core.services._locks import acquire as _racer_acquire
 
 log = structlog.get_logger(__name__)
 _DEFAULT_TIMEOUT_S = float(os.getenv("AK_CALL_TIMEOUT_S", "25"))
@@ -93,47 +95,46 @@ async def ak_call(
         lease = await middleware.outlet_pool.acquire()
         env_extras = dict(lease.env)
 
-    async with _racer_acquire(f"ak:{label}"):
-        started = time.monotonic()
-        timeout_s = ak_timeout_s or _DEFAULT_TIMEOUT_S
-        log.info("ak_call.start", func=func_name, caller=label, source=source,
-                 outlet=lease.outlet_id if lease else None,
-                 timeout_s=timeout_s, args_count=len(args),
-                 kwargs=_safe_kwargs(kwargs))
-        outcome: Outcome
-        result: Any = None
-        try:
-            result = await asyncio.to_thread(
-                _run_ak_in_child_process,
-                func_name, args, kwargs, timeout_s, env_extras,
-            )
-            outcome = evaluate_response(result, source=source)
-        except subprocess.TimeoutExpired:
-            outcome = Outcome.timeout
-            await _report_all(middleware, source, lease, outcome)
-            elapsed_ms = round((time.monotonic() - started) * 1000, 1)
-            log.warning("ak_call.timeout", func=func_name, caller=label,
-                        source=source, elapsed_ms=elapsed_ms)
-            raise
-        except Exception as e:
-            outcome = Outcome.parse_error
-            await _report_all(middleware, source, lease, outcome)
-            elapsed_ms = round((time.monotonic() - started) * 1000, 1)
-            log.warning("ak_call.failed", func=func_name, caller=label,
-                        source=source, elapsed_ms=elapsed_ms,
-                        error_type=type(e).__name__, error=str(e))
-            raise
-
+    started = time.monotonic()
+    timeout_s = ak_timeout_s or _DEFAULT_TIMEOUT_S
+    log.info("ak_call.start", func=func_name, caller=label, source=source,
+             outlet=lease.outlet_id if lease else None,
+             timeout_s=timeout_s, args_count=len(args),
+             kwargs=_safe_kwargs(kwargs))
+    outcome: Outcome
+    result: Any = None
+    try:
+        result = await asyncio.to_thread(
+            _run_ak_in_child_process,
+            func_name, args, kwargs, timeout_s, env_extras,
+        )
+        outcome = evaluate_response(result, source=source)
+    except subprocess.TimeoutExpired:
+        outcome = Outcome.timeout
         await _report_all(middleware, source, lease, outcome)
         elapsed_ms = round((time.monotonic() - started) * 1000, 1)
-        if outcome == Outcome.banned:
-            log.warning("ak_call.banned_signature", func=func_name, caller=label,
-                        source=source, elapsed_ms=elapsed_ms)
-            raise RuntimeError(f"banned signature detected for source={source}")
-        log.info("ak_call.success", func=func_name, caller=label, source=source,
-                 outcome=outcome.value, elapsed_ms=elapsed_ms,
-                 result=_result_summary(result))
-        return result
+        log.warning("ak_call.timeout", func=func_name, caller=label,
+                    source=source, elapsed_ms=elapsed_ms)
+        raise
+    except Exception as e:
+        outcome = Outcome.parse_error
+        await _report_all(middleware, source, lease, outcome)
+        elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+        log.warning("ak_call.failed", func=func_name, caller=label,
+                    source=source, elapsed_ms=elapsed_ms,
+                    error_type=type(e).__name__, error=str(e))
+        raise
+
+    await _report_all(middleware, source, lease, outcome)
+    elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+    if outcome == Outcome.banned:
+        log.warning("ak_call.banned_signature", func=func_name, caller=label,
+                    source=source, elapsed_ms=elapsed_ms)
+        raise RuntimeError(f"banned signature detected for source={source}")
+    log.info("ak_call.success", func=func_name, caller=label, source=source,
+             outcome=outcome.value, elapsed_ms=elapsed_ms,
+             result=_result_summary(result))
+    return result
 
 
 async def _report_all(middleware, source, lease, outcome) -> None:
