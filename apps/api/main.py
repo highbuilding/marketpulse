@@ -10,6 +10,10 @@ load_dotenv()
 from core.integrations.proxy_setup import setup_process_proxy
 setup_process_proxy()
 
+# 标记 api 进程 BarRepo 为 read-only, 避免与 collector 争 DuckDB 写锁
+import os as _os
+_os.environ["MARKETPULSE_BARREPO_READONLY"] = "1"
+
 # 必须在其他 import 之前装好日志, 让 startup 期任何错误也能落到 data/logs/
 from core.integrations.logging_setup import setup_logging
 setup_logging(process_name="api")

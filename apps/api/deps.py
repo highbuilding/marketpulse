@@ -44,8 +44,13 @@ def get_quote_cache() -> QuoteCache:
 
 @lru_cache(maxsize=1)
 def get_bar_repo() -> BarRepo:
-    # api 进程 read_only — 避免与 collector 争 DuckDB 写锁
-    repo = BarRepo(str(_DATA / "bars.duckdb"), read_only=True)
+    # 多进程共用 deps 时, 用 env 决定 mode:
+    # api 进程 set MARKETPULSE_BARREPO_READONLY=1 (避免与 collector 争 DuckDB 写锁);
+    # collector / warmup / repair 不设置 → 默认 read-write.
+    read_only = os.getenv("MARKETPULSE_BARREPO_READONLY", "0") == "1"
+    repo = BarRepo(str(_DATA / "bars.duckdb"), read_only=read_only)
+    if not read_only:
+        repo.init()
     return repo
 
 
