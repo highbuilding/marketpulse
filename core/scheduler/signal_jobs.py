@@ -21,6 +21,12 @@ async def scan_cd_job(
     notify_service: NotificationService | None,
     *, interval: str, market_filter: str | None = None,
 ) -> None:
+    # cron 用 mon-fri 排除周末, 但识别不了春节/独立日/感恩节等. 函数体再判一次交易日.
+    if market_filter:
+        from core.domain.market_calendar import is_trading_day
+        if not is_trading_day(market_filter):
+            log.debug("cd.scan_skip_non_trading_day", market=market_filter, interval=interval)
+            return
     symbols = await watchlist.dynamic_universe()
     if not symbols:
         log.debug("cd.scan_skipped_empty_watchlist", interval=interval,
@@ -47,6 +53,11 @@ async def fetch_intraday_job(
     """只入库 raw intraday(不扫信号)。用于 5m 这种 is_signal=False 但需要
     K 线展示的周期, 让 watchlist 内标的 5m 桶能跟得上 (scan cron 不覆盖它)。
     """
+    # 同 scan_cd_job: cron mon-fri 不识别节假日, 函数体再判一次
+    from core.domain.market_calendar import is_trading_day
+    if not is_trading_day(market_filter):
+        log.debug("fetch.skip_non_trading_day", market=market_filter, interval=interval)
+        return
     symbols = await watchlist.dynamic_universe()
     symbols = [s for s in symbols if infer_market(s) == market_filter]
     if not symbols:
