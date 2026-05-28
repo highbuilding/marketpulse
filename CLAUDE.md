@@ -9,88 +9,95 @@
 **MarketPulse** — 本地运行的多市场行情监控 + 策略指标平台。覆盖 A 股 / 港股 / 美股 / Crypto。**决策支持工具,不做执行**。
 
 - **用户**:zhonghuai(中国境内,A 股口径,**默认中文沟通**)
-- **运行方式**:`make dev` 一键启动,后端 FastAPI(8787)+ 前端 Next.js(3000),单机
-- **数据底盘**:DuckDB(K 线列存)+ SQLite(state/signals/watchlist,已开 WAL)
-- **当前进度**:Plan 1 + Plan 2 + Plan 2.5(CD 信号扩展)已交付。`docs/superpowers/` 是设计文档源头,`docs/TODO.md` 是未实施清单
+- **运行方式**:`make dev` 一键启动,**三进程架构**(collector + api + redis + web),honcho 拉起
+- **数据底盘**:Redis(热缓存 + bus)+ DuckDB(K 线列存)+ SQLite(state / signals / watchlist)
+- **当前进度**:Plan 1 + 2 + 3 + 后续 hotfix + 交易日历集成都已交付。`docs/superpowers/` 是设计源头,`docs/TODO.md` 是未实施清单
 
 ---
 
-## 设计原则(spec 第 0 章提炼,所有决策都源自这五条)
+## 设计原则(spec 第 0 章,所有决策都源自这五条)
 
-1. **开源 + 免费优先** — akshare / yfinance / Binance WS,不上付费 API
-2. **优雅降级,不 Fail-Fast** — 缺任何源都能跑,UI 诚实标灰对应 tab
-3. **国内可用** — A/HK 优先 sina 通道,避开东财直连超时
+1. **开源 + 免费优先** — akshare / yfinance / Binance WS / Alpaca free,不上付费 API
+2. **优雅降级,不 Fail-Fast** — 缺任何源都能跑,UI 诚实标灰(`meta.stale=true`)对应卡片
+3. **国内可用** — A 股优先 sina 通道,避开东财直连超时
 4. **决策支持非执行** — 不做交易、不做模拟持仓、不做用户系统
 5. **单一可跑** — V1 不引入 Prometheus / Grafana / 多实例 / 告警
 
-> 当你在做技术选型或新增依赖时,**先对照这五条**。免费层够用就不要引入付费;能优雅降级就不要 fail-fast;能 SQLite 就不要 Postgres。
+> 选型或加依赖时**先对照这五条**。免费层够用就不要付费;能降级就不要 fail-fast;能 SQLite 就不要 Postgres。
 
 ---
 
-## 必读雷区(踩过的坑,真实代价说明)
+## 架构总览(2026-05-28 完成态)
 
-### 雷区 1:py_mini_racer 0.6.0 V8 析构 race(代价:整个 worker SIGABRT)
-
-**症状**:`/tmp/api.log` 末尾出现 `[FATAL:address_pool_manager.cc(67)] Check failed: !pool->IsInitialized().` + `libmini_racer.dylib` 栈。worker 死,端口请求全 `ECONNRESET`。**不是网络问题**。
-
-**根因**:py_mini_racer 0.6.0(PyPI 最新版,**项目已停更**)在 macOS arm64 上 V8 实例析构有 race,**即使顺序调用也概率性 abort**。akshare 大量 sina 系接口内部用它(`stock_zh_a_minute` / `stock_zh_a_spot` / `stock_sector_*` / `fund_etf_*sina` / `stock_zh_index_*`)。
-
-**强制约束**:**所有 akshare 调用经 `core/integrations/akshare.py::ak_call(name, *args, caller, **kwargs)`**。不允许任何业务文件 `import akshare`。
-
-```python
-# ✅ 正确
-from core.integrations.akshare import ak_call
-df = await ak_call(
-    "stock_zh_a_minute",
-    symbol=sina_code, period=freq, adjust="qfq",
-    caller=f"ashare.fetch_intraday:{symbol}:{freq}m",
-)
-
-# ❌ 禁止 — 即使加了锁也是埋雷
-import akshare as ak
-async with mini_racer_lock:
-    df = await asyncio.to_thread(ak.stock_zh_a_minute, ...)
+```
+┌─────────────────────────────────────────────────────────┐
+│  apps/collector/        ← 所有 ak_call / 写 DB / 写 cache │
+│  ├─ APScheduler cron jobs (tick / index_minute / top /   │
+│  │   ai_packet / dashboard / cd:* / fund_flow / chip)    │
+│  ├─ leader 抢 Redis SETNX 锁,只 leader 跑 cron          │
+│  └─ ak_call 经三层中间件: Outlet → Ratelimit → Breaker  │
+│         │                                                │
+│         ▼ 写                                             │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │  Redis (hot cache + Streams bus + state + lock)  │   │
+│  │  • cache:quote/index/market/bars/chip/fundflow   │   │
+│  │  • bus:quote.tick / bars.updated / refill_request│   │
+│  │  • state:leader/source/outlet/inflight           │   │
+│  │  • ratelimit:source:sina|em|ths                  │   │
+│  └──────────────────────────────────────────────────┘   │
+│         ▲ 读 (绝不打 ak_call)                            │
+│         │                                                │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │  apps/api/  ← FastAPI 8787 — 读路径专属          │   │
+│  │  - 所有路由读 cache,miss 返回 meta.stale=true   │   │
+│  │  - DB fallback(Redis 挂时直读 DuckDB/SQLite)   │   │
+│  └──────────────────────────────────────────────────┘   │
+│         ▲                                                │
+│         │ HTTP                                           │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │  apps/web/  Next.js 3000 — StaleBadge 染灰      │   │
+│  └──────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
 ```
 
-**验证收口完整性**:
+**进程职责硬约束**:
+- **collector** 唯一允许 `ak_call`、写 DB、写 Redis cache、发 bus
+- **api** **绝对禁止** `ak_call`、写 K 线 bars、抢 mini_racer 锁
+- **redis** 不持久化历史(那是 DuckDB 的事),仅作 cache + 总线
+
+`grep -rn "ak_call" apps/api/` **必须只命中注释字符串**。
+
+---
+
+## 必读雷区(踩过的坑)
+
+### 雷区 1:py_mini_racer V8 race(已根治,知道历史就行)
+
+**症状**:`SIGABRT` + `libmini_racer.dylib` 栈 → worker 死,`ECONNRESET`。
+**根治措施**(Plan 1+2):
+- akshare 调用全走 `ak_call` → `_run_ak_in_child_process` **子进程隔离**,子进程崩主进程不受影响
+- 三层中间件 Outlet/Ratelimit/Breaker 包住 ak_call,异常自动熔断
+- 全局 `_racer_acquire` 锁仍保留作 watchdog 入口(>60s dump 线程栈到 `fault.log`)
+
+**今天的约束**:
+- 不允许任何业务文件 `import akshare`,走 `core/integrations/akshare.py::ak_call`
+- **api 路由不允许任何 ak_call**(直接 + 通过 service 间接)。`grep -rn "ak_call" apps/api/` 应为空
+
 ```bash
+# 验证收口
 grep -rn --include="*.py" "^import akshare\|^from akshare" core apps tests
-# 期望:仅命中 core/integrations/akshare.py
+# 期望: 仅命中 core/integrations/akshare.py + akshare_worker.py
 ```
 
-**排查命令**:`grep "racer\." /tmp/api.log | tail -20` 看最后一条 `caller=ak:xxx` 是谁触发。
+### 雷区 2:uvicorn `--reload` 不安全 + 服务必须配套重启
 
-**根治方案**(未做,在 `docs/TODO.md` 高代价区):用 ProcessPoolExecutor 把 ak 隔离到子进程,子进程崩主进程不受影响。
-
-### 雷区 2:uvicorn `--reload` 不安全(代价:每次 reload 都可能崩)
-
-reload 时 V8 状态污染会触发 SIGABRT。`Makefile dev` 已去掉 `--reload`。**代码变更手动重启**:
+reload 时 V8 状态污染会 SIGABRT。**代码变更手动重启**,模板:
 
 ```bash
-pkill -9 -f "apps.collector.main"; pkill -9 -f "uvicorn apps.api.main:app"; sleep 2
-cd /Users/xiangrong/stock/marketpulse
-docker compose -f docker-compose.dev.yml up -d redis
-nohup bash -c '. .venv/bin/activate && python -m apps.collector.main' >> /tmp/collector.log 2>&1 &
-disown
-nohup bash -c '. .venv/bin/activate && uvicorn apps.api.main:app --port 8787' >> /tmp/api.log 2>&1 &
-disown
-sleep 8 && tail -5 /tmp/api.log  # 看 "Application startup complete"
-```
-
-注意 `>>` 是 append 模式(早期用 `>` 覆盖,崩溃日志会丢失)。**事实源是 `data/logs/api.log`**(见雷区 6),`/tmp/api.log` 仅作 stdout 镜像。
-
-调试时**自己重启**,不要让用户手动操作(用户已明确说过)。
-
-**强制工作流(防"我以为它崩了"误判)**:
-干一段活前先 `pkill -9`,干完活后**统一重启一次**。中途不要让 API 服务停在挂掉状态去问用户问题或处理别的事 — 否则用户在浏览器看到"加载失败"会以为是新 bug,实际只是没重启。模板:
-
-```bash
-# 停服务 — 三方都要停 (collector / api 都跑了 ak_call 相关或读 Redis)
+# 停三方 (redis 不停,docker-compose 管它)
 pkill -9 -f "apps.collector.main" 2>/dev/null
 pkill -9 -f "uvicorn apps.api.main:app" 2>/dev/null
 sleep 2
-
-# Redis 一直跑(由 docker-compose 管理),平时不需要重启它
 
 # ... 干活、改代码、commit、跑测试 ...
 
@@ -105,234 +112,196 @@ curl -s -m 3 http://localhost:8787/api/health | grep -o '"status":"[^"]*"'
 curl -s -m 3 http://localhost:8788/health | grep -o '"status":"[^"]*"'
 ```
 
-**反模式**(已踩过,2026-05-20):e2e 测试 plan 末尾 `pkill -9` 收尾但忘了重启,16 分钟后用户报"加载失败",实际仅服务没起来。任何 task plan 里 `pkill` 一定要配套 nohup 重启。
+**反模式**(已踩):e2e 测试末尾 `pkill -9` 收尾但忘了重启 → 用户报"加载失败"实际是没起来。**任何 `pkill` 必须配套 nohup 重启**。
 
-**2026-05-27 之后**:scheduler 已搬到 collector 进程,任何重启 api 的操作都**不再影响采集**。但反之,collector 崩或重启会停掉所有 cron 任务,务必同步重启。`/tmp/collector.log` 是 collector 的 stdout,事实源仍是 `data/logs/api.log`(structlog 共用)。
+**自己重启不让用户动手**。`api` 重启不影响 `collector` 采集(Plan 1 拆进程后),`collector` 崩则停所有 cron 务必同步重启。
 
-### 雷区 3:bar 的时间戳约定(1d 踩坑历史:UI 一度显示早一天;intraday 富途口径)
+### 雷区 3:bar 时间戳约定(intraday 富途口径 + 1d BJT 自然日)
 
-**1d 约定**:adapter (`core/adapters/ashare.py:180`) 把 1d bar 的 `ts` normalize 为 **BJT 自然交易日 00:00**(= UTC `(D-1) 16:00`)。所以 ts=`2026-05-17T16:00Z` 表示 **交易日 5/18**(BJT 转换为 `5/18 00:00`)。`bjtDateKey(ts)` 直接得到正确交易日,**不需要任何偏移**。
-
-**Intraday 约定**(2026-05-22 起统一):**所有 intraday bar.ts = 该 bar close 时刻(本市场 wall-clock → UTC),1m 除外**。
-- 5m / 15m / 30m:adapter 出口处理,**不同源行为不同**:
-  - **sina (A 股)**: `day` 字段已是 close 时刻 → 直通,**不需要 +interval**
-  - **Alpaca (美股)**: `b.timestamp` 是 START → 出口 `+freq` 转 close
-  - **Binance (crypto)**: openTime 是 START → 出口 `+freq` 转 close (目前 crypto 无 fetch_intraday)
-- 60m / 4h:`core/services/intraday_aggregator.py::aggregate_intraday` 按 `core/domain/market_sessions.py` 的 SESSIONS + bucket_grid 切桶 (open, close]
+**1d**:`ts = BJT 自然交易日 00:00` (= UTC `(D-1) 16:00`)。`bjtDateKey(ts)` 直接得到交易日,**不需要偏移**。
+**Intraday(非 1m)**:`ts = bar close 时刻`(本市场 wall-clock → UTC):
+- sina (A 股) `day` 字段已是 close → 直通
+- Alpaca (美股) `b.timestamp` 是 START → 出口 `+freq` 转 close
+- 60m / 4h 走 `core/services/intraday_aggregator.py` 按 `market_sessions.SESSIONS` 切桶 `(open, close]`
 - 1m **不**改(详情页用,不入信号链路)
 
-原则:
-- 每个 session 内按目标 interval 网格切;60m/4h 末尾不足整 interval 自动成半棒(港股 11:30-12:00、美股 09:00-09:30 + 15:30-16:00)
-- 不同 session 之间硬断,不混合 bar
-- 5m / 15m / 30m 走 adapter 原生数据,在出口加 +interval 把 START → CLOSE,不走 aggregator
+**给未来 agent**:`bar_ts` 直接喂 `bjtDateKey` / `toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'})`,**前端零偏移**。adapter 切源若新源是 START 语义,在出口 `ts + interval` 转 CLOSE。
 
-**历史坑**:早期 `signal_time.ts::effectiveTsIso` 错误地假设 1d ts 是 sina 原始 "收盘日 16:00 UTC = BJT 次日 00:00",在前端做了 `-8h` 还原,反而把 5/18 显示成了 5/17。2026-05-18 已修复为直通(`effectiveTsIso` 改成 noop)。
-
-**给未来 agent**:
-- 任何 intraday(1m 除外)/ 1d 的 `bar_ts` 直接喂 `bjtDateKey` 或 `toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'})`,**不要在前端加任何偏移**
-- adapter 切源时新源若是 START 语义,记得在出口 `ts + interval` 转 CLOSE
-- 如果发现 60m / 4h bar 数与富途不一致,先确认是不是 SESSIONS 表里某市场 session 写错了,而不是去改 aggregator 逻辑
-- 如果发现 5m/15m/30m 触发时间显示错位,检查 adapter 出口的 `+interval` 是否漏掉
-
-### 雷区 4:directory bootstrap 跳过逻辑
-
-`apps/api/main.py` 启动期 `dir_svc.refresh_ashare()` 调 `stock_zh_a_spot`,该接口跑过后**污染 V8 状态**(进程后续任何 mini_racer 调用都 abort)。所以现在:**directory 表 < 100 行才刷新**,否则跳过。
-
-**副作用**:7042 条 symbol 列表停在首启动时间,新上市/改名股票永远查不到。属于 workaround,子进程隔离做完才能撤。
-
-### 雷区 5:FastAPI 路径参数顺序
+### 雷区 4:FastAPI 路径参数顺序
 
 ```python
-# ❌ 错:/profiles 会被 /{symbol}/profile 的 symbol 吃掉
+# ❌ /profiles 会被 /{symbol}/profile 吃掉
 @router.get("/{symbol}/profile")
 @router.get("/profiles")
 
-# ✅ 对:具体路径在前
+# ✅ 具体路径在前
 @router.get("/profiles")        # 先注册
 @router.get("/{symbol}/profile")
 ```
 
-`apps/api/routes/symbols.py` 里就有这个 trap,踩过。
+`apps/api/routes/symbols.py` 踩过。
 
-### 雷区 6:日志持久化与崩溃排查(2026-05-20 加固)
+### 雷区 5:日志持久化与崩溃排查
 
-**事实源**:`data/logs/api.log`(全量,rotation)、`data/logs/api-errors.log`(WARNING+)、`data/logs/fault.log`(SIGABRT/SIGSEGV C-level 线程栈)。**`/tmp/api.log` 仅作 stdout 镜像,重启 append 不丢**,但不要当事实源。
+**事实源**:`data/logs/api.log` / `api-errors.log`(WARNING+)/ `fault.log`(SIGABRT C 层栈)。`/tmp/api.log` 和 `/tmp/collector.log` 仅 stdout 镜像,**不是事实源**但因为 append 模式重启不丢。
 
-`core/integrations/logging_setup.py::setup_logging()` 在 `apps/api/main.py` 启动早期(`load_dotenv()` 之后)调一次,无需重复。`faulthandler` 用 fd 直写 fault.log,雷区 1 触发 SIGABRT 时 stdout buffer 来不及 flush 但 fault.log 仍能落盘。
+`core/integrations/logging_setup.py::setup_logging()` 在 collector + api 启动早期各调一次。`faulthandler` fd 直写 fault.log,V8 SIGABRT 时 stdout 来不及 flush 但 fault.log 仍落盘。
 
-**排查崩溃**:
 ```bash
-tail -100 data/logs/api-errors.log   # 看最后 warning/error
-tail -50 data/logs/fault.log          # 看 C 层崩溃栈(如有)
+tail -100 data/logs/api-errors.log   # 警告/错误
+tail -50 data/logs/fault.log          # C 层崩溃栈(若有)
+grep "ak_call.failed\|breaker.opened" /tmp/collector.log  # 中间件状态
 ```
 
 ---
 
-## 代码规范(项目特有,通用规范不重复)
+## 代码规范(项目特有)
 
 ### 规范 1:单一事实源(SSoT)收口表
 
-**新增任何概念前先看这张表,在 SSoT 内修改,不要散点写。**
+新增任何概念前**先看这张表,在 SSoT 内修改**。
 
-| 概念 | SSoT 位置 | 散点示例(已收口) |
-|---|---|---|
-| akshare 调用 | `core/integrations/akshare.py::ak_call` | adapter / service / route 5 处入口 |
-| Interval 元数据(lookback / bars_per_day / 是否信号 / crypto-only) | `core/domain/intervals.py::INTERVAL_CONFIG` | 后端 4 处 + 前端 3 处散点 |
-| 前端 Interval tab 配置 | `apps/web/lib/intervals.ts` | K 线 tab / 信号 tab / detail 详情页 tab |
-| 信号时间格式化 | `apps/web/lib/signal_time.ts` | 1d -8h 偏移、BJT 自然日切分 |
-| 信号表格 UI | `apps/web/components/SignalsTable.tsx` | 详情页 + 关注页公用 |
-| Mini-racer 全局锁 | `core/services/_locks.py::acquire` | **仅 ak_call 内部用,业务勿直接用** |
-| Symbol market 推断 | `core/domain/markets.py::infer_market` | route / scheduler / kline_service 4 处入口;前端镜像 `apps/web/lib/markets.ts::inferMarket` |
-| 优化清单 | `docs/TODO.md` | 跨会话单一来源,完成项划掉但不删 |
+| 概念 | SSoT 位置 |
+|---|---|
+| akshare 调用 | `core/integrations/akshare.py::ak_call` |
+| ak_call 三层中间件 | `core/integrations/{breaker,ratelimit,outlets/}.py` |
+| Redis key 命名 | `core/cache/keys.py`(所有 key 必须经此构造函数) |
+| Redis 客户端封装 | `core/cache/redis_client.py::RedisCache`(msgpack + key 校验) |
+| 交易日识别 | `core/domain/market_calendar.py::is_trading_day(market, when)` |
+| Interval 元数据 | `core/domain/intervals.py::INTERVAL_CONFIG` |
+| 前端 Interval tab | `apps/web/lib/intervals.ts` |
+| 信号时间格式化 | `apps/web/lib/signal_time.ts` |
+| 信号表格 UI | `apps/web/components/SignalsTable.tsx` |
+| Symbol market 推断 | `core/domain/markets.py::infer_market` + `apps/web/lib/markets.ts::inferMarket`(前端镜像) |
+| Stale 染灰 UI | `apps/web/components/StaleBadge.tsx` |
+| Leader 状态(单例) | `core/scheduler/leader_gate.py::set_leader/is_leader` |
+| 优化清单 | `docs/TODO.md`(跨会话单一事实源) |
 
-**反模式**:发现两个文件出现相似的 interval 列表 / 时间格式化逻辑 / 表格 JSX,立即抽到 SSoT。
+**反模式**:发现两个文件出现相似 interval 列表 / 时间格式化 / 表格 JSX,立即抽 SSoT。
 
-### 规范 2:Adapter Protocol 边界
+### 规范 2:Redis key 命名 4 大 namespace
 
-```python
-# core/adapters/base.py
-class MarketAdapter(Protocol):
-    market: str
-    async def fetch_snapshot(self, symbols) -> list[Quote]: ...
-    async def fetch_history(self, symbol, start, end) -> list[Bar]: ...
-    async def health(self) -> HealthStatus: ...
-```
-
-切源只改 adapter,**业务层不感知数据来源**。Service / Route / Job 永远通过 Adapter 调外部,不直接 `import akshare` / `import yfinance`(akshare 走 `ak_call`,yfinance 在 adapter 里包装)。
-
-### 规范 3:服务分层
+所有 key 必须经 `core/cache/keys.py` 构造函数,**禁止散点字符串拼接**。4 个 namespace:
 
 ```
-Route (薄,只做参数校验和 DTO)
-  → Service (业务逻辑、组合多个 repo/adapter)
-    → Repo (纯 DB 读写,返回 domain model)
-    → Adapter (纯外部 API,返回 domain model)
+cache:*       热缓存层 (强制 TTL)
+  cache:quote:{market}:{symbol}          90s
+  cache:index:{symbol}:minute:{days}     90s
+  cache:market:{m}:dashboard|top|ai_packet  120-240s
+  cache:bars:{m}:{s}:{interval}:tail     300s
+  cache:chip:{symbol}:{days}d            1800s
+
+state:*       状态/锁 (无 TTL or 长 TTL)
+  state:leader:collector                 15s(5s 续期)
+  state:source:{sina|em|ths}             breaker 状态
+  state:outlet:{id}                      banned_until
+  state:inflight:{key}                   防穿透
+
+bus:*         Redis Streams (MAXLEN 限内存)
+  bus:quote.tick / bars.updated / signal.new / source.status
+  bus:bars.refill_request                api → collector 按需补
+
+ratelimit:*   Lua 令牌桶
+  ratelimit:source:{sina|em|ths}
 ```
 
-**禁止**:Route 直接调 Repo 或 Adapter。Service 是必经层(即使只是一层 pass-through)。
+`keys.validate(key)` 在所有 `set_msgpack` / `get_msgpack` 调用前自动跑,unknown namespace 会 raise。
 
-例外:`/api/health`、纯查 / 纯只读列表的接口可以直接 Repo,但要在 router 文件顶部 docstring 标明。
+### 规范 3:Adapter Protocol + Service 分层
+
+```
+Route (薄,参数校验 + DTO)
+  → Service (业务逻辑,DB/cache 读写)
+    → Repo (纯 DB 读写) / RedisCache (纯 cache 读写)
+    → Adapter (纯外部 API,collector 才用)
+```
+
+**禁止**:Route 直接调 Repo 或 Adapter。Service 是必经层。
+**禁止**:api 进程的 Service 调用任何会触发 ak_call 的方法。统一用 `*_cache_only` 变体(如 `KLineService.get_bars_cache_only`、`ChipService.get_summary_cache_only`)。
 
 ### 规范 4:DB 引擎边界
 
-- **DuckDB(`data/bars.duckdb`)**:历史 K 线时间序列。列存压缩,大量读、追加写
-- **SQLite(`data/state.db`,WAL)**:关系数据 — watchlist / signals / sectors / fund_flow / symbol_directory
+- **Redis**:热缓存 + bus + 状态。**不持久化历史**
+- **DuckDB**(`data/bars.duckdb`):历史 K 线时间序列,列存压缩
+- **SQLite**(`data/state.db`,WAL):watchlist / signals / fund_flow / symbol_directory / notifications
 
-**禁止**跨引擎 join,在 Python 层做。如果发现需要频繁跨引擎 join,先思考是不是设计本身有问题。
+**禁止**跨 DuckDB/SQLite join,在 Python 层做。
 
-### 规范 5:错误处理基调
-
-参考 spec §6.1 故障矩阵 — **任何单点故障都不能让整个服务 502**。
+### 规范 5:错误处理 — 优雅降级不 Fail-Fast
 
 ```python
-# Service 层典型模式
+# 典型 service 模式
 async def scan_many(self, symbols, interval):
     total = 0
     for sym in symbols:
         try:
             total += await self.scan_symbol(sym, interval)
         except Exception as e:  # noqa: BLE001
-            log.warning("signal.scan_failed",
-                        symbol=sym, interval=interval, error=str(e))
+            log.warning("signal.scan_failed", symbol=sym, error=str(e))
     return total
 ```
 
-单条失败 → warning 日志 → 继续。**不要让一个 symbol 的失败把整个 batch 拖死**。
+api 路由 cache miss → 返回 `meta.stale=true` + 触发 `bus:bars.refill_request`,**绝不**当场 ak_call。
 
-### 规范 6:日志结构化
-
-用 structlog,字段统一 `event` + `kv`:
+### 规范 6:日志结构化(structlog,event + kv)
 
 ```python
 log.info("signal.scan_new", symbol=sym, interval=iv, new=n, total=len(records))
-# 不要:log.info(f"scanned {sym} {iv}: {n} new")
+# 不要: log.info(f"scanned {sym} {iv}: {n} new")
 ```
 
-排查 grep 时 `grep "signal.scan_new" /tmp/api.log` 一行命中。
+`grep "signal.scan_new" /tmp/collector.log` 一行命中。
 
 ### 规范 7:测试约定
 
-- 单元测试:`tests/unit/<layer>/test_<file>.py`,**纯函数 / 用 mock**
-- 集成测试:`tests/integration/test_*.py`,带 `@pytest.mark.integration` 标记,默认 `make test` 不跑
-- E2E:`apps/web/<page>.spec.ts`(Playwright,目前没引入)
-- 信号公式回归:用固化数据 fixtures(`tests/unit/indicators/fixtures/600519_daily.csv`)避免依赖网络
+- 单测:`tests/unit/<layer>/test_<file>.py`,纯函数 / mock,`make test` 跑
+- 集成:`tests/integration/`,带 `@pytest.mark.integration`,默认不跑
+- Redis 测试:用 `fakeredis` fixture,不依赖真实 Redis
+- 信号公式回归:用固化数据 fixtures(`tests/unit/indicators/fixtures/600519_daily.csv`),不依赖网络
 
 ---
 
-## superpowers 文档重点提炼
+## 数据流核心路径
 
-完整设计在 `docs/superpowers/specs/2026-05-13-marketpulse-design.md`(957 行),下面是**只读这一页就能用**的精华。
+| 数据 | 写者 | 读者 | 频率 | Redis key |
+|---|---|---|---|---|
+| **A 股 quote** | collector tick_snapshot(sina HTTP 直连,**不经 ak_call**) | api /quote | 10s | `cache:quote:ashare:*` |
+| **美股 quote** | collector tick_snapshot(Alpaca latest_quote) | api /quote | 10s | `cache:quote:us:*` |
+| **8 大指数 5m 序列** | collector index_minute job | api /indices/{s}/minute | 30s | `cache:index:*:minute:1` |
+| **大盘聚合** | collector market_dashboard job | api /markets/{m}/dashboard | 60s | `cache:market:{m}:dashboard` |
+| **涨跌幅榜** | collector market_top job | api /markets/{m}/top | 60s | `cache:market:{m}:top` |
+| **AI 大盘** | collector ai_packet job | api /ai/ashare/market-packet | 60s | `cache:market:ashare:ai_packet` |
+| **K 线 bars** | collector(fetch / refill 消费 bus) | api /symbols/{s}/bars(get_bars_cache_only) | 按需 | DuckDB,Redis 只 cache tail |
+| **CD 信号** | collector cd:* cron(scan_cd_job) | api /cd-signals | 按交易日 cron | SQLite |
+| **筹码摘要** | collector chip:preload(BJT 15:35) | api /symbols/{s}/chip_summary(cache_only) | 日终预热 | DuckDB |
 
-### 系统总览
+**所有 cron 都经 `_leader_gated` 包裹** — 单机永远 leader,多节点只 leader 跑。
 
-```
-┌─────────────────────────────────────────────────────┐
-│  4 个 MarketAdapter (统一 Protocol)                  │
-│  ├─ AShareAdapter  (akshare via ak_call + mootdx)   │
-│  ├─ HKAdapter      (sina HTTP + yfinance 备源)       │
-│  ├─ USAdapter      (Alpaca + yfinance)              │
-│  └─ CryptoAdapter  (Binance WS + CoinGecko)         │
-└──────────────┬──────────────────────────────────────┘
-               │
-        ┌──────┴──────┐
-        ▼             ▼
-   QuoteCache    BarRepo (DuckDB)
-   (TTL 60s)
-        │             │
-        └──────┬──────┘
-               ▼
-    Service 层 (KLine / Watchlist / Sector / FundFlow / SignalScan)
-               │
-        ┌──────┴──────────────────────────────────┐
-        ▼                                         ▼
-  FastAPI Routes                          APScheduler Jobs
-  (/api/markets/*, /api/symbols/*,        (tick 10s, flush 60s,
-   /api/cd-signals/*, /api/watchlists/*)   cd:15m/30m/60m/4h/1d cron)
-        │
-        ▼
-  Next.js 14 App Router
-  (/market, /symbol/[code], /watchlist, /sector/[name])
+---
+
+## 交易日识别(2026-05-28 集成)
+
+`core/domain/market_calendar.py` 用 `exchange_calendars` 包:
+- `XSHG`(A 股)、`XHKG`(港股)、`XNYS`(美股)各自独立日历,识别春节/独立日/清明/调休等
+- crypto 永远 True
+- `tick_snapshot_once` / `index_minute` / `market_top` / `ai_packet` 4 个高频 job **非交易日跳过**
+
+```python
+from core.domain.market_calendar import is_trading_day
+if not is_trading_day("ashare"):
+    return  # 节假日 / 周末跳过, 避免 ~30% sina + ~50% em 调用浪费
 ```
 
-### 关键数据流
+---
 
-| 路径 | 触发 | 时延 | 路由 |
-|------|------|------|------|
-| **A. 实时行情** | scheduler 10s | <1s | adapter → QuoteCache → `/api/markets/{m}/overview` |
-| **D. 个股 K 线** | 用户访问详情页 | 按需,首次 100ms-5s | KLineService → DuckDB(命中)/ adapter(回填)→ `/api/symbols/{s}/bars` |
-| **E. 资金流** | scheduler 分级 cron(北向 1min / 板块 5min / 个股 30min / 收盘后全量) | 分钟级 | adapter → FundFlowRepo → `/api/symbols/{s}/fund_flow` |
-| **F. 板块成分** | 每日 09:25 一次 | 日更 | SectorService → SectorRepo |
-| **G. CD 信号(Plan 2.5)** | 交易日 cron(BJT 10:30/11:30/14:30/15:00 = 60m;15:10 = 4h;15:30 = 1d;另 15m/30m 每 15/30 min)+ add symbol 异步首扫 | 分钟级 | SignalScanService → SignalRepo → `/api/cd-signals/*` |
+## ak_call 三层中间件(2026-05-27 集成)
 
-### 内存 vs DB 边界(spec §3.4)
+每次 `ak_call` 顺序穿过:
+1. **Breaker**(`core/integrations/breaker.py`)— per-source(sina/em/ths),60s 窗 60% 失败率 → open 5min → half-open 探针
+2. **Ratelimit**(`core/integrations/ratelimit.py`)— Lua 令牌桶,sina 5/s burst 20,em 10/s burst 50,ths 3/s burst 10
+3. **Outlet**(`core/integrations/outlets/`)— LocalOutlet 默认,未来接代理池零业务改动
 
-| 数据 | 存哪 | 为什么 |
-|---|---|---|
-| 最新 quote(<60s) | 内存 dict (QuoteCache) | 高频读写,DB 扛不住 |
-| 历史 bars | DuckDB | 列存压缩,查询快 |
-| 信号 / watchlist / sectors / fund_flow / directory | SQLite + WAL | 小表、关系查询、事务 |
-
-**反模式**:把分钟级 quote 写 SQLite,把基本面 join 写 DuckDB。看到这种代码立刻警觉。
-
-### 冷启动顺序(spec §3.5)
-
-1. lifespan: `state_repo.init()`(开 WAL + 跑 schema)
-2. `watchlist.bootstrap_default()`(确保有默认 list)
-3. `dir_svc.bootstrap_seeds()`(指数种子)+ 按需 refresh_ashare(<100 行才刷新,见雷区 4)
-4. `build_scheduler()` 注册 tick / flush / fundamentals / signal jobs
-5. FastAPI 起,前端 `/api/health` 看哪些 adapter ok
-
-**关键**:任何一步失败都不阻塞后续。Alpaca key 没配 → 美股 tab 灰但 A 股照常。
-
-### 路线图速览(spec §8)
-
-| Plan | 范围 | 状态 |
-|---|---|---|
-| 1 | 骨架 + 4 市场 dashboard | ✅ 已交付(Task 20 Playwright 跳过) |
-| 2 | A 股基建:K 线 / 板块 / watchlist / 资金流 / 详情页 | ✅ 已交付 |
-| **2.5** | **CD 抄底/卖出信号(超出原计划)** | ✅ 已交付 |
-| 3 | 事件管道 + LLM 影响面 | ⏳ 未启动 |
-| 4 | 多因子买入候选 | ⏳ 未启动 |
+状态全在 Redis,所有 collector 节点共享决策。`evaluate_response` 检测 sina banned 伪正常返回(单列 HTML)。
 
 ---
 
@@ -340,14 +309,14 @@ log.info("signal.scan_new", symbol=sym, interval=iv, new=n, total=len(records))
 
 ### 沟通
 
-- **默认中文**(compaction 前后都是)。代码注释、log event 字符串保持中文(项目惯例,看 `git log`)
-- **简洁汇报**:做了什么 + 关键验证结果 + 下一步建议。不要长篇总结
+- **默认中文**(compaction 前后都是)。代码注释、log event 字符串保持中文
+- **简洁汇报**:做了什么 + 关键验证 + 下一步建议
 - **简单问题直接回答**,不开 plan、不建 task
 
-### 开始非平凡任务的标准流程
+### 非平凡任务标准流程
 
-1. 用 `EnterPlanMode` + `AskUserQuestion` 对齐(避免大改后被否)
-2. 用 `TaskCreate` 跟踪每个子任务,开始时 `in_progress`,做完 `completed`
+1. `EnterPlanMode` + `AskUserQuestion` 对齐(避免大改后被否)
+2. `TaskCreate` 跟踪子任务,开始 `in_progress`,完 `completed`
 3. 改完跑验证(下一节)
 4. 简短汇报
 
@@ -355,64 +324,67 @@ log.info("signal.scan_new", symbol=sym, interval=iv, new=n, total=len(records))
 
 ```bash
 # 1. 后端 import 测试(最快发现循环依赖/拼错)
-. .venv/bin/activate && python -c "from apps.api.main import app"
+. .venv/bin/activate && python -c "from apps.api.main import app; from apps.collector.main import app as a; print('OK')"
 
-# 2. 前端类型检查(必跑)
+# 2. 前端类型检查
 cd apps/web && npx tsc --noEmit
 
-# 3. 重启 + 业务冒烟
-pkill -9 -f "uvicorn apps.api.main:app"; sleep 2
-nohup bash -c '. .venv/bin/activate && uvicorn apps.api.main:app --port 8787' > /tmp/api.log 2>&1 &
-disown && sleep 6
+# 3. 全套单测 + 重启 + 业务冒烟
+. .venv/bin/activate && pytest -m "not integration" -q
+# (如改了 api/collector)按雷区 2 模板重启 collector + api
 curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8787/api/health
-grep -c FATAL /tmp/api.log  # 期望 0
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8788/health
+grep -c "ak_call.banned_signature\|breaker.opened" /tmp/collector.log  # 异常苗头
 ```
 
 ### Git 提交
 
 - **按主题拆 commit**(chore / feat / fix / docs / refactor)
-- commit message **中文**,body 详细列改动点。参考最近 5 个 commit 的风格
-- **不要 push**,除非用户明确要求
-- **不要修改 git config**(身份、签名)
-- 提交前确认 `data/*.db` 等运行时文件不在 staged 区(应被 `.gitignore` 忽略)
+- commit message **中文**,body 列改动点。参考最近 5 个 commit 风格
+- **不要 push**,不要修改 git config(身份/签名)
+- 提交前确认 `data/*.db` 不在 staged 区(`.gitignore` 应已忽略)
 
 ### 调试与排查
 
-- **API 异常优先看 `/tmp/api.log`**,Web 看 `/tmp/next-dev.log`
-- 有 `FATAL` → mini_racer 崩,**不要花时间排查网络**
-- 重启服务**自己来**(用户不动手),用上面的命令模板
+- 优先看 `data/logs/api-errors.log` + `/tmp/collector.log`
+- `grep "racer\." /tmp/collector.log` 看 ak_call mini_racer 锁等待
+- `docker exec marketpulse-redis-dev redis-cli keys "state:*"` 看断路器/出口状态
+- 重启服务**自己来**(用户不动手)
 
 ### 红线(不要做)
 
 - ❌ 任何业务文件直接 `import akshare`(走 `ak_call`)
+- ❌ **api 路由通过任何路径触发 `ak_call`**(直接 + service 层间接都不行)
 - ❌ 给 `uvicorn` 加 `--reload`
-- ❌ 在接口默认值里硬编码 interval 列表(用 `SIGNAL_INTERVALS`)
 - ❌ 跨 DuckDB / SQLite join
-- ❌ 把分钟级 quote 写进 SQLite(用 QuoteCache)
+- ❌ 把分钟级 quote 写进 SQLite(用 Redis `cache:quote:*`)
 - ❌ 让一个 symbol 的失败把整个 batch 拖死(单条 try/except)
-- ❌ 给 dev 改时强行 fail-fast(spec 第 0 章原则)
+- ❌ Redis key 散点字符串拼接(经 `core/cache/keys.py`)
+- ❌ 给 dev 强行 fail-fast(原则 2 优雅降级)
+- ❌ `pkill` 不配套 nohup 重启(雷区 2 反模式)
 - ❌ push 到远端 / 修改 git 身份(除非明确授权)
 
 ---
 
 ## 进一步阅读
 
-按推荐顺序:
-
-1. **`docs/TODO.md`** — 14 项已识别未实施的优化,按 价值×代价 分组(高价值低代价先吃)
-2. **`docs/superpowers/specs/2026-05-13-marketpulse-design.md`** — 完整设计(957 行,按需读)
-3. **`docs/superpowers/plans/2026-05-13-marketpulse-plan-{1,2}-*.md`** — 顶部完成状态总览,Task 详情可作 ground truth
-4. **`docs/third_Indicator/`** — 富途指标参考资料(CD/NX/TT 源 + PDF 教程),`core/indicators/cd.py` 翻译自 `CD.ftindex`
-5. **`~/.claude/projects/-Users-xiangrong-stock-marketpulse/memory/`** — 用户偏好 + 关键约束(`MEMORY.md` 是索引,会自动加载)
+1. **`docs/TODO.md`** — 已识别未实施的优化,分进度 + 价值×代价
+2. **`docs/superpowers/specs/2026-05-27-stable-data-collection-and-fast-read-design.md`** — Plan 1+2+3 完整设计(957 行)
+3. **`docs/superpowers/specs/2026-05-13-marketpulse-design.md`** — 项目原始 spec
+4. **`docs/superpowers/plans/2026-05-27-stable-data-plan-{1,2,3}-*.md`** — Plan 各阶段细节
+5. **`docs/third_Indicator/`** — 富途指标参考(`core/indicators/cd.py` 翻译自 `CD.ftindex`)
+6. **`~/.claude/projects/-Users-xiangrong-stock-marketpulse/memory/`** — 用户偏好(`MEMORY.md` 索引,自动加载)
 
 ---
 
-## 当前活跃约束(状态时间 2026-05-18)
+## 当前活跃约束(2026-05-28)
 
-- **CD 信号在 2026-05-15 后没有新 1d 信号**:不是 bug,公式特性。底/顶背离本身就是低频事件
-- **关注页 4h tab** 仅 watchlist 含 crypto 标的时显示(股票市场 4h ≡ 1d)
-- **scheduler 每 10s 读一次 sqlite 拿 watchlist**:浪费但单读 <1ms 可忽略,优化项在 TODO
+- **进程拆分已完成**:collector(8788)+ api(8787)+ redis(6379,docker)+ web(3000)
+- **apps/api/ 真正 0 ak_call**(直接 + 通过 service 间接)— 一切读路径走 Redis cache
+- **HK 指数 collector job 暂未实装** — `/api/indices/HSI.HK/minute` 等返回 `stale=true, reason="hk_index_collector_pending"`,Plan 4 候选
+- **Crypto coingecko 现在限流**(HTTP 429),`tick:crypto` 大量 failed — adapter 改 Binance Spot API 在 TODO
+- **CD 信号 1d 有时连续几天无新信号**:不是 bug,公式特性(底/顶背离低频事件)
+- **scheduler 每 10s 读一次 sqlite 拿 watchlist**:浪费但单读 <1ms 可忽略
 - **`acknowledged` 字段** 后端建好但 UI 没用:死代码,留待"已读"功能或删
-- 美股数据源 2026-05-21 切到 Alpaca **SIP feed**(原 IEX): 全美 16 交易所聚合,1d 历史更长(IEX 是 2020-07-27),60m 完整 16 根/日 prepost+regular+afterhours。Free tier 通过 `end_safe=now-20min` 余量绕过 SIP 15min 延迟限制
-- 美股 1d / intraday 走 Alpaca SIP 前复权(`adjustment='all'`),split + dividend 都已按当前股本回算。2026-05-21 修复:之前 raw 数据导致 NVDA 2024-06 split 处价格跳水(1208 → 120),K 线 + CD 信号失真。如果 user 报"价格跳变",先检查是否在 split 日;如确实未复权,看 `core/adapters/us.py::_fetch_history_alpaca` 的 `adjustment` 参数
-- **美股 4h tab 已启用**(2026-05-21):前端 detail/watchlist 都可见,scheduler `cd:us:4h` ET 08:05/12:05/16:05/20:05 跑 4 次/日。4h 重采样仍走数组下标切(`_group_resample`),与 ET 时钟对齐有 bucket 错位风险,跨市场统一处理列入 `docs/TODO.md`
+- 美股数据走 Alpaca SIP feed(2026-05-21 切换),前复权 split + dividend 已回算。如发现"价格跳变"先检查 split 日,看 `core/adapters/us.py::_fetch_history_alpaca` 的 `adjustment` 参数
+- 美股 4h tab 已启用,scheduler `cd:us:4h` ET 08:05/12:05/16:05/20:05 跑 4 次/日
