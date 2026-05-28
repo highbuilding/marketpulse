@@ -17,7 +17,7 @@ from apps.collector.jobs.index_minute import INDEX_SYMBOLS
 
 log = structlog.get_logger(__name__)
 
-_CACHE_TTL_S = 120
+_CACHE_TTL_S = 24 * 3600  # 24h: 收盘后用户看到收盘 dashboard, 不立刻 stale
 
 
 async def build_dashboard(market: str, *, cache: RedisCache) -> dict:

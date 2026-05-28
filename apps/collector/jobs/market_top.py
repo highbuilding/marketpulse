@@ -21,7 +21,7 @@ from core.services.market_query import MarketQueryService
 
 log = structlog.get_logger(__name__)
 
-_CACHE_TTL_S = 180  # 60s 写 + 180s TTL = 容许偶发 ak 失败
+_CACHE_TTL_S = 24 * 3600  # 24h: 收盘后用户看到收盘瞬间排行榜, 不会立刻 stale
 
 
 async def refresh_market_top(
