@@ -6,6 +6,10 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 load_dotenv()
 
+# 必须在 import adapters 之前: 代理 env 在 requests/httpx/yfinance/Alpaca SDK 实例化前就位
+from core.integrations.proxy_setup import setup_process_proxy
+setup_process_proxy()
+
 # 必须在其他 import 之前装好日志, 让 startup 期任何错误也能落到 data/logs/
 from core.integrations.logging_setup import setup_logging
 setup_logging()

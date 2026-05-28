@@ -19,6 +19,10 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 load_dotenv()
 
+# 必须在所有 import 之前: 让代理 env 在 requests/httpx/Alpaca SDK 实例化前就位
+from core.integrations.proxy_setup import setup_process_proxy
+setup_process_proxy()
+
 from core.integrations.logging_setup import setup_logging
 setup_logging()
 

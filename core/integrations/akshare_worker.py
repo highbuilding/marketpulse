@@ -5,12 +5,15 @@ import pickle
 import sys
 import traceback
 
-# 子进程默认绕过系统代理:macOS 会把 127.0.0.1:7890 (Clash/V2Ray) 等系统级 SOCKS 代理
-# 注入到 urllib/requests; 当代理服务未启动时, EM/Sina 这类国内接口会全数 ProxyError。
-# 父进程 uvicorn 通常不读 macOS 系统代理(只读 env), 所以"主进程能通、子进程不通"
-# 的现象就是这个差异造成的。让子进程显式无代理直连最稳妥。
-os.environ.setdefault("NO_PROXY", "*")
-os.environ.setdefault("no_proxy", "*")
+# 子进程从父进程继承 env(包括 HTTPS_PROXY/HTTP_PROXY 设置)。
+# 仅在父进程也没设代理时,才用 NO_PROXY="*" 强制直连绕过 macOS 系统代理 —
+# 因为 macOS 会把系统级 SOCKS 代理(Clash 等)注入 urllib/requests,
+# 当代理软件未启动时会全数 ProxyError。
+# 父进程通过 core.integrations.proxy_setup.setup_process_proxy() 显式设了
+# HTTPS_PROXY 时,子进程跟随走代理,**不**强制 NO_PROXY。
+if not (os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")):
+    os.environ.setdefault("NO_PROXY", "*")
+    os.environ.setdefault("no_proxy", "*")
 
 
 def main() -> int:
