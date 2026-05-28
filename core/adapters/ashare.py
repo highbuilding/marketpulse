@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from decimal import Decimal
 from typing import Callable
 from zoneinfo import ZoneInfo
@@ -20,6 +20,28 @@ _CN_TZ = ZoneInfo("Asia/Shanghai")
 
 
 _SINA_BASE = "https://hq.sinajs.cn/list="
+
+
+# A 股 intraday 真实数据时段(BJT) — 用于过滤 sina 在非交易时段返回的"凑数 bar"。
+# 集合竞价 09:15-09:30 撮合数据是真实价格,保留;
+# 连续竞价 09:30-11:30 + 13:00-15:00 是主交易时段。
+# sina stock_zh_a_minute 在 9:30 之前/15:00 之后会用上一交易日 close + 累计 volume
+# 复制填充 bar(实测 002415.SZ 出现 442 根完全相同的非交易时段 bar)。
+_ASHARE_SESSION_OPEN_BJT = time(9, 15)
+_ASHARE_AM_CLOSE_BJT = time(11, 30)
+_ASHARE_PM_OPEN_BJT = time(13, 0)
+_ASHARE_PM_CLOSE_BJT = time(15, 0)
+
+
+def _is_in_ashare_intraday_session(ts_utc: datetime) -> bool:
+    """ts_utc 是否落在 A 股真实交易/集合竞价时段内(BJT 09:15-11:30 + 13:00-15:00)。"""
+    t_bjt = ts_utc.astimezone(_CN_TZ).time()
+    if _ASHARE_SESSION_OPEN_BJT <= t_bjt <= _ASHARE_AM_CLOSE_BJT:
+        return True
+    if _ASHARE_PM_OPEN_BJT <= t_bjt <= _ASHARE_PM_CLOSE_BJT:
+        return True
+    return False
+
 
 
 def _normalize_symbol(code: str) -> str:
@@ -289,12 +311,19 @@ class AShareAdapter:
             df = await self._patch_today_nan(df, sina_code, freq, symbol)
         out: list[Bar] = []
         interval = f"{freq}m"
+        skipped_off_session = 0
         for _, row in df.iterrows():
             if pd.isna(row["open"]) or pd.isna(row["high"]) or pd.isna(row["low"]) or pd.isna(row["close"]):
                 continue
             # sina `day` 已是 close 时刻 (北京时间 wall-clock),标 +08:00 后转 UTC
             naive = datetime.fromisoformat(str(row["day"]).replace(" ", "T"))
             ts = naive.replace(tzinfo=_CN_TZ).astimezone(timezone.utc)
+            # sina 在非交易时段会用昨日 close + 累计 volume 复制填充 bar (BJT 00:00-09:15
+            # 都是 442 根完全相同). 必须按 A 股真实 session 过滤, 否则前端分时图会展示
+            # 大量 9:30 前的"凑数 bar"。集合竞价 09:15-09:30 是真实数据, 保留。
+            if not _is_in_ashare_intraday_session(ts):
+                skipped_off_session += 1
+                continue
             out.append(Bar(
                 market="ashare", symbol=symbol,
                 ts=ts,
@@ -305,6 +334,10 @@ class AShareAdapter:
                 volume=int(float(row["volume"])),
                 interval=interval,
             ))
+        if skipped_off_session > 0:
+            log.info("ashare.fetch_intraday.session_filtered",
+                     symbol=symbol, freq=freq,
+                     kept=len(out), skipped=skipped_off_session)
         return out
 
     async def _patch_today_nan(
