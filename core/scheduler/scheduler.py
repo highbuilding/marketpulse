@@ -15,7 +15,7 @@ from core.scheduler.fundamentals_jobs import (
     pull_north_flow_job, pull_watchlist_symbol_flow_job,
     purge_fund_flow_job,
 )
-from core.scheduler.jobs import flush_all_quotes_to_duckdb, tick_snapshot_once
+from core.scheduler.jobs import flush_all_quotes_to_duckdb_async, tick_snapshot_once
 from core.scheduler.leader_gate import is_leader as _is_leader
 from core.scheduler.signal_jobs import fetch_intraday_job, scan_cd_job
 from core.services.fund_flow_service import FundFlowService
@@ -58,7 +58,7 @@ def build_scheduler(
             misfire_grace_time=30,
         )
     sched.add_job(
-        _leader_gated(flush_all_quotes_to_duckdb), IntervalTrigger(seconds=60),
+        _leader_gated(flush_all_quotes_to_duckdb_async), IntervalTrigger(seconds=60),
         args=(registry.markets(), cache, bar_repo),
         id="flush:all", max_instances=1, coalesce=True,
     )

@@ -11,14 +11,19 @@ from core.domain.models import Bar
 
 
 class BarRepo:
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, *, read_only: bool = False) -> None:
+        # read_only=True: api 进程使用,避免与 collector 争抢 DuckDB 文件写锁。
+        # 雷区: 多进程同时持写锁会触发 IO Error: Conflicting lock is held in PID...
         self.db_path = db_path
+        self.read_only = read_only
         self._lock = RLock()
 
     def _conn(self):
-        return duckdb.connect(self.db_path)
+        return duckdb.connect(self.db_path, read_only=self.read_only)
 
     def init(self) -> None:
+        if self.read_only:
+            return
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         with self._lock, self._conn() as c:
             c.execute("""

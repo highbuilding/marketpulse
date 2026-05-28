@@ -44,8 +44,8 @@ def get_quote_cache() -> QuoteCache:
 
 @lru_cache(maxsize=1)
 def get_bar_repo() -> BarRepo:
-    repo = BarRepo(str(_DATA / "bars.duckdb"))
-    repo.init()
+    # api 进程 read_only — 避免与 collector 争 DuckDB 写锁
+    repo = BarRepo(str(_DATA / "bars.duckdb"), read_only=True)
     return repo
 
 

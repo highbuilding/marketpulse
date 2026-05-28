@@ -101,3 +101,11 @@ def flush_all_quotes_to_duckdb(markets: list[str], cache: QuoteCache, repo: BarR
     """顺序 flush 所有市场 quote, 避免多个 APScheduler 线程并发写 DuckDB。"""
     for market in markets:
         flush_quotes_to_duckdb(market, cache, repo)
+
+
+async def flush_all_quotes_to_duckdb_async(
+    markets: list[str], cache: QuoteCache, repo: BarRepo,
+) -> None:
+    """async 包装 — scheduler 用 await 调用, 同步实现走线程池避免阻塞 event loop。"""
+    import asyncio as _asyncio
+    await _asyncio.to_thread(flush_all_quotes_to_duckdb, markets, cache, repo)
