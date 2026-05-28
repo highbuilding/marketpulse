@@ -131,6 +131,13 @@ async def ak_call(
         log.warning("ak_call.banned_signature", func=func_name, caller=label,
                     source=source, elapsed_ms=elapsed_ms)
         raise RuntimeError(f"banned signature detected for source={source}")
+    if outcome == Outcome.empty:
+        # 空数据通常意味着上游异常 (节假日 / 代码迁移 / sina 静默降级),
+        # 提到 WARN 让 api-errors.log 抓得到, 否则会被 INFO 海洋淹没。
+        log.warning("ak_call.empty", func=func_name, caller=label,
+                    source=source, elapsed_ms=elapsed_ms,
+                    result=_result_summary(result))
+        return result
     log.info("ak_call.success", func=func_name, caller=label, source=source,
              outcome=outcome.value, elapsed_ms=elapsed_ms,
              result=_result_summary(result))

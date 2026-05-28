@@ -1,9 +1,14 @@
 """日志持久化配置: stdlib root logger + RotatingFileHandler + faulthandler。
 
 设计:
-- data/logs/api.log         全量日志, 10MB × 10 backup
-- data/logs/api-errors.log  WARNING+, 5MB × 10 backup
-- data/logs/fault.log       SIGABRT/SIGSEGV C-level 线程栈(append, 不 rotate)
+- data/logs/{process}.log         全量日志, 10MB × 10 backup
+- data/logs/{process}-errors.log  WARNING+, 5MB × 10 backup
+- data/logs/fault.log              SIGABRT/SIGSEGV C-level 线程栈(append, 不 rotate, 共享)
+
+process 由 setup_logging(process_name=...) 决定:
+- collector → collector.log / collector-errors.log
+- api → api.log / api-errors.log
+- 默认("app") 兼容老调用 → app.log / app-errors.log
 
 structlog 通过 ProcessorFormatter 桥接到 stdlib logging, 所有 structlog.get_logger
 调用最终落到这三个 handler。
@@ -67,8 +72,13 @@ def _enable_faulthandler(logs_dir: Path) -> None:
             pass
 
 
-def setup_logging(level: str | None = None) -> None:
+def setup_logging(level: str | None = None, process_name: str = "app") -> None:
     """配置 stdlib root logger + structlog ProcessorFormatter 桥接。
+
+    process_name 决定 log 文件名前缀, 让 collector / api 各自落盘:
+    - "collector" → collector.log / collector-errors.log
+    - "api"       → api.log / api-errors.log
+    - 默认 "app"  → app.log / app-errors.log
 
     幂等: 重复调用会清空 root handler 重设, 无副作用。
     """
@@ -96,13 +106,13 @@ def setup_logging(level: str | None = None) -> None:
     stdout_handler = logging.StreamHandler(sys.stdout)
     stdout_handler.setFormatter(formatter)
 
-    api_log = logs_dir / "api.log"
+    main_log = logs_dir / f"{process_name}.log"
     file_handler = logging.handlers.RotatingFileHandler(
-        api_log, maxBytes=10 * 1024 * 1024, backupCount=10, encoding="utf-8",
+        main_log, maxBytes=10 * 1024 * 1024, backupCount=10, encoding="utf-8",
     )
     file_handler.setFormatter(formatter)
 
-    error_log = logs_dir / "api-errors.log"
+    error_log = logs_dir / f"{process_name}-errors.log"
     error_handler = logging.handlers.RotatingFileHandler(
         error_log, maxBytes=5 * 1024 * 1024, backupCount=10, encoding="utf-8",
     )
@@ -134,8 +144,9 @@ def setup_logging(level: str | None = None) -> None:
 
     log = structlog.get_logger(__name__)
     log.info("logging.setup_done",
+             process=process_name,
              log_dir=str(logs_dir),
              level=log_level,
-             api_log=str(api_log),
+             main_log=str(main_log),
              error_log=str(error_log),
              fault_log=str(logs_dir / "fault.log"))

@@ -24,7 +24,7 @@ from core.integrations.proxy_setup import setup_process_proxy
 setup_process_proxy()
 
 from core.integrations.logging_setup import setup_logging
-setup_logging()
+setup_logging(process_name="collector")
 
 import structlog
 import uvicorn
@@ -61,6 +61,19 @@ async def _async_refresh_directory(svc) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("collector.boot")
+
+    # 兜住所有未处理的 asyncio 异常 (create_task 抛出后默认只去 stderr,
+    # 不走 root logger → 不落 collector-errors.log). 这里强制写到 root logger.
+    def _async_exception_handler(loop, context):
+        msg = context.get("exception") or context.get("message")
+        log.error("asyncio.unhandled_exception",
+                  message=context.get("message"),
+                  exception_type=type(context.get("exception")).__name__
+                      if context.get("exception") else None,
+                  error=str(msg) if msg else None,
+                  task=str(context.get("task")) if context.get("task") else None,
+                  future=str(context.get("future")) if context.get("future") else None)
+    asyncio.get_event_loop().set_exception_handler(_async_exception_handler)
 
     redis_ok = await get_redis_cache().ping()
     if redis_ok:
