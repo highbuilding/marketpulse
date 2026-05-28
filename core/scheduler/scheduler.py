@@ -313,3 +313,21 @@ def attach_chip_preload_job(
         misfire_grace_time=600,
     )
     log.info("scheduler.chip_preload_attached")
+
+
+def attach_market_top_job(
+    sched: AsyncIOScheduler,
+    *, market_query, cache,
+) -> None:
+    """A 股 + 港股涨跌幅榜每 60s 预拉 → cache:market:{m}:top。
+
+    替代 /api/markets/{m}/top 路由内的同步 ak_call(stock_zh_a_spot_em 5000 标的常超时)。
+    """
+    from apps.collector.jobs.market_top import refresh_all_top_jobs
+    sched.add_job(
+        _leader_gated(refresh_all_top_jobs), IntervalTrigger(seconds=60),
+        args=(market_query, cache),
+        id="market_top:all", max_instances=1, coalesce=True,
+        misfire_grace_time=30,
+    )
+    log.info("scheduler.market_top_attached")

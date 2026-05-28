@@ -28,14 +28,14 @@ from fastapi import FastAPI
 
 from apps.api.deps import (
     get_bar_repo, get_chip_service, get_fund_flow_service, get_kline_service,
-    get_notification_service, get_quote_cache, get_redis_cache, get_registry,
-    get_signal_scan_service, get_state_repo, get_symbol_directory_service,
-    get_watchlist_service,
+    get_market_query_service, get_notification_service, get_quote_cache,
+    get_redis_cache, get_registry, get_signal_scan_service, get_state_repo,
+    get_symbol_directory_service, get_watchlist_service,
 )
 from core.scheduler.scheduler import (
     attach_chip_preload_job, attach_fundamentals_jobs, attach_index_minute_job,
-    attach_market_dashboard_job, attach_signal_jobs, attach_us_signal_jobs,
-    build_scheduler,
+    attach_market_dashboard_job, attach_market_top_job, attach_signal_jobs,
+    attach_us_signal_jobs, build_scheduler,
 )
 
 log = structlog.get_logger(__name__)
@@ -165,6 +165,9 @@ async def lifespan(app: FastAPI):
     )
     attach_index_minute_job(sched, cache=_redis_cache)
     attach_market_dashboard_job(sched, cache=_redis_cache)
+    attach_market_top_job(sched,
+                          market_query=get_market_query_service(),
+                          cache=_redis_cache)
     attach_chip_preload_job(sched,
                             chip_service=get_chip_service(),
                             watchlist=get_watchlist_service())

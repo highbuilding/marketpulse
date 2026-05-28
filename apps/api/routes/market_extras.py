@@ -1,14 +1,20 @@
+"""市场附加接口 — Plan 3 Hotfix A 改:/top 走 Redis cache,api 路由 0 ak_call。
+
+collector 的 market_top job 每 60s 预拉 → cache:market:{m}:top。本路由 GET cache,
+miss 时返回 stale meta 兜底。
+"""
 from __future__ import annotations
 
 import structlog
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from core.services.market_query import MarketQueryService
+from apps.api.deps import get_redis_cache
+from core.cache import keys
+from core.cache.redis_client import RedisCache
 
 log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api/markets", tags=["markets-extras"])
-_svc = MarketQueryService()
 
 
 class RankRowDTO(BaseModel):
@@ -23,6 +29,7 @@ class RankRowDTO(BaseModel):
 class TopMeta(BaseModel):
     stale: bool = False
     reason: str | None = None
+    fresh_at: str | None = None
 
 
 class TopResponse(BaseModel):
@@ -32,42 +39,31 @@ class TopResponse(BaseModel):
     meta: TopMeta = TopMeta()
 
 
+_VALID_MARKETS = {"ashare", "hk"}
+
+
 @router.get("/{market}/top", response_model=TopResponse)
 async def market_top(
     market: str,
     limit: int = Query(10, ge=1, le=50),
+    cache: RedisCache = Depends(get_redis_cache),
 ) -> TopResponse:
-    """A 股/港股涨跌幅榜。
-
-    Plan 3 遗留: 仍通过 MarketQueryService → ak_call 现拉; 失败/超时返回 stale 兜底,
-    页面其余部分不受影响。真正的优化(collector 预聚合 cache:market:{m}:top)列入
-    docs/TODO.md 待 Plan 4 处理。
-    """
-    if market not in ("ashare", "hk"):
+    """A 股/港股涨跌幅榜 — 直读 Redis cache,无缓存返回 stale 兜底。"""
+    if market not in _VALID_MARKETS:
         raise HTTPException(404, f"top endpoint not supported for market: {market}")
 
-    try:
-        if market == "ashare":
-            gainers = await _svc.top_ashare("desc", limit)
-            losers = await _svc.top_ashare("asc", limit)
-        else:
-            gainers = await _svc.top_hk("desc", limit)
-            losers = await _svc.top_hk("asc", limit)
-    except Exception as e:  # noqa: BLE001
-        log.warning("market_top.fetch_failed", market=market, error=str(e))
+    payload = await cache.get_msgpack(keys.cache_market_top(market))
+    if payload is None:
+        log.info("market_top.cache_miss", market=market)
         return TopResponse(
             market=market, gainers=[], losers=[],
-            meta=TopMeta(stale=True, reason="upstream_failed"),
+            meta=TopMeta(stale=True, reason="warming_up"),
         )
 
+    gainers = [RankRowDTO(**r) for r in payload.get("gainers", [])][:limit]
+    losers = [RankRowDTO(**r) for r in payload.get("losers", [])][:limit]
+    fresh_at = payload.get("meta", {}).get("fresh_at")
     return TopResponse(
-        market=market,
-        gainers=[RankRowDTO(
-            symbol=r.symbol, name=r.name, price=r.price,
-            change_pct=r.change_pct, volume=r.volume, amount=r.amount,
-        ) for r in gainers],
-        losers=[RankRowDTO(
-            symbol=r.symbol, name=r.name, price=r.price,
-            change_pct=r.change_pct, volume=r.volume, amount=r.amount,
-        ) for r in losers],
+        market=market, gainers=gainers, losers=losers,
+        meta=TopMeta(stale=False, fresh_at=fresh_at),
     )

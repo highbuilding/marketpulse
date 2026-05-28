@@ -16,6 +16,19 @@ def test_cache_market_dashboard_key():
     assert keys.cache_market_dashboard("ashare") == "cache:market:ashare:dashboard"
 
 
+def test_cache_market_top_key():
+    assert keys.cache_market_top("ashare") == "cache:market:ashare:top"
+    assert keys.cache_market_top("hk") == "cache:market:hk:top"
+
+
+def test_cache_market_ai_packet_key():
+    assert keys.cache_market_ai_packet("ashare") == "cache:market:ashare:ai_packet"
+
+
+def test_cache_chip_summary_key():
+    assert keys.cache_chip_summary("600519.SH", days=90) == "cache:chip:600519.SH:90d"
+
+
 def test_cache_bars_tail_key():
     assert (
         keys.cache_bars_tail("ashare", "600519.SH", "1d")

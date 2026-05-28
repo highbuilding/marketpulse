@@ -36,6 +36,18 @@ def cache_market_dashboard(market: str) -> str:
     return f"cache:market:{market}:dashboard"
 
 
+def cache_market_top(market: str) -> str:
+    return f"cache:market:{market}:top"
+
+
+def cache_market_ai_packet(market: str) -> str:
+    return f"cache:market:{market}:ai_packet"
+
+
+def cache_chip_summary(symbol: str, *, days: int) -> str:
+    return f"cache:chip:{symbol}:{days}d"
+
+
 def cache_bars_tail(market: str, symbol: str, interval: str) -> str:
     return f"cache:bars:{market}:{symbol}:{interval}:tail"
 
