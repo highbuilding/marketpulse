@@ -334,12 +334,23 @@ async def volume_indicators(
     days: int = Query(120, ge=1, le=3650),
     kline: KLineService = Depends(get_kline_service),
     svc: VolumeIndicatorService = Depends(get_volume_indicator_service),
+    redis_cache=Depends(get_redis_cache),
 ) -> VolumeIndicatorsResponse:
     if interval not in {"1d", "5m", "15m", "30m", "60m"}:
         raise HTTPException(400, "interval must be one of ['1d', '5m', '15m', '30m', '60m']")
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days)
-    bars = await kline.get_bars(symbol, interval=interval, start=start, end=end)
+    # cache_only — api 进程 BarRepo read_only, 不能触发 adapter+insert_bars.
+    # cache miss 时发 refill request 让 collector 后台补, 本次返空 rows.
+    bars, _partial = await kline.get_bars_cache_only(
+        symbol, interval=interval, start=start, end=end,
+    )
+    if not bars:
+        try:
+            await _publish_refill_request(redis_cache, symbol, interval, days)
+        except Exception:  # noqa: BLE001
+            pass
+        return VolumeIndicatorsResponse(symbol=symbol, interval=interval, rows=[])
     rows = svc.compute(bars)
     return VolumeIndicatorsResponse(
         symbol=symbol,
