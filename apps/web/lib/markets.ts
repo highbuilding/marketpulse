@@ -88,3 +88,24 @@ export function isMarketOpenNow(market: Market): boolean {
   }
   return false
 }
+
+// 给定 ISO 时刻 (UTC) 是否落在本市场交易时段。用于过滤 1m bars 的脏数据,
+// 防止凌晨/午休的点出现在分时图。crypto 永远 true。不判节假日。
+export function isInTradingSession(iso: string, market: Market): boolean {
+  if (market === 'crypto') return true
+  const d = new Date(iso)
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: TZ[market],
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  })
+  const parts = fmt.formatToParts(d)
+  const hour = Number(parts.find((p) => p.type === 'hour')?.value ?? 0)
+  const minute = Number(parts.find((p) => p.type === 'minute')?.value ?? 0)
+  const minutesAt = hour * 60 + minute
+  for (const [start, end] of SESSIONS[market]) {
+    const sMin = _hhmmToMinutes(start)
+    const eMin = end === '24:00' ? 24 * 60 : _hhmmToMinutes(end)
+    if (minutesAt >= sMin && minutesAt <= eMin) return true
+  }
+  return false
+}

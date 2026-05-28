@@ -13,7 +13,7 @@ import { VolumeIndicatorsPanel } from '@/components/VolumeIndicatorsPanel'
 import { fetchBars, fetchChipSummary, fetchSymbolProfile } from '@/lib/symbol_api'
 import { listCDSignalsBySymbol } from '@/lib/cd_signals_api'
 import { CD_MARKER_INTERVALS, klineTabsForMarket } from '@/lib/intervals'
-import { inferMarket, isMarketOpenNow } from '@/lib/markets'
+import { inferMarket, isInTradingSession, isMarketOpenNow } from '@/lib/markets'
 import type { Interval } from '@/lib/types'
 
 export default function SymbolPage({ params }: { params: { code: string } }) {
@@ -109,14 +109,17 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
   )
   const todayBars = useMemo(() => {
     if (!data || interval !== '1m' || data.bars.length === 0) return data?.bars ?? []
-    // 取最后一根 bar 的北京时间日期,过滤同一交易日
-    const lastBar = data.bars[data.bars.length - 1]
+    // 先按交易 session 过滤掉凌晨/午休/盘后等脏点 (历史数据残留 + 防御 source 异常返回)
+    const sessionBars = data.bars.filter((b) => isInTradingSession(b.ts, effectiveMarket))
+    if (sessionBars.length === 0) return []
+    // 取最后一根 bar 的本市场时区日期,只保留同一交易日
+    const lastBar = sessionBars[sessionBars.length - 1]
     const lastDate = new Date(lastBar.ts).toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' })
-    return data.bars.filter((b) => {
+    return sessionBars.filter((b) => {
       const bDate = new Date(b.ts).toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' })
       return bDate === lastDate
     })
-  }, [data, interval])
+  }, [data, interval, effectiveMarket])
 
   const prevClose = useMemo(() => {
     if (!daily || daily.bars.length < 2) return null
