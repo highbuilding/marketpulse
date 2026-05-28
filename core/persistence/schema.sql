@@ -143,3 +143,16 @@ CREATE TABLE IF NOT EXISTS chip_summary (
 
 CREATE INDEX IF NOT EXISTS idx_chip_symbol_date
   ON chip_summary(symbol, trade_date DESC);
+
+-- 大盘"今日成交额 vs 同时段基线"基线表 (2026-05-28 设计)
+-- 每日收盘后 cron 写当日 5min 累计成交额曲线; 次日盘中查同 ts_5m_offset 算 amount_ratio
+-- crypto 不入表 (Binance 24h ticker 现成)
+CREATE TABLE IF NOT EXISTS market_amount_baseline (
+  market        TEXT NOT NULL,        -- 'ashare' / 'hk' / 'us'
+  trading_date  TEXT NOT NULL,        -- 'YYYY-MM-DD' 本市场所在地自然日
+  ts_5m_offset  INTEGER NOT NULL,     -- 当日开盘后第 N 个 5min 桶 (0-based)
+  cum_amount    REAL NOT NULL,        -- 累计成交额 (原始单位: 元 / 港元 / USD)
+  PRIMARY KEY (market, trading_date, ts_5m_offset)
+);
+CREATE INDEX IF NOT EXISTS idx_baseline_market_date
+  ON market_amount_baseline(market, trading_date DESC);
