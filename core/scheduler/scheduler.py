@@ -271,19 +271,64 @@ def attach_us_signal_jobs(
 def attach_index_minute_job(
     sched: AsyncIOScheduler,
     *, cache,  # RedisCache
+    baseline_repo=None,  # MarketAmountBaselineRepo | None
 ) -> None:
     """index_minute: 每 30s 刷一次 (交易/非交易时段统一)。
 
     单跑 30s 简化策略 — 真正不需要刷的时段(夜里) cache 已有最近一次结果, 重复写无害。
+    baseline_repo 传入时 amount_ratio 会被计算; 否则 ratio=None。
     """
     from apps.collector.jobs.index_minute import refresh_all_indices
     sched.add_job(
         _leader_gated(refresh_all_indices), IntervalTrigger(seconds=30),
-        args=(cache,),
+        args=(cache, baseline_repo),
         id="index_minute:ashare", max_instances=1, coalesce=True,
         misfire_grace_time=20,
     )
     log.info("scheduler.index_minute_attached")
+
+
+def attach_baseline_persist_jobs(
+    sched: AsyncIOScheduler,
+    *, baseline_repo,  # MarketAmountBaselineRepo
+) -> None:
+    """收盘后写当日 5m 累计成交额曲线 → SQLite baseline 表。
+
+    cron:
+    - A 股 BJT 15:35 (收盘 15:00 + 30min 缓冲)
+    - 港股 BJT 16:05 (Plan B 后启用)
+    - 美股 ET 16:05 (冬夏令时跟随, Plan C 后启用)
+    - 每日 BJT 03:00 清理 20 天前数据
+    """
+    from apps.collector.jobs.market_amount_baseline_persist import (
+        persist_ashare_baseline, persist_hk_baseline, persist_us_baseline,
+        cleanup_old_baselines,
+    )
+    sched.add_job(
+        _leader_gated(persist_ashare_baseline),
+        CronTrigger(hour=15, minute=35, timezone="Asia/Shanghai"),
+        args=(baseline_repo,),
+        id="baseline_persist:ashare", max_instances=1, coalesce=True,
+    )
+    sched.add_job(
+        _leader_gated(persist_hk_baseline),
+        CronTrigger(hour=16, minute=5, timezone="Asia/Shanghai"),
+        args=(baseline_repo,),
+        id="baseline_persist:hk", max_instances=1, coalesce=True,
+    )
+    sched.add_job(
+        _leader_gated(persist_us_baseline),
+        CronTrigger(hour=16, minute=5, timezone="America/New_York"),
+        args=(baseline_repo,),
+        id="baseline_persist:us", max_instances=1, coalesce=True,
+    )
+    sched.add_job(
+        _leader_gated(cleanup_old_baselines),
+        CronTrigger(hour=3, minute=0, timezone="Asia/Shanghai"),
+        args=(baseline_repo,),
+        id="baseline_persist:cleanup", max_instances=1, coalesce=True,
+    )
+    log.info("scheduler.baseline_persist_attached")
 
 
 def attach_market_dashboard_job(

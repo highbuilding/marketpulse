@@ -37,9 +37,10 @@ from apps.api.deps import (
     get_state_repo, get_symbol_directory_service, get_watchlist_service,
 )
 from core.scheduler.scheduler import (
-    attach_ai_packet_job, attach_chip_preload_job, attach_fundamentals_jobs,
-    attach_index_minute_job, attach_market_dashboard_job, attach_market_top_job,
-    attach_signal_jobs, attach_us_signal_jobs, build_scheduler,
+    attach_ai_packet_job, attach_baseline_persist_jobs, attach_chip_preload_job,
+    attach_fundamentals_jobs, attach_index_minute_job, attach_market_dashboard_job,
+    attach_market_top_job, attach_signal_jobs, attach_us_signal_jobs,
+    build_scheduler,
 )
 
 log = structlog.get_logger(__name__)
@@ -149,6 +150,13 @@ async def lifespan(app: FastAPI):
     cache = get_quote_cache()
     bar_repo = get_bar_repo()
 
+    # MarketAmountBaselineRepo: A 股 amount_ratio 同时段比对 + baseline_persist 写入
+    from core.persistence.market_amount_baseline_repo import MarketAmountBaselineRepo
+    from pathlib import Path
+    _baseline_repo = MarketAmountBaselineRepo(
+        str(Path(__file__).resolve().parents[2] / "data" / "state.db"),
+    )
+
     sched = build_scheduler(registry, cache, bar_repo, get_watchlist_service(),
                             redis_cache=_redis_cache)
     attach_fundamentals_jobs(
@@ -167,7 +175,8 @@ async def lifespan(app: FastAPI):
         notify_service=get_notification_service(),
         kline=get_kline_service(),
     )
-    attach_index_minute_job(sched, cache=_redis_cache)
+    attach_index_minute_job(sched, cache=_redis_cache, baseline_repo=_baseline_repo)
+    attach_baseline_persist_jobs(sched, baseline_repo=_baseline_repo)
     attach_market_dashboard_job(sched, cache=_redis_cache)
     attach_market_top_job(sched,
                           market_query=get_market_query_service(),
