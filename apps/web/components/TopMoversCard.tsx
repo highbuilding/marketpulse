@@ -3,6 +3,8 @@
 import useSWR from 'swr'
 import clsx from 'clsx'
 
+import { isMarketOpenNow } from '@/lib/markets'
+
 interface RankRow {
   symbol: string
   name: string
@@ -41,7 +43,8 @@ function Row({ row }: { row: RankRow }) {
 
 export function TopMoversCard({ market }: { market: 'ashare' | 'hk' }) {
   const { data, error, isLoading } = useSWR(
-    `top:${market}`, () => fetchTop(market), { refreshInterval: 30_000 },
+    `top:${market}`, () => fetchTop(market),
+    { refreshInterval: () => isMarketOpenNow(market) ? 30_000 : 0 },
   )
 
   return (

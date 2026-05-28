@@ -4,6 +4,7 @@ import useSWR from 'swr'
 
 import { IndexCard } from '@/components/IndexCard'
 import { fetchAIMarketPacket } from '@/lib/api'
+import { isMarketOpenNow } from '@/lib/markets'
 import type { AIMarketPacket } from '@/lib/types'
 
 const ASHARE_INDICES = [
@@ -46,7 +47,7 @@ function breadthTone(packet: AIMarketPacket): string {
 
 export function MarketPulsePanel() {
   const { data, error, isLoading } = useSWR('ai-market-packet', fetchAIMarketPacket, {
-    refreshInterval: 60_000,
+    refreshInterval: () => isMarketOpenNow('ashare') ? 60_000 : 0,
   })
 
   return (

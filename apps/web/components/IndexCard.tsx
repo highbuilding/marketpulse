@@ -7,6 +7,7 @@ import clsx from 'clsx'
 
 import { fetchIndexMinute } from '@/lib/symbol_api'
 import { formatAmount, formatFundInflow, formatRatioPct } from '@/lib/format_market'
+import { inferMarket, isMarketOpenNow } from '@/lib/markets'
 import { StaleBadge } from './StaleBadge'
 
 function MiniChart({ points, color }: { points: { ts: string; close: number }[]; color: string }) {
@@ -58,9 +59,11 @@ export function IndexCard({ symbol }: { symbol: string }) {
   // A 股指数:5min 当日;港股指数:近 30 日日线 — 后端自动决定
   const isHK = symbol.endsWith('.HK')
   const days = isHK ? 30 : 1
+  const market = inferMarket(symbol)
+  const baseInterval = isHK ? 5 * 60_000 : 30_000
   const { data, isLoading, error } = useSWR(
     `index:${symbol}:${days}`, () => fetchIndexMinute(symbol, days),
-    { refreshInterval: isHK ? 5 * 60_000 : 30_000 },
+    { refreshInterval: () => isMarketOpenNow(market) ? baseInterval : 0 },
   )
 
   let lastClose: number | null = null

@@ -7,7 +7,7 @@ import { SignalsTable } from '@/components/SignalsTable'
 import { fetchWatchlistEvents } from '@/lib/cd_signals_api'
 import { allSignalTabs } from '@/lib/intervals'
 import { fetchSymbolProfiles } from '@/lib/symbol_api'
-import { tradingDateKey, todayKey, type Market } from '@/lib/markets'
+import { tradingDateKey, todayKey, isMarketOpenNow, type Market } from '@/lib/markets'
 import type { AnySignalInterval, CDSignalDTO } from '@/lib/types'
 
 const ALL_TABS = allSignalTabs()
@@ -33,7 +33,7 @@ export function WatchlistSignalsPanel({
   const { data, isLoading } = useSWR(
     `wl:events:${activeInterval}:${market}:${symbols.join(',')}`,
     () => fetchWatchlistEvents(activeInterval, 100, market),
-    { refreshInterval: 30_000 },
+    { refreshInterval: () => isMarketOpenNow(market) ? 30_000 : 0 },
   )
 
   const signals = data?.signals ?? []

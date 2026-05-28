@@ -3,6 +3,7 @@
 import useSWR from 'swr'
 
 import { fetchAIMarketPacket } from '@/lib/api'
+import { isMarketOpenNow } from '@/lib/markets'
 import type {
   AIMarketEvent, AIMarketRank, AIMarketSector, AIMarketSymbol,
 } from '@/lib/types'
@@ -139,7 +140,7 @@ function EventList({ rows }: { rows: AIMarketEvent[] }) {
 
 export default function AIMarketPage() {
   const { data, error, isLoading } = useSWR('ai-market-packet', fetchAIMarketPacket, {
-    refreshInterval: 60_000,
+    refreshInterval: () => isMarketOpenNow('ashare') ? 60_000 : 0,
   })
 
   const breadth = data?.breadth

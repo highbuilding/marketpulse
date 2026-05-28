@@ -6,7 +6,7 @@ import useSWR from 'swr'
 import { SignalsTable } from '@/components/SignalsTable'
 import { listCDSignalsBySymbol, scanCDSignals } from '@/lib/cd_signals_api'
 import { detailSignalTabs } from '@/lib/intervals'
-import { tradingDateKey, todayKey, type Market } from '@/lib/markets'
+import { tradingDateKey, todayKey, isMarketOpenNow, type Market } from '@/lib/markets'
 import type { CDSignalDTO, DetailSignalInterval } from '@/lib/types'
 
 export function CDSignalPanel({ symbol, market }: { symbol: string; market: Market }) {
@@ -19,7 +19,7 @@ export function CDSignalPanel({ symbol, market }: { symbol: string; market: Mark
   const { data, mutate, isLoading } = useSWR(
     swrKey,
     () => listCDSignalsBySymbol(symbol, [interval]),
-    { refreshInterval: 30_000 },
+    { refreshInterval: () => isMarketOpenNow(market) ? 30_000 : 0 },
   )
 
   useEffect(() => {

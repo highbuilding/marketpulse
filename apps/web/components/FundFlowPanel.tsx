@@ -2,6 +2,7 @@
 
 import useSWR from 'swr'
 
+import { isMarketOpenNow } from '@/lib/markets'
 import { fetchSymbolFundFlow } from '@/lib/symbol_api'
 
 function fmtDate(iso: string): string {
@@ -21,7 +22,7 @@ function fmt(v: number | null): string {
 export function FundFlowPanel({ symbol }: { symbol: string }) {
   const { data, isLoading } = useSWR(
     `fund:${symbol}`, () => fetchSymbolFundFlow(symbol, 30),
-    { refreshInterval: 60_000 },
+    { refreshInterval: () => isMarketOpenNow('ashare') ? 60_000 : 0 },
   )
 
   return (
