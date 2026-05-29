@@ -162,6 +162,9 @@ async def lifespan(app: FastAPI):
     registry = get_registry()
     cache = get_quote_cache()
     bar_repo = get_bar_repo()
+    # api 读路径走 Redis tail, collector 写 DuckDB 的同时同步写一份给 api 用
+    from apps.api.deps import get_redis_bars_cache as _get_redis_bars
+    _redis_bars_cache = _get_redis_bars()
 
     # MarketAmountBaselineRepo: A 股 amount_ratio 同时段比对 + baseline_persist 写入
     from core.persistence.market_amount_baseline_repo import MarketAmountBaselineRepo
@@ -171,7 +174,8 @@ async def lifespan(app: FastAPI):
     )
 
     sched = build_scheduler(registry, cache, bar_repo, get_watchlist_service(),
-                            redis_cache=_redis_cache)
+                            redis_cache=_redis_cache,
+                            redis_bars=_redis_bars_cache)
     attach_fundamentals_jobs(
         sched, fund_flow=get_fund_flow_service(),
         watchlist=get_watchlist_service(),

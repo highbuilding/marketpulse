@@ -25,11 +25,15 @@ _RESAMPLED = {"1wk": "W-FRI", "1mo": "ME"}
 
 class KLineService:
     def __init__(
-        self, bar_repo: BarRepo,
+        self, bar_repo: BarRepo | None,
         adapters: dict[str, MarketAdapter],
+        redis_bars: "RedisBarsCache | None" = None,
     ) -> None:
+        # bar_repo: collector 进程必传 (RW); api 进程可传 None (只走 redis_bars)
+        # redis_bars: api 进程必传 (cache_only 路径走 redis); collector 也传(insert 后写 tail)
         self.repo = bar_repo
         self.adapters = adapters
+        self.redis_bars = redis_bars
         self._one_minute_ttl_s = 55
         self._one_minute_cache: dict[str, tuple[datetime, list[Bar]]] = {}
         self._one_minute_inflight: dict[str, asyncio.Task[list[Bar]]] = {}
@@ -40,6 +44,28 @@ class KLineService:
         if a is None:
             raise ValueError(f"no adapter for market={m} (symbol={symbol})")
         return a
+
+    async def _persist_bars(self, bars: list[Bar]) -> None:
+        """统一写入: DuckDB + Redis tail. 任一失败仅 warning, 不抛 (优雅降级).
+
+        Redis tail 是 api 读路径的唯一数据源 → collector 写 DuckDB 后必须同步写 Redis,
+        否则 api 看不到新 bar.
+        """
+        if not bars:
+            return
+        if self.repo is not None:
+            try:
+                self.repo.insert_bars(bars)
+            except Exception as e:  # noqa: BLE001
+                log.warning("kline.duckdb_write_failed", error=str(e), n=len(bars))
+        if self.redis_bars is not None:
+            # 按 (market, symbol, interval) 分组 upsert
+            from collections import defaultdict
+            by_key: dict[tuple, list[Bar]] = defaultdict(list)
+            for b in bars:
+                by_key[(b.market, b.symbol, b.interval)].append(b)
+            for (market, symbol, interval), group in by_key.items():
+                await self.redis_bars.upsert_tail(market, symbol, interval, group)
 
     async def get_bars(
         self, symbol: str, *, interval: Interval,
@@ -81,7 +107,7 @@ class KLineService:
                  cached_first=cached[0].ts.isoformat() if cached else None,
                  cached_last=cached[-1].ts.isoformat() if cached else None)
         bars = await self._adapter_for(symbol).fetch_history(symbol, start, end)
-        self.repo.insert_bars(bars)
+        await self._persist_bars(bars)
         return bars
 
     @staticmethod
@@ -128,7 +154,7 @@ class KLineService:
             return cached
         freq = interval.replace("m", "")
         bars = await self._adapter_for(symbol).fetch_intraday(symbol, freq=freq)
-        self.repo.insert_bars(bars)
+        await self._persist_bars(bars)
         return [b for b in bars if start <= b.ts <= end]
 
     async def _get_one_minute_bars(self, symbol: str) -> list[Bar]:
@@ -178,20 +204,50 @@ class KLineService:
         interval_minutes = 60 if interval == "60m" else 240
         agg = aggregate_intraday(raw, market, interval_minutes)
         if agg:
-            self.repo.insert_bars(agg)
+            await self._persist_bars(agg)
         return [b for b in agg if start <= b.ts <= end]
 
     async def get_bars_cache_only(
         self, symbol: str, *, interval: str,
         start: datetime, end: datetime,
     ) -> tuple[list[Bar], bool]:
-        """只读 DuckDB cache, 不调 adapter, 不写库。
+        """只读 Redis cache, 不碰 DuckDB, 不调 adapter。
+
+        架构: api 进程不持 DuckDB 连接 (跨进程文件锁与 collector RW 冲突).
+        所有 K 线读路径走 Redis tail (collector 写 + api 读), miss 时 api 路由
+        会发 bus:bars.refill_request 让 collector 异步补.
+
+        ts 过滤: 只返回落在 [start, end] 区间内的 bars. 不再做 _covers 严格判定 —
+        前端拿到 N 根就画 N 根, SWR 持续刷新, 后台 refill 补齐. 严格 covers 在 Redis
+        tail 模式下意义不大: tail 长度有上限, 用户长窗口请求难免"未覆盖", 但有数据
+        总比空数据有用.
 
         返回 (bars, partial), partial=True 表示数据有但部分字段缺失
         (如 A 股 daily 缺 amount/turnover; 仍可绘 K 线但量能/换手缺)。
-
-        api 进程必须用这个方法; collector 用 get_bars 或 fetch_fresh_bars。
         """
+        market = infer_market(symbol)
+        if self.redis_bars is None:
+            # 兼容 collector 进程旧调用 (collector 仍可走 DuckDB 直读)
+            return await self._cache_only_via_duckdb(symbol, interval, start, end)
+        if interval in _RESAMPLED:
+            # weekly/monthly resample — 复用 daily tail
+            daily, partial = await self.get_bars_cache_only(
+                symbol, interval="1d", start=start, end=end,
+            )
+            if not daily:
+                return [], False
+            return _resample(daily, interval), partial
+        cached = await self.redis_bars.get_tail(market, symbol, interval, start, end)
+        if not cached:
+            return [], False
+        if interval == "1d" and market == "ashare":
+            return cached, self._missing_ashare_daily_metrics(cached)
+        return cached, False
+
+    async def _cache_only_via_duckdb(
+        self, symbol: str, interval: str, start: datetime, end: datetime,
+    ) -> tuple[list[Bar], bool]:
+        """旧路径: 通过 DuckDB 读 cache。仅 collector 在 redis_bars=None 时回退用。"""
         market = infer_market(symbol)
         if interval == "1d":
             cached = self.repo.fetch_history(market, symbol, start, end, interval="1d")
@@ -200,10 +256,7 @@ class KLineService:
             partial = self._missing_ashare_daily_metrics(cached) if market == "ashare" else False
             return cached, partial
         if interval in _RESAMPLED:
-            # weekly/monthly resample — 复用 daily cache
-            daily, partial = await self.get_bars_cache_only(
-                symbol, interval="1d", start=start, end=end,
-            )
+            daily, partial = await self._cache_only_via_duckdb(symbol, "1d", start, end)
             if not daily:
                 return [], False
             return _resample(daily, interval), partial
@@ -228,12 +281,12 @@ class KLineService:
         """
         if interval == "1d":
             bars = await self._adapter_for(symbol).fetch_history(symbol, start, end)
-            self.repo.insert_bars(bars)
+            await self._persist_bars(bars)
             return bars
         if interval in _INTRADAY_RAW and interval != "1m":
             freq = interval.replace("m", "")
             bars = await self._adapter_for(symbol).fetch_intraday(symbol, freq=freq)
-            self.repo.insert_bars(bars)
+            await self._persist_bars(bars)
             return [b for b in bars if start <= b.ts <= end]
         if interval in _INTRADAY_AGG:
             market = infer_market(symbol)
@@ -241,7 +294,7 @@ class KLineService:
             interval_minutes = 60 if interval == "60m" else 240
             agg = aggregate_intraday(raw, market, interval_minutes)
             if agg:
-                self.repo.insert_bars(agg)
+                await self._persist_bars(agg)
             return [b for b in agg if start <= b.ts <= end]
         # 1wk / 1mo / 1m 不在 scan 路径, 回落到带 cache 的 get_bars
         return await self.get_bars(symbol, interval=interval, start=start, end=end)

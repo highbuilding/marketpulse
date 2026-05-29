@@ -48,6 +48,7 @@ def build_scheduler(
     registry: AdapterRegistry, cache: QuoteCache, bar_repo: BarRepo,
     watchlist: WatchlistService,
     redis_cache: RedisCache | None = None,
+    redis_bars=None,  # RedisBarsCache | None
 ) -> AsyncIOScheduler:
     sched = AsyncIOScheduler(timezone="UTC")
     for market in registry.markets():
@@ -59,7 +60,7 @@ def build_scheduler(
         )
     sched.add_job(
         _leader_gated(flush_all_quotes_to_duckdb_async), IntervalTrigger(seconds=60),
-        args=(registry.markets(), cache, bar_repo),
+        args=(registry.markets(), cache, bar_repo, redis_bars),
         id="flush:all", max_instances=1, coalesce=True,
     )
     log.info("scheduler.built", markets=registry.markets())

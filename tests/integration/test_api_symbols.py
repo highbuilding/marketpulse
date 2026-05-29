@@ -91,9 +91,9 @@ def test_chip_summary_non_ashare_returns_empty():
 
 def test_volume_indicators_returns_ok(monkeypatch):
     kline = get_kline_service()
-    monkeypatch.setattr(kline, "get_bars", AsyncMock(return_value=[
-        _bar("002415.SZ", i + 1, close=10 + i) for i in range(21)
-    ]))
+    monkeypatch.setattr(kline, "get_bars_cache_only", AsyncMock(return_value=(
+        [_bar("002415.SZ", i + 1, close=10 + i) for i in range(21)], False,
+    )))
     with TestClient(app) as client:
         resp = client.get("/api/symbols/002415.SZ/volume_indicators?interval=1d&days=120")
     assert resp.status_code == 200
@@ -105,9 +105,9 @@ def test_volume_indicators_returns_ok(monkeypatch):
 
 def test_volume_indicators_accepts_5m(monkeypatch):
     kline = get_kline_service()
-    monkeypatch.setattr(kline, "get_bars", AsyncMock(return_value=[
-        _bar("002415.SZ", i + 1, interval="5m", close=10 + i) for i in range(21)
-    ]))
+    monkeypatch.setattr(kline, "get_bars_cache_only", AsyncMock(return_value=(
+        [_bar("002415.SZ", i + 1, interval="5m", close=10 + i) for i in range(21)], False,
+    )))
     with TestClient(app) as client:
         resp = client.get("/api/symbols/002415.SZ/volume_indicators?interval=5m&days=5")
     assert resp.status_code == 200

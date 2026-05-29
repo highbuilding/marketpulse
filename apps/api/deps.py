@@ -43,15 +43,24 @@ def get_quote_cache() -> QuoteCache:
 
 
 @lru_cache(maxsize=1)
-def get_bar_repo() -> BarRepo:
-    # 多进程共用 deps 时, 用 env 决定 mode:
-    # api 进程 set MARKETPULSE_BARREPO_READONLY=1 (避免与 collector 争 DuckDB 写锁);
-    # collector / warmup / repair 不设置 → 默认 read-write.
-    read_only = os.getenv("MARKETPULSE_BARREPO_READONLY", "0") == "1"
-    repo = BarRepo(str(_DATA / "bars.duckdb"), read_only=read_only)
-    if not read_only:
-        repo.init()
+def get_bar_repo() -> BarRepo | None:
+    """api 进程返回 None (不读 DuckDB, 走 Redis bars cache);
+    collector / warmup / repair 返回 RW BarRepo.
+
+    雷区: DuckDB 文件锁是进程独占的, RW 进程占着, 任何 RO 连接都进不去 (macOS).
+    api 直接走 Redis bars 是唯一可靠的跨进程并发方案.
+    """
+    if os.getenv("MARKETPULSE_BARREPO_READONLY", "0") == "1":
+        return None
+    repo = BarRepo(str(_DATA / "bars.duckdb"))
+    repo.init()
     return repo
+
+
+@lru_cache(maxsize=1)
+def get_redis_bars_cache():  # -> RedisBarsCache
+    from core.cache.redis_bars_cache import RedisBarsCache  # noqa: PLC0415
+    return RedisBarsCache(get_redis_cache())
 
 
 @lru_cache(maxsize=1)
@@ -63,7 +72,7 @@ def get_state_repo() -> StateRepo:
 def get_kline_service() -> KLineService:
     registry = get_registry()
     adapters = {m: registry.get(m) for m in registry.markets()}
-    return KLineService(get_bar_repo(), adapters)
+    return KLineService(get_bar_repo(), adapters, redis_bars=get_redis_bars_cache())
 
 
 @lru_cache(maxsize=1)

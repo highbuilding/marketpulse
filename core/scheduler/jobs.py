@@ -79,17 +79,19 @@ async def tick_snapshot_once(
     log.debug("tick.ok", market=market, count=len(quotes))
 
 
-def flush_quotes_to_duckdb(market: str, cache: QuoteCache, repo: BarRepo) -> None:
-    # 非交易日 / 非 session 直接跳过 — tick 也不会写, quote cache 是空, flush 没意义
+def flush_quotes_to_duckdb(
+    market: str, cache: QuoteCache, repo: BarRepo,
+) -> list[Bar]:
+    """同步部分: gate + DuckDB 写. 返回写入的 bars 给上层做 Redis 异步 upsert."""
     from core.domain.market_calendar import is_trading_day
     from core.domain.market_sessions import is_market_session_open
     if not is_trading_day(market):
-        return
+        return []
     if not is_market_session_open(market):
-        return
+        return []
     quotes = cache.snapshot(market)
     if not quotes:
-        return
+        return []
     bars = [
         Bar(
             market=q.market, symbol=q.symbol, ts=q.ts,
@@ -102,17 +104,40 @@ def flush_quotes_to_duckdb(market: str, cache: QuoteCache, repo: BarRepo) -> Non
         repo.insert_bars(bars)
     except Exception as e:  # noqa: BLE001
         log.warning("flush.failed", market=market, error=str(e))
+        return []
+    return bars
 
 
-def flush_all_quotes_to_duckdb(markets: list[str], cache: QuoteCache, repo: BarRepo) -> None:
-    """顺序 flush 所有市场 quote, 避免多个 APScheduler 线程并发写 DuckDB。"""
+def flush_all_quotes_to_duckdb(
+    markets: list[str], cache: QuoteCache, repo: BarRepo,
+) -> dict[str, list[Bar]]:
+    """顺序 flush 所有市场 quote → 1m bar. 返回 {market: bars} 给 async 包装写 Redis."""
+    result: dict[str, list[Bar]] = {}
     for market in markets:
-        flush_quotes_to_duckdb(market, cache, repo)
+        bars = flush_quotes_to_duckdb(market, cache, repo)
+        if bars:
+            result[market] = bars
+    return result
 
 
 async def flush_all_quotes_to_duckdb_async(
     markets: list[str], cache: QuoteCache, repo: BarRepo,
+    redis_bars=None,  # RedisBarsCache | None
 ) -> None:
-    """async 包装 — scheduler 用 await 调用, 同步实现走线程池避免阻塞 event loop。"""
+    """async 包装: DuckDB 同步写丢进 to_thread, 然后在主 loop 写 Redis tail (api 读路径).
+    """
     import asyncio as _asyncio
-    await _asyncio.to_thread(flush_all_quotes_to_duckdb, markets, cache, repo)
+    from collections import defaultdict
+    written = await _asyncio.to_thread(flush_all_quotes_to_duckdb, markets, cache, repo)
+    if redis_bars is None:
+        return
+    for market, bars in written.items():
+        by_sym: dict[str, list[Bar]] = defaultdict(list)
+        for b in bars:
+            by_sym[b.symbol].append(b)
+        for sym, group in by_sym.items():
+            try:
+                await redis_bars.upsert_tail(market, sym, "1m", group)
+            except Exception as e:  # noqa: BLE001
+                log.warning("flush.redis_write_failed",
+                            market=market, symbol=sym, error=str(e))
