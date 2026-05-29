@@ -9,9 +9,9 @@
 **MarketPulse** — 本地运行的多市场行情监控 + 策略指标平台。覆盖 A 股 / 港股 / 美股 / Crypto。**决策支持工具,不做执行**。
 
 - **用户**:zhonghuai(中国境内,A 股口径,**默认中文沟通**)
-- **运行方式**:`make dev` 一键启动,**三进程架构**(collector + api + redis + web),honcho 拉起
-- **数据底盘**:Redis(热缓存 + bus)+ DuckDB(K 线列存)+ SQLite(state / signals / watchlist)
-- **当前进度**:Plan 1 + 2 + 3 + 后续 hotfix + 交易日历集成都已交付。`docs/superpowers/` 是设计源头,`docs/TODO.md` 是未实施清单
+- **运行方式**:`make dev` 一键启动,**6 进程架构**(collector ×3 + api + web + redis),honcho 拉起(redis 走 docker-compose 单独管)
+- **数据底盘**:Redis(热缓存 + bus)+ DuckDB(K 线列存,**按市场分文件**)+ SQLite(state / signals / watchlist)
+- **当前进度**:Plan 1 + 2 + 3 + collector 拆 3 进程 + K 线历史分页(collector 只读 HTTP + api 转发)都已交付。`docs/superpowers/` 是设计源头,`docs/TODO.md` 是未实施清单
 
 ---
 
@@ -27,17 +27,21 @@
 
 ---
 
-## 架构总览(2026-05-28 完成态)
+## 架构总览(2026-05-30 完成态)
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  apps/collector/        ← 所有 ak_call / 写 DB / 写 cache │
+│  apps/collector/{ashare,us,crypto}/  ← 3 独立进程        │
+│  ← 所有 ak_call / 写 DB / 写 cache; 故障隔离, 各写各的库 │
 │  ├─ APScheduler cron jobs (tick / index_minute / top /   │
 │  │   ai_packet / dashboard / cd:* / fund_flow / chip)    │
 │  ├─ leader 抢 Redis SETNX 锁,只 leader 跑 cron          │
-│  └─ ak_call 经三层中间件: Outlet → Ratelimit → Breaker  │
-│         │                                                │
-│         ▼ 写                                             │
+│  ├─ ak_call 经三层中间件: Outlet → Ratelimit → Breaker  │
+│  └─ 各进程内嵌 FastAPI(8788/8789/8790): /health +       │
+│      /internal/bars/history(只读历史分页, 同进程查 RW   │
+│      bar_repo, 零锁冲突 —— 见雷区 6)                    │
+│         │                          ▲                     │
+│         ▼ 写                       │ httpx 转发(历史分页)│
 │  ┌──────────────────────────────────────────────────┐   │
 │  │  Redis (hot cache + Streams bus + state + lock)  │   │
 │  │  • cache:quote/index/market/bars/chip/fundflow   │   │
@@ -45,24 +49,25 @@
 │  │  • state:leader/source/outlet/inflight           │   │
 │  │  • ratelimit:source:sina|em|ths                  │   │
 │  └──────────────────────────────────────────────────┘   │
-│         ▲ 读 (绝不打 ak_call)                            │
+│         ▲ 读 (绝不打 ak_call, 绝不直连 DuckDB)           │
 │         │                                                │
 │  ┌──────────────────────────────────────────────────┐   │
 │  │  apps/api/  ← FastAPI 8787 — 读路径专属          │   │
-│  │  - 所有路由读 cache,miss 返回 meta.stale=true   │   │
-│  │  - DB fallback(Redis 挂时直读 DuckDB/SQLite)   │   │
+│  │  - 实时/快照: 读 Redis cache, miss 返 stale=true │   │
+│  │  - K 线历史: 转发到对应市场 collector 的只读接口 │   │
+│  │  - SSE /api/sse/bars: 只推实时尾部(最右一根)    │   │
 │  └──────────────────────────────────────────────────┘   │
 │         ▲                                                │
-│         │ HTTP                                           │
+│         │ HTTP(REST 分页) + SSE(实时尾部)             │
 │  ┌──────────────────────────────────────────────────┐   │
-│  │  apps/web/  Next.js 3000 — StaleBadge 染灰      │   │
+│  │  apps/web/  Next.js 3000 — K 线滑动翻页 + 染灰  │   │
 │  └──────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────┘
 ```
 
 **进程职责硬约束**:
-- **collector** 唯一允许 `ak_call`、写 DB、写 Redis cache、发 bus
-- **api** **绝对禁止** `ak_call`、写 K 线 bars、抢 mini_racer 锁
+- **collector ×3**(ashare/us/crypto)各自唯一允许 `ak_call`、写自己市场的 DuckDB、写 Redis cache、发 bus;故障隔离(一个崩不影响其他两个)
+- **api** **绝对禁止** `ak_call`、写 K 线 bars、**直连 DuckDB**(历史走转发,见雷区 6)、抢 mini_racer 锁
 - **redis** 不持久化历史(那是 DuckDB 的事),仅作 cache + 总线
 
 `grep -rn "ak_call" apps/api/` **必须只命中注释字符串**。
@@ -94,27 +99,33 @@ grep -rn --include="*.py" "^import akshare\|^from akshare" core apps tests
 reload 时 V8 状态污染会 SIGABRT。**代码变更手动重启**,模板:
 
 ```bash
-# 停三方 (redis 不停,docker-compose 管它)
-pkill -9 -f "apps.collector.main" 2>/dev/null
+# 停三方 (redis 不停,docker-compose 管它)。3 个 collector + api 都要停
+pkill -9 -f "apps.collector.ashare.main" 2>/dev/null
+pkill -9 -f "apps.collector.us.main" 2>/dev/null
+pkill -9 -f "apps.collector.crypto.main" 2>/dev/null
 pkill -9 -f "uvicorn apps.api.main:app" 2>/dev/null
 sleep 2
 
 # ... 干活、改代码、commit、跑测试 ...
 
-# 收尾:重启 collector + api,不要留任何端口空着
+# 收尾:重启 3 collector + api,不要留任何端口空着
 docker compose -f docker-compose.dev.yml up -d redis
-nohup bash -c '. .venv/bin/activate && python -m apps.collector.main' >> /tmp/collector.log 2>&1 &
+nohup bash -c '. .venv/bin/activate && python -m apps.collector.ashare.main' >> /tmp/collector_ashare.log 2>&1 &
+disown
+nohup bash -c '. .venv/bin/activate && python -m apps.collector.us.main' >> /tmp/collector_us.log 2>&1 &
+disown
+nohup bash -c '. .venv/bin/activate && python -m apps.collector.crypto.main' >> /tmp/collector_crypto.log 2>&1 &
 disown
 nohup bash -c '. .venv/bin/activate && uvicorn apps.api.main:app --port 8787' >> /tmp/api.log 2>&1 &
 disown
 sleep 8
 curl -s -m 3 http://localhost:8787/api/health | grep -o '"status":"[^"]*"'
-curl -s -m 3 http://localhost:8788/health | grep -o '"status":"[^"]*"'
+for p in 8788 8789 8790; do curl -s -m 3 http://127.0.0.1:$p/health | grep -o '"status":"[^"]*"'; done
 ```
 
 **反模式**(已踩):e2e 测试末尾 `pkill -9` 收尾但忘了重启 → 用户报"加载失败"实际是没起来。**任何 `pkill` 必须配套 nohup 重启**。
 
-**自己重启不让用户动手**。`api` 重启不影响 `collector` 采集(Plan 1 拆进程后),`collector` 崩则停所有 cron 务必同步重启。
+**自己重启不让用户动手**。`api` 重启不影响 collector 采集;改了某市场 collector 只需重启那一个(3 进程已隔离)。web(Next.js dev)改前端代码自动热更,不用重启;改了 api 转发/分页才需重启 api。
 
 ### 雷区 3:bar 时间戳约定(intraday 富途口径 + 1d BJT 自然日)
 
@@ -161,6 +172,25 @@ grep "ak_call.failed\|breaker.opened" data/logs/collector.log  # 中间件状态
 
 ---
 
+### 雷区 6:DuckDB 单写多读互斥 → api 绝不直连,历史走 collector 转发(2026-05-30)
+
+**真相**(真多进程实测,非 threading):DuckDB 同一文件**同一时刻要么"一个 RW 连接独占",要么"多个 read_only 连接共享",两者不能并存**。
+
+- api 进程若用 `read_only` 直连 `bars_{market}.duckdb`:回填(backfill)期间 collector 持 RW 连接,api 读 **100% 失败**(`IOException: Conflicting lock is held in PID...`),重试无效(写全程持锁无缝隙);日常稀疏写时 api 能读,但 **api 的读会把 collector 的写踢掉 → 丢数据**。
+- 这就是历史上 CLAUDE.md 把 api"一刀切脱离 DuckDB"的根因。
+
+**今天的方案**(K 线历史分页):
+- **collector 进程内查询**——每个 collector 本就持 RW `bar_repo`,在同进程内用同一连接查 `fetch_history_paged`,**零锁冲突**。
+- collector 内嵌 FastAPI 挂 `GET /internal/bars/history?symbol=&interval=&before=&limit=`(`apps/collector/base.py::attach_bars_history_route`,**module 级挂载**,repo 请求时惰性解析——lifespan 内挂路由 Starlette 不认,实测 404)。
+- api `/api/symbols/{s}/bars/history` 用 httpx **转发**到 `127.0.0.1:{8788|8789|8790}`(`trust_env=False` 绕开 7890 代理),collector 不可达 → 优雅降级 `stale`。
+
+**约束**:
+- 任何"api 要读 DuckDB 历史"的需求,**一律走 collector 转发**,别想着给 api 开 read_only 连接。
+- 游标分页口径(币安/TradingView 反向翻页):`before` 空=最新一页;返回严格早于 `before` 的最近 `limit` 根,**升序**;不足一页=到上市首日。
+- 实时与历史**两通道解耦**:SSE(`apps/api/routes/sse_bars.py`)只推最右一根(init 只发当前进行中 bar,不再扛历史);历史全部走 REST 分页。前端 `KLineChart` 用 lightweight-charts `subscribeVisibleLogicalRangeChange` 监听左边界自动翻页,prepend 后视野按 bar-index 保持(不被实时刷新拉回最右)。
+
+---
+
 ## 代码规范(项目特有)
 
 ### 规范 1:单一事实源(SSoT)收口表
@@ -181,6 +211,9 @@ grep "ak_call.failed\|breaker.opened" data/logs/collector.log  # 中间件状态
 | Symbol market 推断 | `core/domain/markets.py::infer_market` + `apps/web/lib/markets.ts::inferMarket`(前端镜像) |
 | Stale 染灰 UI | `apps/web/components/StaleBadge.tsx` |
 | Leader 状态(单例) | `core/scheduler/leader_gate.py::set_leader/is_leader` |
+| K 线游标分页(后端) | `core/persistence/duckdb_repo.py::fetch_history_paged` + `apps/collector/base.py::attach_bars_history_route`(collector 内查) |
+| K 线历史取数(前端) | `apps/web/lib/use_bars_history.ts::useBarsHistory`(分页累积 + 滑动翻页,所有市场通用) |
+| K 线实时尾部(前端) | `apps/web/lib/use_kline_stream.ts::useKlineStream`(crypto SSE,只推最右一根) |
 | 优化清单 | `docs/TODO.md`(跨会话单一事实源) |
 
 **反模式**:发现两个文件出现相似 interval 列表 / 时间格式化 / 表格 JSX,立即抽 SSoT。
@@ -278,7 +311,8 @@ log.info("signal.scan_new", symbol=sym, interval=iv, new=n, total=len(records))
 | **大盘聚合** | collector market_dashboard job | api /markets/{m}/dashboard | 60s | `cache:market:{m}:dashboard` |
 | **涨跌幅榜** | collector market_top job | api /markets/{m}/top | 60s | `cache:market:{m}:top` |
 | **AI 大盘** | collector ai_packet job | api /ai/ashare/market-packet | 60s | `cache:market:ashare:ai_packet` |
-| **K 线 bars** | collector(fetch / refill 消费 bus) | api /symbols/{s}/bars(get_bars_cache_only) | 按需 | DuckDB,Redis 只 cache tail |
+| **K 线 bars(tail/实时)** | collector(fetch / refill 消费 bus / WS) | api /symbols/{s}/bars + SSE /sse/bars | 按需 | DuckDB,Redis 只 cache tail |
+| **K 线历史(分页)** | collector 写 DuckDB | api /symbols/{s}/bars/history → 转发 collector :{port}/internal/bars/history | 滑动翻页按需 | DuckDB(collector 同进程只读查,见雷区 6) |
 | **CD 信号** | collector cd:* cron(scan_cd_job) | api /cd-signals | 按交易日 cron | SQLite |
 | **筹码摘要** | collector chip:preload(BJT 15:35) | api /symbols/{s}/chip_summary(cache_only) | 日终预热 | DuckDB |
 
@@ -331,17 +365,17 @@ if not is_trading_day("ashare"):
 
 ```bash
 # 1. 后端 import 测试(最快发现循环依赖/拼错)
-. .venv/bin/activate && python -c "from apps.api.main import app; from apps.collector.main import app as a; print('OK')"
+. .venv/bin/activate && python -c "from apps.api.main import app; from apps.collector.crypto.main import app as c; from apps.collector.us.main import app as u; from apps.collector.ashare.main import app as a; print('OK')"
 
 # 2. 前端类型检查
 cd apps/web && npx tsc --noEmit
 
 # 3. 全套单测 + 重启 + 业务冒烟
 . .venv/bin/activate && pytest -m "not integration" -q
-# (如改了 api/collector)按雷区 2 模板重启 collector + api
+# (如改了 api/collector)按雷区 2 模板重启 3 collector + api
 curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8787/api/health
-curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8788/health
-grep -c "ak_call.banned_signature\|breaker.opened" /tmp/collector.log  # 异常苗头
+for p in 8788 8789 8790; do curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:$p/health; done
+grep -c "ak_call.banned_signature\|breaker.opened" /tmp/collector_*.log  # 异常苗头
 ```
 
 ### Git 提交
@@ -362,6 +396,7 @@ grep -c "ak_call.banned_signature\|breaker.opened" /tmp/collector.log  # 异常�
 
 - ❌ 任何业务文件直接 `import akshare`(走 `ak_call`)
 - ❌ **api 路由通过任何路径触发 `ak_call`**(直接 + service 层间接都不行)
+- ❌ **api 进程直连 DuckDB**(read_only 也不行,会撞锁/踢写;历史走 collector 转发,雷区 6)
 - ❌ 给 `uvicorn` 加 `--reload`
 - ❌ 跨 DuckDB / SQLite join
 - ❌ 把分钟级 quote 写进 SQLite(用 Redis `cache:quote:*`)
@@ -384,15 +419,18 @@ grep -c "ak_call.banned_signature\|breaker.opened" /tmp/collector.log  # 异常�
 
 ---
 
-## 当前活跃约束(2026-05-28)
+## 当前活跃约束(2026-05-30)
 
-- **进程拆分已完成**:collector(8788)+ api(8787)+ redis(6379,docker)+ web(3000)
-- **apps/api/ 真正 0 ak_call**(直接 + 通过 service 间接)— 一切读路径走 Redis cache
-- **大盘 IndexCard market_extras 已接入**(2026-05-28):A 股 8 指数显示北向资金净流入 + 成交额 + 同比;美股 SPY/QQQ/DIA ETF 代理显示 prev_close + amount (亿美元)。Crypto / HK 暂未实装
-- **HK 指数 collector job 暂未实装** — `/api/indices/HSI.HK/minute` 等返回 `stale=true, reason="hk_index_collector_pending"`,Plan 4 候选
-- **Crypto IndexCard 暂搁置** — 老 `crypto_index_minute.py` 已删除,coingecko 429 限频,后续考虑 Binance Spot API
+- **进程拆分已完成**:collector ×3(ashare 8788 / us 8789 / crypto 8790)+ api(8787)+ web(3000)+ redis(6379,docker)。各 collector 内嵌 FastAPI(health + 只读历史分页)
+- **apps/api/ 真正 0 ak_call + 0 DuckDB 直连** — 实时走 Redis cache,历史走转发 collector(雷区 6)
+- **K 线历史分页已全市场跑通(后端)**:三市场 `/internal/bars/history` 都已生效,api 转发已验证。crypto 已端到端验证(滑到 BTC 上市首日 2017-08-17)
+- **前端 K 线滑动翻页已全市场通用**:`useBarsHistory` 对 ashare/us/crypto 都启用(`enabled: isKline`),首屏 500 根 + 向左滑翻页。**差异**:只有 crypto 接了 SSE 实时尾部(`useKlineStream`);**美股/A股目前无实时推送**(SSE collector job 仅 crypto 有),盘中刷新最新一根靠 SWR 轮询(intraday 周期 60s)
+- **后续支持美股/A股实时(候选)**:若要让美股/A股 K 线也有 crypto 那样的秒级实时尾部,需在 us/ashare collector 加 SSE 推送源(当前它们只有 cron + tick_snapshot,无 WS)。架构上 SSE 通道已通用,只差数据源
+- **crypto K 线 ts 用 open 对齐**(雷区 3 例外,见 memory `project-crypto-open-aligned`);拉全历史到上市首日,`BINANCE_GENESIS=2017-07-01`
+- **DuckDB 批量写用 DataFrame**(见 memory `project-duckdb-bulk-upsert`),别退回 executemany 逐行
+- **大盘 IndexCard market_extras**:A 股 8 指数显示北向 + 成交额 + 同比;美股 SPY/QQQ/DIA ETF 代理显示 prev_close + amount。Crypto / HK 暂未实装
+- **HK 指数 collector job 暂未实装** — `/api/indices/HSI.HK/minute` 返回 `stale=true, reason="hk_index_collector_pending"`
+- **Crypto IndexCard 暂搁置** — coingecko 429 限频,后续考虑 Binance Spot API
 - **CD 信号 1d 有时连续几天无新信号**:不是 bug,公式特性(底/顶背离低频事件)
-- **scheduler 每 10s 读一次 sqlite 拿 watchlist**:浪费但单读 <1ms 可忽略
-- **`acknowledged` 字段** 后端建好但 UI 没用:死代码,留待"已读"功能或删
-- 美股数据走 Alpaca SIP feed(2026-05-21 切换),前复权 split + dividend 已回算。如发现"价格跳变"先检查 split 日,看 `core/adapters/us.py::_fetch_history_alpaca` 的 `adjustment` 参数
+- 美股数据走 Alpaca SIP feed(2026-05-21 切换),前复权 split + dividend 已回算。价格跳变先查 split 日,看 `core/adapters/us.py::_fetch_history_alpaca` 的 `adjustment` 参数
 - 美股 4h tab 已启用,scheduler `cd:us:4h` ET 08:05/12:05/16:05/20:05 跑 4 次/日
