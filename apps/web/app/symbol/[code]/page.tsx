@@ -14,7 +14,8 @@ import { fetchBars, fetchChipSummary, fetchSymbolProfile } from '@/lib/symbol_ap
 import { listCDSignalsBySymbol } from '@/lib/cd_signals_api'
 import { CD_MARKER_INTERVALS, klineTabsForMarket } from '@/lib/intervals'
 import { inferMarket, isInTradingSession, isMarketOpenNow } from '@/lib/markets'
-import type { Interval } from '@/lib/types'
+import { useKlineStream } from '@/lib/use_kline_stream'
+import type { BarDTO, Interval } from '@/lib/types'
 
 export default function SymbolPage({ params }: { params: { code: string } }) {
   const symbol = decodeURIComponent(params.code)
@@ -49,8 +50,14 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
   const daysSinceY2020 = Math.ceil((Date.now() - new Date('2020-01-01').getTime()) / 86_400_000)
   const days = interval === '1m' ? 1 : isIntraday ? 5 : daysSinceY2020
 
+  // crypto 详情页 (非 1m) 走 SSE 实时推送, 不再 SWR 轮询
+  // 1m 仍走 SWR (KLineService 1m 进程内 55s 短缓存, WS 不推 1m, 分时图特殊路径)
+  const isCryptoMarket = effectiveMarket === 'crypto'
+  const useSSE = isCryptoMarket && interval !== '1m'
+  const streamBars = useKlineStream(symbol, interval, useSSE)
+
   const { data, error, isLoading } = useSWR(
-    `bars:${symbol}:${interval}:${days}`,
+    useSSE ? null : `bars:${symbol}:${interval}:${days}`,
     () => fetchBars(symbol, interval, days),
     {
       refreshInterval: () => {
@@ -62,6 +69,11 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
       revalidateOnFocus: interval === '1m',
     },
   )
+
+  // K 线渲染数据源: crypto SSE 优先, 其他 market 用 SWR
+  const displayBars: BarDTO[] = useSSE && streamBars.length > 0
+    ? streamBars
+    : (data?.bars ?? [])
 
   const { data: chipSummary, error: chipError, isLoading: chipLoading } = useSWR(
     effectiveMarket === 'ashare' ? `chip:${symbol}` : null,
@@ -89,18 +101,18 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
     { refreshInterval: 60_000 },
   )
   const markers: SignalMarker[] = useMemo(() => {
-    if (!signalsResp || !data || data.bars.length === 0) return []
+    if (!signalsResp || displayBars.length === 0) return []
     // 过滤超出 bars 时间窗口的历史 marker, 否则 lightweight-charts 会把越界 marker
     // 全部堆到最左边那根 bar 上 (intraday 视图 days=5, 但信号是全量历史的)
-    const minTs = new Date(data.bars[0].ts).getTime()
-    const maxTs = new Date(data.bars[data.bars.length - 1].ts).getTime()
+    const minTs = new Date(displayBars[0].ts).getTime()
+    const maxTs = new Date(displayBars[displayBars.length - 1].ts).getTime()
     return signalsResp.signals
       .filter((s) => {
         const t = new Date(s.bar_ts).getTime()
         return t >= minTs && t <= maxTs
       })
       .map((s) => ({ ts: s.bar_ts, signal_type: s.signal_type }))
-  }, [signalsResp, data])
+  }, [signalsResp, displayBars])
 
   // 分时模式:拉日线最后一根作 prevClose,只展示当日
   const { data: daily } = useSWR(
@@ -127,10 +139,10 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
     return daily.bars[daily.bars.length - 2]?.close ?? daily.bars[daily.bars.length - 1]?.close
   }, [daily])
   const latestClose = useMemo(() => {
-    const source = interval === '1m' ? todayBars : data?.bars
+    const source = interval === '1m' ? todayBars : displayBars
     if (!source || source.length === 0) return null
     return source[source.length - 1]?.close ?? null
-  }, [data?.bars, interval, todayBars])
+  }, [displayBars, interval, todayBars])
 
   // 当前价位指针(K 线模式用): 拉 1m 分时, 取最末根 close 作 livePrice
   // 在 5m/15m/30m/60m/4h K 线上画一条水平虚线, 让用户即使当前 bar 没收盘也能看到价位
@@ -170,8 +182,11 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
             </button>
           ))}
         </div>
-        {isLoading && !data && <p className="text-sm text-neutral-500">加载中…</p>}
-        {error && !data && <p className="text-sm text-red-400">加载失败:{String(error)}</p>}
+        {isLoading && !data && !useSSE && <p className="text-sm text-neutral-500">加载中…</p>}
+        {error && !data && !useSSE && <p className="text-sm text-red-400">加载失败:{String(error)}</p>}
+        {useSSE && streamBars.length === 0 && (
+          <p className="text-sm text-neutral-500">连接实时行情中…</p>
+        )}
 
         {/* 分时模式 */}
         {interval === '1m' && data && todayBars.length > 0 && (
@@ -187,19 +202,19 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
         )}
 
         {/* 其他周期:K 线 */}
-        {interval !== '1m' && data && data.bars.length > 0 && (
+        {interval !== '1m' && displayBars.length > 0 && (
           <KLineChart
-            bars={data.bars}
+            bars={displayBars}
             interval={interval}
             market={effectiveMarket}
             height={420}
             signals={signalInterval ? markers : undefined}
             livePrice={isKlineMode ? livePrice : null}
             chipLevels={chipLevels}
-            meta={data.meta}
+            meta={data?.meta}
           />
         )}
-        {interval !== '1m' && data && data.bars.length === 0 && (
+        {interval !== '1m' && !useSSE && data && data.bars.length === 0 && (
           <p className="text-sm text-yellow-400">无数据。请先 <code>make warmup</code> 或本周期还未抓取。</p>
         )}
       </section>
