@@ -14,10 +14,13 @@ dev: dev-redis
 	. .venv/bin/activate && honcho start -f Procfile
 
 dev-stop:
+	pkill -9 -f "apps.collector.ashare" 2>/dev/null || true
+	pkill -9 -f "apps.collector.us" 2>/dev/null || true
+	pkill -9 -f "apps.collector.crypto" 2>/dev/null || true
 	pkill -9 -f "apps.collector.main" 2>/dev/null || true
 	pkill -9 -f "uvicorn apps.api.main:app" 2>/dev/null || true
 	docker compose -f docker-compose.dev.yml stop redis
-	@echo "stopped collector / api / redis (web 由 honcho/Ctrl-C 管理)"
+	@echo "stopped collector_{ashare,us,crypto} / api / redis (web 由 honcho/Ctrl-C 管理)"
 
 test:
 	. .venv/bin/activate && pytest -m "not integration"

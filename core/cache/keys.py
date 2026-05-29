@@ -65,6 +65,11 @@ def state_leader_collector() -> str:
     return "state:leader:collector"
 
 
+def state_leader_collector_market(market: str) -> str:
+    """P1: collector 按 market 拆 3 进程后, 每个 market 独立 leader 锁."""
+    return f"state:leader:collector_{market}"
+
+
 def state_source(name: str) -> str:
     return f"state:source:{name}"
 

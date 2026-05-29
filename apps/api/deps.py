@@ -42,19 +42,34 @@ def get_quote_cache() -> QuoteCache:
     return QuoteCache(ttl_s=60)
 
 
+# P1: collector 拆 ashare/us/crypto 3 进程后, 每个 collector 在自己的 lifespan
+# 通过 set_bar_repo_override(...) 注入本市场专属 bar_repo (bars_{market}.duckdb).
+# api 进程不调用 setter → 始终拿 None, 完全脱离 DuckDB.
+_BAR_REPO_OVERRIDE: BarRepo | None = None
+
+
+def set_bar_repo_override(repo: BarRepo | None) -> None:
+    """collector 进程在 lifespan 早期调用, 注入本市场专属 BarRepo.
+    api 进程绝不调用 → get_bar_repo() 始终 None.
+    """
+    global _BAR_REPO_OVERRIDE
+    _BAR_REPO_OVERRIDE = repo
+    # 关键: 清掉所有依赖 get_bar_repo 的下游缓存, 让下次调用看到新 repo
+    get_bar_repo.cache_clear()
+    get_kline_service.cache_clear()
+    get_signal_scan_service.cache_clear()
+
+
 @lru_cache(maxsize=1)
 def get_bar_repo() -> BarRepo | None:
-    """api 进程返回 None (不读 DuckDB, 走 Redis bars cache);
-    collector / warmup / repair 返回 RW BarRepo.
+    """api 进程恒返 None (脱离 DuckDB, K 线读路径全走 RedisBarsCache).
 
-    雷区: DuckDB 文件锁是进程独占的, RW 进程占着, 任何 RO 连接都进不去 (macOS).
-    api 直接走 Redis bars 是唯一可靠的跨进程并发方案.
+    collector 进程在 lifespan 早期 set_bar_repo_override(BarRepo(...))
+    注入本市场专属 RW repo.
+
+    历史 read_only 路径保留向后兼容 (warmup / repair script 仍可显式构造 BarRepo).
     """
-    if os.getenv("MARKETPULSE_BARREPO_READONLY", "0") == "1":
-        return None
-    repo = BarRepo(str(_DATA / "bars.duckdb"))
-    repo.init()
-    return repo
+    return _BAR_REPO_OVERRIDE
 
 
 @lru_cache(maxsize=1)

@@ -24,12 +24,13 @@ class Leader:
         node_id: str,
         ttl_s: int = 15,
         renew_interval_s: int = 5,
+        lock_key: str | None = None,
     ) -> None:
         self._r = redis
         self._node_id = node_id
         self._ttl_s = ttl_s
         self._renew_interval_s = renew_interval_s
-        self._key = keys.state_leader_collector()
+        self._key = lock_key or keys.state_leader_collector()
         self._is_leader = False
         self._stopped = False
 
