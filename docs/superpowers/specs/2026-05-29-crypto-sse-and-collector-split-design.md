@@ -257,10 +257,74 @@ data: {"server_ts":"..."}
 
 ---
 
-## 9. 历史
+## 9. 实时未收盘价格更新(对齐币安 UI)
+
+### 9.1 事实
+
+Binance `<symbol>@kline_<interval>` WS 流不只在 bar 收盘时推送一次,而是**整个 interval 期间持续以 1-2 秒频率推送**:
+- **bar 进行中**(`k.x=false`):每 1-2s 推一帧, `c`(close)字段是当前实时价
+- **bar 收盘瞬间**(`k.x=true`):推一帧最终态
+- **下一根开始**:再以 1-2s 推 `k.x=false`
+
+这就是币安 web 客户端 K 线图最末根 bar 高 / 低 / 收实时变动的实现方式。
+
+40 路 combined stream × ~1Hz = ~40 events/s,可控。
+
+### 9.2 后端协议
+
+| WS 事件 | 后端动作 | Redis 写入 |
+|---|---|---|
+| `k.x=true`(收盘) | 持久化 | DuckDB `insert_bars` + Redis tail upsert + xadd `bus:bars.updated`(`final: true`) |
+| `k.x=false`(进行中) | 不持久化 | Redis `cache:bars:{market}:{symbol}:{interval}:current`(单根,TTL = 2×interval)+ xadd `bus:bars.updated`(`final: false`) |
+
+新 key:
+```python
+def cache_bars_current(market: str, symbol: str, interval: str) -> str:
+    return f"cache:bars:{market}:{symbol}:{interval}:current"
+```
+
+`bus:bars.updated` 消息 schema 加 `final: bool` 字段。
+
+### 9.3 SSE 协议扩展
+
+```
+event: init    # 历史 N 根, 含当前进行中 bar 的快照(从 :current key 读)
+event: bar     # k.x=true, 替换最末根为最终态, 持久化
+event: tick    # k.x=false, 仅更新最末根 OHLC/volume, 不持久化历史
+event: ping    # 心跳
+```
+
+数据结构:
+```json
+// bar (final)
+{"ts":"...","open":...,"high":...,"low":...,"close":...,"volume":...,"final":true}
+
+// tick (in-progress)
+{"ts":"...","open":...,"high":...,"low":...,"close":...,"volume":...,"final":false}
+```
+
+`tick` 与 `bar` 共享同一 ts(都是该 bar 的 close 时刻),区别在 `final` 标志。
+
+### 9.4 前端 hook 行为
+
+`useKlineStream(symbol, interval)` 收到事件:
+- `init`:替换全部 bars
+- `bar`(final=true):若末根 ts 匹配 → 替换末根为最终态;否则 append(新一根开始)
+- `tick`(final=false):若末根 ts 匹配 → 原地更新 high/low/close/volume(浅复制触发渲染);否则 append(WS 收到的第一帧 tick 即新 bar 起点)
+
+### 9.5 性能预算
+
+- 后端 Redis 写:进行中 1Hz × 40 路 = 40 SET/s + 40 XADD/s,Redis 性能远超
+- 网络:每个 SSE 客户端订阅 1 (symbol, interval),收到 ~1 event/s,~200 byte/event = 200 B/s
+- 前端 React 渲染:每秒 1 次 setState 替换末根,lightweight-charts 增量更新性能良好
+
+---
+
+## 10. 历史
 
 - 2026-05-13:原始 spec,collector 单进程
 - 2026-05-27:拆出 collector + api(2 进程),Plan 1
 - 2026-05-28:加固日志 / cron 闸门 / Redis bars tail
 - 2026-05-29:发现 DuckDB 跨进程锁问题,Redis tail 改造
 - 2026-05-29(本 spec):3 collector 进程隔离 + crypto + SSE
+- 2026-05-29(本 spec § 9):补充实时未收盘价格更新(WS 1-2s tick + SSE tick event)
