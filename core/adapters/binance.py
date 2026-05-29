@@ -203,10 +203,12 @@ class BinanceAdapter:
     def _parse_kline(symbol: str, project_interval: str, row: list) -> Bar:
         # row = [openTime, open, high, low, close, volume, closeTime,
         #        quoteVolume, trades, takerBaseVol, takerQuoteVol, ignore]
-        # closeTime 是 ms, Binance closeTime = openTime + interval - 1ms
-        # ts 用 closeTime + 1 (close 时刻边界, 符合项目 intraday close 语义)
-        close_ts_ms = row[6] + 1
-        ts = datetime.fromtimestamp(close_ts_ms / 1000, tz=timezone.utc)
+        # crypto 例外: bar.ts 用 openTime (与币安 / TradingView / 主流 crypto 平台
+        # K 线对齐口径一致, 一根 daily bar 标签 = 它的开盘自然日).
+        # 注: 这与项目 SSoT 雷区 3 (其他市场 ts=close) 不同, 因为 crypto 24/7
+        # 没有 session 切桶语义, open 对齐更直观.
+        open_ts_ms = row[0]
+        ts = datetime.fromtimestamp(open_ts_ms / 1000, tz=timezone.utc)
         return Bar(
             market="crypto",
             symbol=symbol,

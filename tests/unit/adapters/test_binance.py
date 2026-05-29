@@ -18,10 +18,9 @@ def test_symbol_mapping():
     assert _from_binance("ETHUSDC") == "ETH-USDC"
 
 
-def test_parse_kline_close_ts():
+def test_parse_kline_open_ts():
     # openTime 1700000000000 ms (5m bar)
-    # closeTime = openTime + 5m - 1ms = 1700000299999
-    # ts 用 closeTime + 1 (close 时刻边界)
+    # crypto 例外: bar.ts 用 openTime (与币安 / TradingView K 线对齐)
     row = [
         1700000000000,
         "1.0",
@@ -37,7 +36,7 @@ def test_parse_kline_close_ts():
         "0",
     ]
     bar = BinanceAdapter._parse_kline("BTC-USDT", "5m", row)
-    expected_ts = datetime.fromtimestamp(1700000300000 / 1000, tz=timezone.utc)
+    expected_ts = datetime.fromtimestamp(1700000000000 / 1000, tz=timezone.utc)
     assert bar.ts == expected_ts
     assert bar.open == Decimal("1.0")
     assert bar.high == Decimal("2.0")

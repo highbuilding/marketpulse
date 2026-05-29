@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import structlog
 
@@ -27,22 +27,16 @@ log = structlog.get_logger(__name__)
 INTERVALS = ("5m", "15m", "30m", "60m", "4h", "1d", "1wk", "1mo")
 SYMBOLS = ("BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "TRX-USDT")
 
-# 各 interval 回填窗口 (天). 大周期拉历史尽头, 小周期只拉近期足量
-INTERVAL_LOOKBACK_DAYS: dict[str, int] = {
-    "5m": 30,        # ~8640 bars
-    "15m": 60,       # ~5760
-    "30m": 120,      # ~5760
-    "60m": 365,      # ~8760
-    "4h": 365 * 3,   # ~6570
-    "1d": 365 * 12,  # 拉到 BTC 上市起 ~3000+
-    "1wk": 365 * 12, # ~459
-    "1mo": 365 * 12, # ~106
-}
+# 回填起点固定为 Binance 上线前 (2017-07-01 UTC). 所有 interval 从此拉到 now,
+# 让 Binance 自然返回该交易对上市起的全部历史 (用户要求"完整的, 不受 20 年后限制").
+# adapter 反向分页只传 endTime, Binance 返回最早一页即停, 不会真拉到 2017 之前的空数据.
+# 量级参考 (BTC, 单标的): 5m ≈ 84 万根, 15m ≈ 28 万, 1d ≈ 3000+, 1mo ≈ 100.
+# 写库走 DuckDB DataFrame 批量 upsert (77 万行 ~3s); Redis tail 仍截 MAX 2000.
+BINANCE_GENESIS = datetime(2017, 7, 1, tzinfo=timezone.utc)
 
 
-def _start_for(interval: str, end: datetime) -> datetime:
-    days = INTERVAL_LOOKBACK_DAYS.get(interval, 30)
-    return end - timedelta(days=days)
+def _start_for(interval: str, end: datetime) -> datetime:  # noqa: ARG001
+    return BINANCE_GENESIS
 
 
 async def backfill_one(

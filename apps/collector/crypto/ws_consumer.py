@@ -76,8 +76,10 @@ def _parse_kline_msg(stream_data: dict) -> tuple[Bar, bool] | None:
         sym = _binance_symbol_to_project(b_sym)
         if sym is None:
             return None
-        # bar close ts = k.T(close time, ms) + 1ms → UTC. 雷区 3: ts 必须是 close 时刻。
-        ts = datetime.fromtimestamp((k["T"] + 1) / 1000, tz=timezone.utc)
+        # crypto 例外: bar.ts 用 openTime (k.t), 与币安 / TradingView K 线对齐.
+        # 这与项目 SSoT 雷区 3 (其他市场 ts=close) 不同, crypto 24/7 无 session
+        # 切桶, open 对齐更直观.
+        ts = datetime.fromtimestamp(k["t"] / 1000, tz=timezone.utc)
         bar = Bar(
             market="crypto",
             symbol=sym,
