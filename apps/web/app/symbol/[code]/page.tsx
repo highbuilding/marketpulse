@@ -19,7 +19,10 @@ import type { BarDTO, Interval } from '@/lib/types'
 
 export default function SymbolPage({ params }: { params: { code: string } }) {
   const symbol = decodeURIComponent(params.code)
-  const [interval, setInterval] = useState<Interval>('1m')
+  // crypto 默认 5m (Binance WS 不推 1m, 默认落到第一个有数据的周期);
+  // 其他 market 默认 1m (分时图)
+  const initialInterval: Interval = inferMarket(symbol) === 'crypto' ? '5m' : '1m'
+  const [interval, setInterval] = useState<Interval>(initialInterval)
   const router = useRouter()
 
   // 判断是否指数 (000xxx.SH / 399xxx.SZ),指数不显示资金流面板

@@ -41,8 +41,14 @@ export function klineTabsForMarket(
       .filter((s) => ['1m', '1d', '1wk'].includes(s.key))
       .map((s) => ({ key: s.key, label: s.labelCn }))
   }
-  // 4h: crypto + 美股 SIP(16 60m bars/day → 4 根/日);A 股/HK 4h ≡ 1d 无意义
-  const allowFourH = market === 'crypto' || market === 'us'
+  // crypto: 不展示 1m (Binance WS 只订 5m+, 1m 不入库). 全周期 SSE 推送
+  if (market === 'crypto') {
+    return INTERVAL_SPECS
+      .filter((s) => s.isKline && s.key !== '1m')
+      .map((s) => ({ key: s.key, label: s.labelCn }))
+  }
+  // 4h: 美股 SIP(16 60m bars/day → 4 根/日);A 股/HK 4h ≡ 1d 无意义
+  const allowFourH = market === 'us'
   return INTERVAL_SPECS
     .filter((s) => s.isKline && (s.key !== '4h' || allowFourH))
     .map((s) => ({ key: s.key, label: s.labelCn }))
