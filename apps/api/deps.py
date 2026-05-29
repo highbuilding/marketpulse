@@ -72,6 +72,35 @@ def get_bar_repo() -> BarRepo | None:
     return _BAR_REPO_OVERRIDE
 
 
+# === 历史分页: api 转发到对应市场 collector 的只读接口 ===
+# DuckDB 单写多读互斥 → api 绝不直连 DuckDB (会撞锁甚至踢掉 collector 的写)。
+# 改为转发到 collector 进程内查询 (它本就持 RW repo, 同进程零锁冲突)。
+_COLLECTOR_HOST = os.getenv("COLLECTOR_HOST", "127.0.0.1")
+_COLLECTOR_PORTS: dict[str, int] = {
+    "ashare": int(os.getenv("COLLECTOR_ASHARE_PORT", "8788")),
+    "us": int(os.getenv("COLLECTOR_US_PORT", "8789")),
+    "crypto": int(os.getenv("COLLECTOR_CRYPTO_PORT", "8790")),
+}
+
+
+def collector_base_url(market: str) -> str | None:
+    port = _COLLECTOR_PORTS.get(market)
+    if port is None:
+        return None
+    return f"http://{_COLLECTOR_HOST}:{port}"
+
+
+@lru_cache(maxsize=1)
+def get_collector_http_client():
+    """转发到本机 collector 的 httpx client.
+
+    trust_env=False: 忽略 HTTP_PROXY/HTTPS_PROXY env (项目走 7890 代理),
+    localhost collector 调用绝不能经代理。
+    """
+    import httpx
+    return httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=2.0), trust_env=False)
+
+
 @lru_cache(maxsize=1)
 def get_redis_bars_cache():  # -> RedisBarsCache
     from core.cache.redis_bars_cache import RedisBarsCache  # noqa: PLC0415

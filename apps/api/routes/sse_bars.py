@@ -13,13 +13,13 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import structlog
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
-from apps.api.deps import get_redis_cache, get_redis_bars_cache
+from apps.api.deps import get_redis_cache
 from core.cache import keys
 from core.domain.markets import infer_market
 
@@ -27,7 +27,6 @@ log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api/sse", tags=["sse"])
 
 GROUP = "sse"
-INIT_TAIL_BARS = 200
 PING_INTERVAL_S = 30
 
 
@@ -40,32 +39,13 @@ async def sse_bars(
     symbol: str,
     interval: str,
     redis_cache=Depends(get_redis_cache),
-    redis_bars=Depends(get_redis_bars_cache),
 ):
     market = infer_market(symbol)
 
     async def gen():
-        # init: tail + current
-        end = datetime.now(timezone.utc)
-        start = end - timedelta(days=365 if interval in ("1d", "1wk", "1mo") else 30)
-        try:
-            history = await redis_bars.get_tail(market, symbol, interval, start, end)
-        except Exception as e:  # noqa: BLE001
-            log.warning("sse.history_read_failed", symbol=symbol, interval=interval, error=str(e))
-            history = []
-        bars_data = [
-            {
-                "ts": b.ts.isoformat(),
-                "open": float(b.open),
-                "high": float(b.high),
-                "low": float(b.low),
-                "close": float(b.close),
-                "volume": b.volume,
-                "final": True,
-            }
-            for b in history[-INIT_TAIL_BARS:]
-        ]
-        # current bar
+        # init: 只发当前进行中 bar (历史由 REST /bars/history 分页负责, 两通道解耦)。
+        # SSE 回归实时本职 —— 不再扛历史展示, 避免被 200 根上限钳死。
+        bars_data: list[dict] = []
         try:
             current = await redis_cache.get_msgpack(
                 keys.cache_bars_current(market, symbol, interval),

@@ -7,9 +7,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from apps.api.deps import (
-    get_chip_service, get_fund_flow_service, get_kline_service,
-    get_redis_cache, get_registry, get_symbol_directory_service,
-    get_volume_indicator_service,
+    get_chip_service, get_collector_http_client, get_fund_flow_service,
+    get_kline_service, get_redis_cache, get_registry,
+    get_symbol_directory_service, get_volume_indicator_service, collector_base_url,
 )
 from core.adapters.registry import AdapterRegistry
 from core.cache import keys
@@ -234,6 +234,55 @@ async def quote(
         volume=payload.get("volume"),
         ts=payload["ts"],
         meta=QuoteMeta(stale=age_s > 60, data_age_seconds=age_s),
+    )
+
+
+@router.get("/{symbol}/bars/history", response_model=BarsResponse)
+async def bars_history(
+    symbol: str,
+    interval: str = Query("1d"),
+    before: str | None = Query(None, description="ISO ts 游标, 空=最新一页"),
+    limit: int = Query(500, ge=1, le=2000),
+    client=Depends(get_collector_http_client),
+) -> BarsResponse:
+    """游标分页历史 (币安/TradingView 反向翻页口径)。
+
+    转发到对应市场 collector 的只读接口 (collector 同进程查 DuckDB, 零锁冲突)。
+    api 自己绝不碰 DuckDB。collector 不可达 → 优雅降级 stale。
+    """
+    if interval not in KLINE_INTERVALS:
+        raise HTTPException(400, f"invalid interval: {interval}")
+
+    market = infer_market(symbol)
+    base = collector_base_url(market) if market else None
+    if base is None:
+        return BarsResponse(
+            symbol=symbol, interval=interval, bars=[],
+            meta=BarsResponseMeta(stale=True, reason="unknown_market"),
+        )
+
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    if before:
+        params["before"] = before
+    try:
+        resp = await client.get(f"{base}/internal/bars/history", params=params)
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception:  # noqa: BLE001
+        return BarsResponse(
+            symbol=symbol, interval=interval, bars=[],
+            meta=BarsResponseMeta(stale=True, reason="collector_unreachable"),
+        )
+
+    raw = payload.get("bars", [])
+    meta = payload.get("meta", {})
+    return BarsResponse(
+        symbol=symbol, interval=interval,
+        bars=[BarDTO(**b) for b in raw],
+        meta=BarsResponseMeta(
+            stale=bool(meta.get("stale", False)),
+            reason=meta.get("reason"),
+        ),
     )
 
 
