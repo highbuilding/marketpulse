@@ -32,8 +32,19 @@ export function useKlineStream(
       setBars([])
       return
     }
-    const url = `/api/sse/bars/${encodeURIComponent(symbol)}/${interval}`
+    // SSE 直连 api 端口, 绕开 Next.js dev rewrites 代理 (代理会 buffer chunked stream
+    // 导致浏览器 EventSource 即便 readyState=OPEN 也收不到 init/tick 帧).
+    // 生产环境若同源部署可直接相对路径; 本地 dev 显式指定 8787.
+    const apiBase =
+      typeof window !== 'undefined' && window.location.port === '3000'
+        ? 'http://127.0.0.1:8787'
+        : ''
+    const url = `${apiBase}/api/sse/bars/${encodeURIComponent(symbol)}/${interval}`
     const es = new EventSource(url)
+
+    if (typeof window !== 'undefined') {
+      console.log('[useKlineStream] connect', { symbol, interval, url })
+    }
 
     const toBarDTO = (e: KlineEvent): BarDTO => ({
       ts: e.ts,
@@ -46,7 +57,9 @@ export function useKlineStream(
 
     es.addEventListener('init', (msg) => {
       const data = JSON.parse((msg as MessageEvent).data)
-      setBars((data.bars as KlineEvent[]).map(toBarDTO))
+      const dtos = (data.bars as KlineEvent[]).map(toBarDTO)
+      console.log('[useKlineStream] init', { count: dtos.length, last: dtos[dtos.length - 1]?.ts })
+      setBars(dtos)
     })
 
     es.addEventListener('bar', (msg) => {
@@ -73,11 +86,15 @@ export function useKlineStream(
       })
     })
 
-    es.onerror = () => {
-      /* EventSource 自动重连 — 不做处理 */
+    es.onopen = () => {
+      console.log('[useKlineStream] open', { symbol, interval })
+    }
+    es.onerror = (e) => {
+      console.warn('[useKlineStream] error', e, 'readyState=', es.readyState)
     }
 
     return () => {
+      console.log('[useKlineStream] close', { symbol, interval })
       es.close()
     }
   }, [symbol, interval, enabled])
