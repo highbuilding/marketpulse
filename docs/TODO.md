@@ -9,7 +9,27 @@
 
 ## 高价值 / 低代价
 
-### CI(持续集成)
+### 新机器重建数据库 — warmup 补足股票/美股全周期全历史(2026-05-30)
+
+> 背景:crypto 已做到"collector 启动自动回填 5 标的 × 8 周期 → 上市首日全历史"(`apps/collector/crypto/backfill.py::run_backfill`,lifespan 内 `create_task` 自动触发,已验证拉到 2017-08-17)。但股票/美股的 `apps/warmup.py` 还停在旧版,**新机器重建数据库时股票/美股历史不完整**,K 线滑动翻页(全市场通用的 `useBarsHistory`)在非 1d 周期会空白。三个缺口:
+
+- [ ] **warmup 扩展到全部周期**(当前只拉 `interval="1d"`)
+  - 现状:`apps/warmup.py::warmup` 写死 `svc.get_bars(sym, interval="1d", ...)`,缺 `5m/15m/30m/60m/4h/1wk/1mo`(前端 9 个周期见 `apps/web/lib/intervals.ts`)
+  - 改法:循环 `core/domain/intervals.py::INTERVAL_CONFIG` 的所有周期(参考 crypto `backfill.py::INTERVALS` 写法)
+  - 底层已就绪:`KLineService.get_bars` 已会落库(`core/services/kline_service.py:58 insert_bars`),核心只是加周期循环
+  - **价值:高(新机器重建数据库的前提) / 代价:低**
+
+- [ ] **warmup 放开时间窗口到上市首日**(当前受 `--days` 限制,默认 365)
+  - 现状:rolling window,对齐 crypto 的"完整历史"体验应支持拉到尽可能早
+  - 改法:参考 crypto `BINANCE_GENESIS` 固定起点思路;akshare(A股)/Alpaca(美股)各有最早可得日期(美股 Alpaca IEX 实测 1d 到 2020、intraday 受限,见本文档美股章节——拉到源能给的最早即可)
+  - **价值:中 / 代价:低-中**
+
+- [ ] **(可选)ashare/us collector 启动自动回填**(对齐 crypto,免手动 make warmup)
+  - 现状:股票/美股要手动 `make warmup`;crypto 是 lifespan 内自动 + 每日兜底
+  - 改法:在 `apps/collector/{ashare,us}/main.py` lifespan 挂首次回填 task(参考 crypto main.py:65-67)
+  - **价值:中(新机器开箱即用) / 代价:低**
+
+
 
 - [ ] **加 GitHub Actions workflow `.github/workflows/ci.yml`**
   - 后端:`pytest tests/`(目前 tests/unit 下已有用例,无人自动跑)
