@@ -6,6 +6,7 @@ export function inferMarket(symbol: string): Market {
   if (/\.(SH|SZ|BJ)$/.test(symbol)) return 'ashare'
   if (symbol.endsWith('.HK')) return 'hk'
   if (symbol.includes('/')) return 'crypto'
+  if (/-(USDT|USDC|BUSD|FDUSD)$/.test(symbol)) return 'crypto'
   return 'us'
 }
 

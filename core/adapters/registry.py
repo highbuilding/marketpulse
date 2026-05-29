@@ -6,7 +6,8 @@ import yaml
 
 from core.adapters.ashare import AShareAdapter
 from core.adapters.base import MarketAdapter
-from core.adapters.crypto import CryptoAdapter
+from core.adapters.binance import BinanceAdapter
+from core.adapters.crypto import CryptoAdapter  # 旧 coingecko adapter, 保留代码不再注册
 from core.adapters.hk import HKAdapter
 from core.adapters.us import USAdapter
 
@@ -15,7 +16,7 @@ _BUILDERS = {
     "ashare": AShareAdapter,
     "hk": HKAdapter,
     "us": USAdapter,
-    "crypto": CryptoAdapter,
+    "crypto": BinanceAdapter,
 }
 
 

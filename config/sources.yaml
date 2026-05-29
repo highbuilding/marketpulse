@@ -13,7 +13,7 @@ markets:
     # Alpaca 不支持 ^GSPC/^IXIC/^DJI Yahoo 风格指数;用 ETF 代理 SPY/QQQ/DIA
     index_symbols: ["SPY", "QQQ", "DIA"]
   crypto:
-    # coingecko 免费层 429 限频严重, 持续刷 tick.failed 噪音; 关闭等 Plan 4 接 Binance Spot
-    enabled: false
-    default_universe: ["BTC-USDT", "ETH-USDT", "BNB-USDT", "SOL-USDT"]
+    # 已切换到 Binance Spot adapter (P2): REST 回填 + WS 增量
+    enabled: true
+    default_universe: ["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "TRX-USDT"]
     index_symbols: ["BTC-USDT"]
