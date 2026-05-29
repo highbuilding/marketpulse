@@ -67,6 +67,15 @@ async def lifespan(app: FastAPI):
         run_backfill(adapter, bar_repo, redis_bars), name="crypto.backfill_initial"
     )
 
+    # === Binance WS 长连(P3,增量 push)===
+    from apps.collector.crypto.ws_consumer import consume_loop as ws_consume_loop
+    ws_task = asyncio.create_task(
+        ws_consume_loop(
+            repo=bar_repo, redis_bars=redis_bars, redis_cache=redis_cache,
+        ),
+        name="crypto.ws_consumer",
+    )
+
     # === APScheduler 每日 04:00 UTC 兜底 ===
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
     from apscheduler.triggers.cron import CronTrigger
@@ -85,6 +94,7 @@ async def lifespan(app: FastAPI):
         "collector_crypto.started",
         adapter="binance",
         backfill_task="crypto.backfill_initial",
+        ws_task="crypto.ws_consumer",
         cron="04:00 UTC daily",
     )
 
@@ -92,11 +102,13 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         sched.shutdown(wait=False)
+        ws_task.cancel()
         backfill_task.cancel()
-        try:
-            await backfill_task
-        except (asyncio.CancelledError, Exception):
-            pass
+        for t in (ws_task, backfill_task):
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
         try:
             await adapter.aclose()
         except Exception:

@@ -56,6 +56,14 @@ def cache_bars_full(market: str, symbol: str, interval: str, fingerprint: str) -
     return f"cache:bars:{market}:{symbol}:{interval}:full:{fingerprint}"
 
 
+def cache_bars_current(market: str, symbol: str, interval: str) -> str:
+    """进行中(未收盘)bar 单根 cache. TTL = 2x interval。
+
+    P3 由 ws_consumer 写入,api SSE 路由读出当前 tick 推给前端。
+    """
+    return f"cache:bars:{market}:{symbol}:{interval}:current"
+
+
 def cache_fundflow(symbol: str, *, days: int) -> str:
     return f"cache:fundflow:{symbol}:{days}d"
 
