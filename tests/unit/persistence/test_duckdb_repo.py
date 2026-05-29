@@ -49,3 +49,60 @@ def test_fetch_empty_returns_empty_list(tmp_path):
                                start=datetime(2026, 5, 1, tzinfo=timezone.utc),
                                end=datetime(2026, 5, 2, tzinfo=timezone.utc))
     assert rows == []
+
+
+def _seed_n(repo, market, symbol, n):
+    repo.insert_bars([_bar(market, symbol, i, 100 + i) for i in range(n)])
+
+
+def test_paged_latest_page_ascending(tmp_path):
+    repo = BarRepo(str(tmp_path / "bars.duckdb"))
+    repo.init()
+    _seed_n(repo, "crypto", "BTC-USDT", 50)
+    # before=None → 最新一页, limit=10 → 取最近 10 根, 升序
+    page = repo.fetch_history_paged("crypto", "BTC-USDT", "1d", before=None, limit=10)
+    assert len(page) == 10
+    assert all(page[i].ts <= page[i + 1].ts for i in range(len(page) - 1))
+    # 最新一根是 day_offset=49
+    assert page[-1].ts == datetime(2026, 5, 1, tzinfo=timezone.utc) + timedelta(days=49)
+    assert page[0].ts == datetime(2026, 5, 1, tzinfo=timezone.utc) + timedelta(days=40)
+
+
+def test_paged_cursor_no_overlap(tmp_path):
+    repo = BarRepo(str(tmp_path / "bars.duckdb"))
+    repo.init()
+    _seed_n(repo, "crypto", "BTC-USDT", 50)
+    page1 = repo.fetch_history_paged("crypto", "BTC-USDT", "1d", before=None, limit=10)
+    page2 = repo.fetch_history_paged("crypto", "BTC-USDT", "1d", before=page1[0].ts, limit=10)
+    assert len(page2) == 10
+    # page2 全部严格早于 page1 最老一根 (无重叠)
+    assert page2[-1].ts < page1[0].ts
+    assert all(page2[i].ts <= page2[i + 1].ts for i in range(len(page2) - 1))
+
+
+def test_paged_floor_returns_partial(tmp_path):
+    repo = BarRepo(str(tmp_path / "bars.duckdb"))
+    repo.init()
+    _seed_n(repo, "crypto", "BTC-USDT", 25)
+    # 翻到底: 一直用 before 游标翻, 直到不足一页
+    cursor = None
+    total = 0
+    pages = 0
+    while True:
+        page = repo.fetch_history_paged("crypto", "BTC-USDT", "1d", before=cursor, limit=10)
+        if not page:
+            break
+        total += len(page)
+        pages += 1
+        cursor = page[0].ts
+        if len(page) < 10:  # 不足一页 = 到顶
+            break
+    assert total == 25
+    assert pages == 3  # 10 + 10 + 5
+
+
+def test_paged_empty_symbol(tmp_path):
+    repo = BarRepo(str(tmp_path / "bars.duckdb"))
+    repo.init()
+    page = repo.fetch_history_paged("crypto", "NOPE-USDT", "1d", before=None, limit=10)
+    assert page == []
