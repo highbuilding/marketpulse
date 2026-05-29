@@ -58,8 +58,12 @@ export function useKlineStream(
     es.addEventListener('init', (msg) => {
       const data = JSON.parse((msg as MessageEvent).data)
       const dtos = (data.bars as KlineEvent[]).map(toBarDTO)
-      console.log('[useKlineStream] init', { count: dtos.length, last: dtos[dtos.length - 1]?.ts })
-      setBars(dtos)
+      // 按 ts 去重 (后到覆盖) + 升序排序, 防御 server 端 init 偶发重复 ts
+      const map = new Map<string, BarDTO>()
+      for (const b of dtos) map.set(b.ts, b)
+      const sorted = Array.from(map.values()).sort((a, b) => a.ts.localeCompare(b.ts))
+      console.log('[useKlineStream] init', { count: sorted.length, last: sorted[sorted.length - 1]?.ts })
+      setBars(sorted)
     })
 
     es.addEventListener('bar', (msg) => {
@@ -69,6 +73,10 @@ export function useKlineStream(
         const dto = toBarDTO(ev)
         if (last && last.ts === ev.ts) {
           return [...prev.slice(0, -1), dto]
+        }
+        // 防御: 即便 ts > last 也确认 strict ascending (旧 stream 残留 race)
+        if (last && ev.ts <= last.ts) {
+          return prev  // 丢弃乱序事件
         }
         return [...prev, dto]
       })
@@ -81,6 +89,9 @@ export function useKlineStream(
         const dto = toBarDTO(ev)
         if (last && last.ts === ev.ts) {
           return [...prev.slice(0, -1), dto]
+        }
+        if (last && ev.ts <= last.ts) {
+          return prev  // 丢弃乱序 tick
         }
         return [...prev, dto]
       })

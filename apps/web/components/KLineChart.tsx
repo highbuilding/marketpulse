@@ -41,7 +41,13 @@ function toBarTime(iso: string, interval: Interval, market: Market): Time {
   if (INTRADAY.has(interval)) {
     return ((new Date(iso).getTime() / 1000) + tzOffsetSeconds(market, iso)) as Time
   }
-  // 日线: 按市场时区切日历
+  // 日线/周线/月线: 按市场口径切日历
+  // - crypto: ts 已是 UTC 自然日 close (5/30T00:00Z = 5/29 这根), 减 1ms 取 5/29 标签
+  // - 其他: 按市场时区切, ts = BJT/ET 自然日 00:00 直接 toLocaleDateString
+  if (market === 'crypto') {
+    const t = new Date(iso).getTime() - 1
+    return new Date(t).toISOString().slice(0, 10) as Time
+  }
   return new Date(iso).toLocaleDateString('en-CA',
     { timeZone: marketTz(market) }) as Time
 }
