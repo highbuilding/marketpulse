@@ -42,11 +42,10 @@ function toBarTime(iso: string, interval: Interval, market: Market): Time {
     return ((new Date(iso).getTime() / 1000) + tzOffsetSeconds(market, iso)) as Time
   }
   // 日线/周线/月线: 按市场口径切日历
-  // - crypto: ts 已是 UTC 自然日 close (5/30T00:00Z = 5/29 这根), 减 1ms 取 5/29 标签
+  // - crypto: ts 已是 UTC 自然日 open (5/29T00:00Z = 5/29 这根), 直接 slice(0,10) 即得标签
   // - 其他: 按市场时区切, ts = BJT/ET 自然日 00:00 直接 toLocaleDateString
   if (market === 'crypto') {
-    const t = new Date(iso).getTime() - 1
-    return new Date(t).toISOString().slice(0, 10) as Time
+    return new Date(iso).toISOString().slice(0, 10) as Time
   }
   return new Date(iso).toLocaleDateString('en-CA',
     { timeZone: marketTz(market) }) as Time
@@ -109,6 +108,9 @@ export function KLineChart({
   const ref = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const candleRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
+  const volumeRef = useRef<ISeriesApi<'Histogram'> | null>(null)
+  const priceLineRefsRef = useRef<IPriceLine[]>([])
+  const didFitRef = useRef(false)
   const stats = useMemo(() => computeStats(bars), [bars])
   const intraday = INTRADAY.has(interval)
 
@@ -120,6 +122,9 @@ export function KLineChart({
     return () => clearInterval(id)
   }, [intraday, interval])
 
+  // Effect 1: 创建 chart + series. 只在 height/interval/market 变 (interval 切换需要
+  // 重建 timeScale 配置) 时重建. bars/signals/livePrice 等数据更新走下面的 effect 单独
+  // setData / setMarkers / priceLines, 不重建 chart → 用户视野不会被强制拉回末端.
   useEffect(() => {
     if (!ref.current) return
     const chart = createChart(ref.current, {
@@ -139,7 +144,6 @@ export function KLineChart({
       rightPriceScale: { borderColor: '#262626' },
     })
     chartRef.current = chart
-
     const candle = chart.addCandlestickSeries({
       upColor: '#22c55e', downColor: '#ef4444',
       borderUpColor: '#22c55e', borderDownColor: '#ef4444',
@@ -151,6 +155,33 @@ export function KLineChart({
       color: '#525252',
     })
     volume.priceScale().applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } })
+    volumeRef.current = volume
+    didFitRef.current = false  // 新建 chart, 等下次 setData 时 fit 一次
+
+    const ro = new ResizeObserver(() => {
+      if (ref.current) chart.applyOptions({ width: ref.current.clientWidth })
+    })
+    ro.observe(ref.current)
+
+    return () => {
+      ro.disconnect()
+      for (const line of priceLineRefsRef.current) {
+        try { candle.removePriceLine(line) } catch { /* chart 已销毁可忽略 */ }
+      }
+      priceLineRefsRef.current = []
+      chart.remove()
+      chartRef.current = null
+      candleRef.current = null
+      volumeRef.current = null
+    }
+  }, [height, interval, market, intraday])
+
+  // Effect 2: setData. bars / placeholder ticker / livePrice (影响占位末根) 变化时
+  // 仅 setData, 不动 chart 主体, 用户当前 visibleRange 保留.
+  useEffect(() => {
+    const candle = candleRef.current
+    const volume = volumeRef.current
+    if (!candle || !volume) return
 
     const candleData: CandlestickData[] = bars.map((b) => ({
       time: toBarTime(b.ts, interval, market),
@@ -163,9 +194,6 @@ export function KLineChart({
     }))
 
     // 占位 bar (intraday + 1d, 不含 1m): 末根真实 bar 已收盘后, 后续 bucket 用占位
-    // - 已过期 bucket (close <= now, 但数据没拉到): 灰色撑满, 表示"应有数据但未到"
-    // - 当前 bucket (close > now): 用 livePrice 渲染实时彩色蜡烛 (永远是最末根)
-    // 关键: 仅在市场处于交易时段时显示 placeholder, 否则休市期间所有周期会无谓堆 6 根
     if (intraday && interval !== '1m' && bars.length > 0 && isMarketOpenNow(market)) {
       const lastBar = bars[bars.length - 1]
       const lastCloseMs = new Date(lastBar.ts).getTime()
@@ -174,25 +202,22 @@ export function KLineChart({
       const MAX_PLACEHOLDERS = 6
       let nextCloseMs = lastCloseMs + intervalMs
       const placeholdersToAdd: number[] = []
-      // 已过期但数据没拉到的 bucket (close <= now)
       while (nowMs >= nextCloseMs && placeholdersToAdd.length < MAX_PLACEHOLDERS - 1) {
         placeholdersToAdd.push(nextCloseMs)
         nextCloseMs += intervalMs
       }
-      // 永远再加一根"当前正在生成"的 bucket: close 时刻 > now (尚未结束)
       if (placeholdersToAdd.length < MAX_PLACEHOLDERS) {
         placeholdersToAdd.push(nextCloseMs)
       }
       if (placeholdersToAdd.length > 0) {
-        // 计算所有真实 bar 的 high/low 全局范围, 给"已错过"placeholder 撑满高度
         let gHigh = -Infinity
         let gLow = Infinity
         for (const b of bars) {
           if (b.high > gHigh) gHigh = b.high
           if (b.low < gLow) gLow = b.low
         }
-        const grayTransparent = '#73737344'  // 27% alpha 灰色
-        const lastIdx = placeholdersToAdd.length - 1  // 最末根 = 最贴近 now = 当前正在生成的 bucket
+        const grayTransparent = '#73737344'
+        const lastIdx = placeholdersToAdd.length - 1
 
         for (let i = 0; i < placeholdersToAdd.length; i++) {
           const ms = placeholdersToAdd[i]
@@ -201,7 +226,6 @@ export function KLineChart({
           const isCurrent = (i === lastIdx)
 
           if (isCurrent && livePrice !== undefined && livePrice !== null && Number.isFinite(livePrice)) {
-            // 当前 bucket: 用 livePrice 渲染实时彩色蜡烛 (open = 上根 close)
             const openPrice = lastBar.close
             const isUp = livePrice >= openPrice
             const liveColor = isUp ? '#22c55e' : '#ef4444'
@@ -212,7 +236,7 @@ export function KLineChart({
               low: Math.min(openPrice, livePrice),
               close: livePrice,
               color: liveColor,
-              borderColor: '#fbbf24',          // 琥珀边框, 醒目区分已收盘 bar
+              borderColor: '#fbbf24',
               wickColor: liveColor,
             } as CandlestickData)
             volData.push({
@@ -221,7 +245,6 @@ export function KLineChart({
               color: `${liveColor}66`,
             })
           } else {
-            // 已错过的 bucket (或没拿到 livePrice): 灰色撑满
             candleData.push({
               time: placeholderTime,
               open: gLow, high: gHigh, low: gLow, close: gHigh,
@@ -242,28 +265,50 @@ export function KLineChart({
     candle.setData(dedupAscByTime(candleData))
     volume.setData(dedupAscByTime(volData))
 
-    if (signals && signals.length > 0) {
-      const markers: SeriesMarker<Time>[] = signals.map((s) => ({
-        time: toBarTime(s.ts, interval, market),
-        position: s.signal_type === 'buy' ? 'belowBar' : 'aboveBar',
-        color: s.signal_type === 'buy' ? '#ef4444' : '#22c55e',
-        shape: s.signal_type === 'buy' ? 'arrowUp' : 'arrowDown',
-        text: s.signal_type === 'buy' ? 'CD买' : 'CD卖',
-      }))
-      markers.sort((a, b) => {
-        if (a.time < b.time) return -1
-        if (a.time > b.time) return 1
-        return 0
-      })
-      candle.setMarkers(markers)
+    // 仅在第一次有数据时 fit 一次, 之后保留用户 visibleRange (鼠标拖看历史不会被强制拉回末端)
+    if (!didFitRef.current && candleData.length > 0) {
+      chartRef.current?.timeScale().fitContent()
+      didFitRef.current = true
     }
+  }, [bars, interval, market, intraday, livePrice, ticker])
 
-    // 当前价位指针: livePrice 来自 1m 分时, 即使当前 interval 的 K 线还没收盘也能看到价位
-    const priceLineRefs: IPriceLine[] = []
+  // Effect 3: signals 变化 → setMarkers
+  useEffect(() => {
+    const candle = candleRef.current
+    if (!candle) return
+    if (!signals || signals.length === 0) {
+      candle.setMarkers([])
+      return
+    }
+    const markers: SeriesMarker<Time>[] = signals.map((s) => ({
+      time: toBarTime(s.ts, interval, market),
+      position: s.signal_type === 'buy' ? 'belowBar' : 'aboveBar',
+      color: s.signal_type === 'buy' ? '#ef4444' : '#22c55e',
+      shape: s.signal_type === 'buy' ? 'arrowUp' : 'arrowDown',
+      text: s.signal_type === 'buy' ? 'CD买' : 'CD卖',
+    }))
+    markers.sort((a, b) => {
+      if (a.time < b.time) return -1
+      if (a.time > b.time) return 1
+      return 0
+    })
+    candle.setMarkers(markers)
+  }, [signals, interval, market])
+
+  // Effect 4: livePrice / chipLevels 变化 → 重建 priceLines (现价虚线 + 筹码层级线)
+  useEffect(() => {
+    const candle = candleRef.current
+    if (!candle) return
+    // 清旧 priceLines
+    for (const line of priceLineRefsRef.current) {
+      try { candle.removePriceLine(line) } catch { /* ignore */ }
+    }
+    priceLineRefsRef.current = []
+
     if (livePrice !== undefined && livePrice !== null && Number.isFinite(livePrice)) {
-      priceLineRefs.push(candle.createPriceLine({
+      priceLineRefsRef.current.push(candle.createPriceLine({
         price: livePrice,
-        color: '#fbbf24',          // amber-400, 醒目但不与涨绿/跌红冲突
+        color: '#fbbf24',
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
         axisLabelVisible: true,
@@ -280,7 +325,7 @@ export function KLineChart({
       ]
       for (const line of lines) {
         if (line.price == null || !Number.isFinite(line.price)) continue
-        priceLineRefs.push(candle.createPriceLine({
+        priceLineRefsRef.current.push(candle.createPriceLine({
           price: line.price,
           color: line.color,
           lineWidth: line.width,
@@ -290,24 +335,7 @@ export function KLineChart({
         }))
       }
     }
-
-    chart.timeScale().fitContent()
-
-    const ro = new ResizeObserver(() => {
-      if (ref.current) chart.applyOptions({ width: ref.current.clientWidth })
-    })
-    ro.observe(ref.current)
-
-    return () => {
-      ro.disconnect()
-      for (const line of priceLineRefs) {
-        try { candle.removePriceLine(line) } catch { /* chart 已销毁可忽略 */ }
-      }
-      chart.remove()
-      chartRef.current = null
-      candleRef.current = null
-    }
-  }, [bars, height, interval, intraday, signals, market, livePrice, chipLevels, ticker])
+  }, [livePrice, chipLevels, intraday])
 
   return (
     <div className="w-full">
