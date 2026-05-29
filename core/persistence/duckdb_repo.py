@@ -6,6 +6,7 @@ from pathlib import Path
 from threading import RLock
 
 import duckdb
+import pandas as pd
 
 from core.domain.models import Bar
 
@@ -47,6 +48,12 @@ class BarRepo:
             c.execute("ALTER TABLE bars ADD COLUMN IF NOT EXISTS turnover DOUBLE")
             c.execute("ALTER TABLE bars ADD COLUMN IF NOT EXISTS outstanding_share DOUBLE")
 
+    # 列顺序与 bars 表 schema 严格一致, 供 DataFrame 批量 upsert 使用
+    _COLS = (
+        "market", "symbol", "ts", "interval", "open", "high", "low", "close",
+        "volume", "amount", "turnover", "outstanding_share",
+    )
+
     def insert_bars(self, bars: list[Bar]) -> None:
         with self._lock:
             if not bars:
@@ -56,19 +63,31 @@ class BarRepo:
                 b.interval, b.open, b.high, b.low, b.close, b.volume,
                 b.amount, b.turnover, b.outstanding_share,
             ) for b in bars]
+            # 向量化批量 upsert: register DataFrame + INSERT ... SELECT ... ON CONFLICT.
+            # 坑: 早期用 executemany 逐行 upsert, 回填全周期 5m (~77 万根/标的) 时
+            # 单标的插入耗时 10+ 分钟 (20k 行 ≈ 16s, 线性放大). DataFrame 批量走
+            # DuckDB 列式引擎, 77 万行 ~3s. 见 backfill 全历史窗口扩大后的性能回归.
+            df = pd.DataFrame(rows, columns=list(self._COLS))
             with self._conn() as c:
-                c.executemany("""
-                    INSERT INTO bars (
-                        market, symbol, ts, interval, open, high, low, close, volume,
-                        amount, turnover, outstanding_share
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT (market, symbol, interval, ts) DO UPDATE SET
-                        open=excluded.open, high=excluded.high, low=excluded.low,
-                        close=excluded.close, volume=excluded.volume,
-                        amount=excluded.amount, turnover=excluded.turnover,
-                        outstanding_share=excluded.outstanding_share
-                """, rows)
+                c.register("_incoming_bars", df)
+                try:
+                    c.execute("""
+                        INSERT INTO bars (
+                            market, symbol, ts, interval, open, high, low, close,
+                            volume, amount, turnover, outstanding_share
+                        )
+                        SELECT
+                            market, symbol, ts, interval, open, high, low, close,
+                            volume, amount, turnover, outstanding_share
+                        FROM _incoming_bars
+                        ON CONFLICT (market, symbol, interval, ts) DO UPDATE SET
+                            open=excluded.open, high=excluded.high, low=excluded.low,
+                            close=excluded.close, volume=excluded.volume,
+                            amount=excluded.amount, turnover=excluded.turnover,
+                            outstanding_share=excluded.outstanding_share
+                    """)
+                finally:
+                    c.unregister("_incoming_bars")
 
     def fetch_history(
         self, market: str, symbol: str,
