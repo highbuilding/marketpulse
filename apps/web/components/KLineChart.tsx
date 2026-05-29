@@ -57,6 +57,19 @@ function fmtPrice(v: number): string {
   return v >= 100 ? v.toFixed(2) : v >= 1 ? v.toFixed(3) : v.toFixed(4)
 }
 
+// lightweight-charts setData 要求 time 严格升序且无重复.
+// 在 KLineChart 边界统一兜底: 同 time 后写覆盖, 然后升序.
+// 这一道防御覆盖所有上游路径 (SSE / SWR / placeholder / strict mode race / interval 切换 race).
+function dedupAscByTime<T extends { time: Time }>(rows: T[]): T[] {
+  const map = new Map<string, T>()
+  for (const r of rows) map.set(String(r.time), r)
+  return Array.from(map.values()).sort((a, b) => {
+    if (a.time < b.time) return -1
+    if (a.time > b.time) return 1
+    return 0
+  })
+}
+
 function fmtVolume(v: number): string {
   if (v >= 1e8) return `${(v / 1e8).toFixed(2)}亿`
   if (v >= 1e4) return `${(v / 1e4).toFixed(2)}万`
@@ -226,8 +239,8 @@ export function KLineChart({
       }
     }
 
-    candle.setData(candleData)
-    volume.setData(volData)
+    candle.setData(dedupAscByTime(candleData))
+    volume.setData(dedupAscByTime(volData))
 
     if (signals && signals.length > 0) {
       const markers: SeriesMarker<Time>[] = signals.map((s) => ({
