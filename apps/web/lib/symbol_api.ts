@@ -9,6 +9,18 @@ export async function fetchBars(symbol: string, interval: Interval, days: number
   return r.json()
 }
 
+// 游标分页历史 (币安/TradingView 反向翻页口径)。
+// before 空 = 最新一页; 传上一页最老一根的 ts 翻更早一页, 直到返回 < limit (到顶)。
+export async function fetchBarsHistory(
+  symbol: string, interval: Interval, opts: { before?: string; limit?: number } = {},
+): Promise<BarsResponse> {
+  const sp = new URLSearchParams({ interval, limit: String(opts.limit ?? 500) })
+  if (opts.before) sp.set('before', opts.before)
+  const r = await fetch(`/api/symbols/${symbol}/bars/history?${sp}`, { cache: 'no-store' })
+  if (!r.ok) throw new Error(`${r.status}`)
+  return r.json()
+}
+
 export async function fetchSymbolFundFlow(symbol: string, days = 30): Promise<FundFlowResponse> {
   const r = await fetch(`/api/symbols/${symbol}/fund_flow?days=${days}`, { cache: 'no-store' })
   if (!r.ok) throw new Error(`${r.status}`)

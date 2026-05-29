@@ -1,9 +1,10 @@
 // 通过 SSE 实时订阅 K 线 (crypto 详情页用)。
 // 后端路由: /api/sse/bars/{symbol}/{interval} 推送 init / bar / tick 三种 event。
-// - init: 一次性下发历史 bars (全量替换)
+// - init: 只下发当前进行中 bar (历史由 REST /bars/history 分页负责, 两通道解耦)
 // - bar (final=true): 一根 bar 收盘 → 替换末根 (ts 匹配) 或 append
 // - tick (final=false): 进行中的 bar 每 1-2s 更新一次 → 替换末根 (ts 匹配) 或 append
 // onerror 留空 → EventSource 自动重连。
+// 返回值是"实时尾部"(最右一根附近), 调用方 merge 到 REST 历史之上。
 //
 // A 股 / 美股仍走 SWR (传 enabled=false 即可禁用本 hook),P7 后续扩展。
 

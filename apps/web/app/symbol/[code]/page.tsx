@@ -15,7 +15,10 @@ import { listCDSignalsBySymbol } from '@/lib/cd_signals_api'
 import { CD_MARKER_INTERVALS, klineTabsForMarket } from '@/lib/intervals'
 import { inferMarket, isInTradingSession, isMarketOpenNow } from '@/lib/markets'
 import { useKlineStream } from '@/lib/use_kline_stream'
+import { useBarsHistory, mergeBarsAsc } from '@/lib/use_bars_history'
 import type { BarDTO, Interval } from '@/lib/types'
+
+const EMPTY_BARS: BarDTO[] = []
 
 export default function SymbolPage({ params }: { params: { code: string } }) {
   const symbol = decodeURIComponent(params.code)
@@ -49,34 +52,39 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
   )
 
   const isIntraday = ['1m', '5m', '15m', '30m', '60m'].includes(interval)
-  // 日/周/月线 + 4h:从 2020-01-01 至今,确保至少覆盖 6 年(60m 重采样源也要跨足够长的窗口)
-  const daysSinceY2020 = Math.ceil((Date.now() - new Date('2020-01-01').getTime()) / 86_400_000)
-  const days = interval === '1m' ? 1 : isIntraday ? 5 : daysSinceY2020
-
-  // crypto 详情页 (非 1m) 走 SSE 实时推送, 不再 SWR 轮询
-  // 1m 仍走 SWR (KLineService 1m 进程内 55s 短缓存, WS 不推 1m, 分时图特殊路径)
   const isCryptoMarket = effectiveMarket === 'crypto'
-  const useSSE = isCryptoMarket && interval !== '1m'
-  const streamBars = useKlineStream(symbol, interval, useSSE)
 
+  // === 取数模型 (业界标准: 历史拉取 + 实时推送两通道解耦) ===
+  // 1m 分时: 仍走 SWR fetchBars (当日分时图特殊路径, 不入历史分页)。
+  // 其他周期 K 线: useBarsHistory 游标分页打底 (所有市场通用, 首屏 500 根 + 滑动翻页),
+  //   crypto 额外用 SSE 推实时尾部 (最右一根), merge 到分页历史之上。
+  const isKline = interval !== '1m'
+  const useSSE = isCryptoMarket && isKline  // crypto K 线走 SSE 实时尾部
+
+  // 1m 分时仍用 SWR (KLineService 1m 进程内 55s 短缓存, WS 不推 1m)
   const { data, error, isLoading } = useSWR(
-    useSSE ? null : `bars:${symbol}:${interval}:${days}`,
-    () => fetchBars(symbol, interval, days),
+    interval === '1m' ? `bars:${symbol}:1m:1` : null,
+    () => fetchBars(symbol, '1m', 1),
     {
-      refreshInterval: () => {
-        // 1m 分时 + 其他 intraday: 仅当本市场盘中才轮询, 否则停 (cache 也不会变)
-        if (interval === '1m') return isMarketOpenNow(effectiveMarket) ? 60_000 : 0
-        if (isIntraday) return isMarketOpenNow(effectiveMarket) ? 60_000 : 0
-        return 0
-      },
-      revalidateOnFocus: interval === '1m',
+      refreshInterval: () => (isMarketOpenNow(effectiveMarket) ? 60_000 : 0),
+      revalidateOnFocus: true,
     },
   )
 
-  // K 线渲染数据源: crypto SSE 优先, 其他 market 用 SWR
-  const displayBars: BarDTO[] = useSSE && streamBars.length > 0
-    ? streamBars
-    : (data?.bars ?? [])
+  // K 线历史: 游标分页 (首屏最新一页 + 向左滑翻更早页)。盘中轮询刷新最新一根。
+  const hist = useBarsHistory(symbol, interval, effectiveMarket, {
+    enabled: isKline,
+    poll: isIntraday,  // intraday 盘中刷新最新一根; 日/周/月线 head 基本不变, 不轮询
+  })
+
+  // crypto 实时尾部 (SSE): 只更新最右一根, 不再扛历史
+  const streamBars = useKlineStream(symbol, interval, useSSE)
+
+  // K 线渲染数据源: 分页历史打底 + (crypto) SSE 实时尾部覆盖末根
+  const displayBars: BarDTO[] = useMemo(() => {
+    if (!isKline) return EMPTY_BARS
+    return useSSE ? mergeBarsAsc(hist.bars, streamBars) : hist.bars
+  }, [isKline, useSSE, hist.bars, streamBars])
 
   const { data: chipSummary, error: chipError, isLoading: chipLoading } = useSWR(
     effectiveMarket === 'ashare' ? `chip:${symbol}` : null,
@@ -185,10 +193,15 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
             </button>
           ))}
         </div>
-        {isLoading && !data && !useSSE && <p className="text-sm text-neutral-500">加载中…</p>}
-        {error && !data && !useSSE && <p className="text-sm text-red-400">加载失败:{String(error)}</p>}
-        {useSSE && streamBars.length === 0 && (
-          <p className="text-sm text-neutral-500">连接实时行情中…</p>
+        {/* 1m 分时: SWR 状态 */}
+        {interval === '1m' && isLoading && !data && <p className="text-sm text-neutral-500">加载中…</p>}
+        {interval === '1m' && error && !data && <p className="text-sm text-red-400">加载失败:{String(error)}</p>}
+        {/* K 线: 分页历史状态 */}
+        {isKline && hist.loading && displayBars.length === 0 && (
+          <p className="text-sm text-neutral-500">加载中…</p>
+        )}
+        {isKline && hist.error && displayBars.length === 0 && (
+          <p className="text-sm text-red-400">加载失败:{String(hist.error)}</p>
         )}
 
         {/* 分时模式 */}
@@ -205,7 +218,7 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
         )}
 
         {/* 其他周期:K 线 */}
-        {interval !== '1m' && displayBars.length > 0 && (
+        {isKline && displayBars.length > 0 && (
           <KLineChart
             bars={displayBars}
             interval={interval}
@@ -214,10 +227,13 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
             signals={signalInterval ? markers : undefined}
             livePrice={isKlineMode ? livePrice : null}
             chipLevels={chipLevels}
-            meta={data?.meta}
+            meta={hist.meta}
+            onLoadMore={hist.loadMore}
+            hasMore={hist.hasMore}
+            loadingMore={hist.loadingMore}
           />
         )}
-        {interval !== '1m' && !useSSE && data && data.bars.length === 0 && (
+        {isKline && !hist.loading && displayBars.length === 0 && (
           <p className="text-sm text-yellow-400">无数据。请先 <code>make warmup</code> 或本周期还未抓取。</p>
         )}
       </section>

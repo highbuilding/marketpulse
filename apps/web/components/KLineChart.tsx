@@ -33,6 +33,10 @@ export interface KLineChartProps {
     cost90High?: number | null
   } | null
   meta?: ResponseMeta
+  // 滑动翻页 (历史懒加载, 币安口径): 可视区左边界逼近已加载最老一根时触发。
+  onLoadMore?: () => void
+  hasMore?: boolean
+  loadingMore?: boolean
 }
 
 const INTRADAY: ReadonlySet<Interval> = new Set(['1m', '5m', '15m', '30m', '60m', '4h'])
@@ -104,6 +108,7 @@ function computeStats(bars: BarDTO[]): Stats | null {
 
 export function KLineChart({
   bars, interval, market, height = 400, signals, livePrice, chipLevels, meta,
+  onLoadMore, hasMore, loadingMore,
 }: KLineChartProps) {
   const ref = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -111,6 +116,13 @@ export function KLineChart({
   const volumeRef = useRef<ISeriesApi<'Histogram'> | null>(null)
   const priceLineRefsRef = useRef<IPriceLine[]>([])
   const didFitRef = useRef(false)
+  // 翻页回调/状态用 ref 持有, 避免 subscribe 闭包拿到过期值 (subscribe 只在建图时挂一次)
+  const loadMoreRef = useRef<(() => void) | undefined>(onLoadMore)
+  const hasMoreRef = useRef<boolean | undefined>(hasMore)
+  const loadingMoreRef = useRef<boolean | undefined>(loadingMore)
+  loadMoreRef.current = onLoadMore
+  hasMoreRef.current = hasMore
+  loadingMoreRef.current = loadingMore
   const stats = useMemo(() => computeStats(bars), [bars])
   const intraday = INTRADAY.has(interval)
 
@@ -163,8 +175,19 @@ export function KLineChart({
     })
     ro.observe(ref.current)
 
+    // 滑动翻页: 可视区左边界逼近已加载最老一根 (logical from < 阈值) → 拉更早一页。
+    // lightweight-charts 在 prepend setData 后按 bar-index 保留逻辑区间, 视野不跳。
+    const onRange = (range: { from: number } | null) => {
+      if (!range) return
+      if (range.from > 10) return
+      if (!hasMoreRef.current || loadingMoreRef.current) return
+      loadMoreRef.current?.()
+    }
+    chart.timeScale().subscribeVisibleLogicalRangeChange(onRange)
+
     return () => {
       ro.disconnect()
+      try { chart.timeScale().unsubscribeVisibleLogicalRangeChange(onRange) } catch { /* chart 已销毁 */ }
       for (const line of priceLineRefsRef.current) {
         try { candle.removePriceLine(line) } catch { /* chart 已销毁可忽略 */ }
       }
