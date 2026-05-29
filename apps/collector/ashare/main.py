@@ -218,6 +218,11 @@ async def _async_refresh_directory(svc) -> None:
 app = health_app("collector_ashare")
 app.router.lifespan_context = lifespan
 
+# 只读历史分页接口 (module 级挂载; repo 请求时惰性解析 —— lifespan 已 set override)
+from apps.collector.base import attach_bars_history_route  # noqa: E402
+from apps.api.deps import get_bar_repo  # noqa: E402
+attach_bars_history_route(app, get_bar_repo, "ashare")
+
 
 def main() -> None:
     port = int(os.getenv("COLLECTOR_ASHARE_PORT", "8788"))

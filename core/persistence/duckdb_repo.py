@@ -105,6 +105,38 @@ class BarRepo:
                    start.astimezone(timezone.utc).replace(tzinfo=None),
                    end.astimezone(timezone.utc).replace(tzinfo=None)))
             rows = cur.fetchall()
+        return self._rows_to_bars(market, symbol, rows)
+
+    def fetch_history_paged(
+        self, market: str, symbol: str, interval: str,
+        *, before: datetime | None, limit: int,
+    ) -> list[Bar]:
+        """游标分页: 返回严格早于 before 的最近 limit 根, 升序。
+
+        币安/TradingView 反向翻页口径 —— before=None 取最新一页,
+        前端拿到首页最老一根的 ts 作为下一页的 before, 一直翻到上市首日。
+        返回升序 (前端 lightweight-charts setData 要求升序)。
+        """
+        before_naive = (
+            before.astimezone(timezone.utc).replace(tzinfo=None)
+            if before is not None else None
+        )
+        with self._lock, self._conn() as c:
+            cur = c.execute("""
+                SELECT ts, interval, open, high, low, close, volume,
+                       amount, turnover, outstanding_share
+                FROM bars
+                WHERE market=? AND symbol=? AND interval=?
+                  AND (CAST(? AS TIMESTAMP) IS NULL OR ts < CAST(? AS TIMESTAMP))
+                ORDER BY ts DESC
+                LIMIT ?
+            """, (market, symbol, interval, before_naive, before_naive, limit))
+            rows = cur.fetchall()
+        rows.reverse()  # DESC 取最近 limit 根后翻成升序
+        return self._rows_to_bars(market, symbol, rows)
+
+    @staticmethod
+    def _rows_to_bars(market: str, symbol: str, rows: list) -> list[Bar]:
         out: list[Bar] = []
         for ts, iv, o, h, low, cl, v, amount, turnover, outstanding_share in rows:
             out.append(Bar(

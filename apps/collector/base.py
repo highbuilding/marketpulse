@@ -59,3 +59,63 @@ def health_app(role: str) -> FastAPI:
     async def health() -> dict:
         return {"status": "ok", "role": role}
     return app
+
+
+def attach_bars_history_route(app: FastAPI, get_repo, market: str) -> None:
+    """在 collector 自己的 FastAPI 上挂只读历史分页接口 (内部, 仅 127.0.0.1 可达).
+
+    **必须在 module 级 (app 定义后) 调用**, 不能在 lifespan 内挂 ——
+    Starlette 在 lifespan 启动后才加的路由不会被路由表识别 (实测 404)。
+    repo 通过 get_repo() 在**请求时惰性解析** (collector lifespan 早期已
+    set_bar_repo_override, 请求到来时必然就绪)。
+
+    关键: collector 进程本就持有 RW bar_repo, 在同一进程内用同一连接查询
+    => 零 DuckDB 锁冲突。api 进程通过 httpx 转发到此, 自己绝不碰 DuckDB
+    (DuckDB 单写多读互斥: api 直连 read_only 会撞锁甚至踢掉 collector 的写)。
+
+    游标分页 (币安/TradingView 反向翻页口径):
+      GET /internal/bars/history?symbol=&interval=&before=&limit=
+      before 空 = 最新一页; 返回严格早于 before 的最近 limit 根, 升序。
+    """
+    from datetime import datetime
+
+    @app.get("/internal/bars/history")
+    async def bars_history(  # noqa: ANN202
+        symbol: str,
+        interval: str = "1d",
+        before: str | None = None,
+        limit: int = 500,
+    ) -> dict:
+        limit = max(1, min(limit, 2000))
+        before_dt: datetime | None = None
+        if before:
+            try:
+                before_dt = datetime.fromisoformat(before)
+            except ValueError:
+                return {"symbol": symbol, "interval": interval, "bars": [],
+                        "meta": {"stale": True, "reason": "bad_before_cursor"}}
+        repo = get_repo()
+        if repo is None:
+            return {"symbol": symbol, "interval": interval, "bars": [],
+                    "meta": {"stale": True, "reason": "repo_not_ready"}}
+        try:
+            bars = repo.fetch_history_paged(
+                market, symbol, interval, before=before_dt, limit=limit,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("collector.bars_history_failed",
+                        market=market, symbol=symbol, interval=interval,
+                        error=str(e))
+            return {"symbol": symbol, "interval": interval, "bars": [],
+                    "meta": {"stale": True, "reason": "repo_error"}}
+        return {
+            "symbol": symbol, "interval": interval,
+            "bars": [{
+                "ts": b.ts.isoformat(),
+                "open": float(b.open), "high": float(b.high),
+                "low": float(b.low), "close": float(b.close),
+                "volume": b.volume, "amount": b.amount,
+                "turnover": b.turnover, "outstanding_share": b.outstanding_share,
+            } for b in bars],
+            "meta": {"stale": False, "count": len(bars)},
+        }

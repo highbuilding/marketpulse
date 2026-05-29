@@ -119,6 +119,11 @@ async def lifespan(app: FastAPI):
 app = health_app("collector_crypto")
 app.router.lifespan_context = lifespan
 
+# 只读历史分页接口 (module 级挂载; repo 请求时惰性解析 —— lifespan 已 set override)
+from apps.collector.base import attach_bars_history_route  # noqa: E402
+from apps.api.deps import get_bar_repo  # noqa: E402
+attach_bars_history_route(app, get_bar_repo, "crypto")
+
 
 def main() -> None:
     port = int(os.getenv("COLLECTOR_CRYPTO_PORT", "8790"))
