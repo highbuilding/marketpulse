@@ -76,6 +76,7 @@ async def list_signals(
     since: datetime | None = None,
     intervals: list[str] | None = Query(None),
     symbol: str | None = None,
+    market: str | None = None,
     only_unack: bool = False,
     limit: int = 200,
     repo: SignalRepo = Depends(get_signal_repo),
@@ -84,11 +85,15 @@ async def list_signals(
         for iv in intervals:
             if iv not in SIGNAL_INTERVALS_SET:
                 raise HTTPException(400, f"unsupported interval: {iv}")
+    # market filter: 先拉更大的窗口, Python 层过滤, 再截断到 limit
+    fetch_limit = max(limit * 5, 500) if market else limit
     sigs = await repo.list_recent(
         since=since, intervals=intervals,
         symbols=[symbol] if symbol else None,
-        only_unacknowledged=only_unack, limit=limit,
+        only_unacknowledged=only_unack, limit=fetch_limit,
     )
+    if market:
+        sigs = [s for s in sigs if infer_market(s.symbol) == market][:limit]
     return ListResponse(signals=[_to_dto(s) for s in sigs])
 
 
