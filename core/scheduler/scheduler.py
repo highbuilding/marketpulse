@@ -271,6 +271,55 @@ def attach_us_signal_jobs(
     log.info("scheduler.us_signal_jobs_attached")
 
 
+def attach_crypto_signal_jobs(
+    sched: AsyncIOScheduler,
+    *, signal_scan: SignalScanService, watchlist: WatchlistService,
+    notify_service: NotificationService | None = None,
+) -> None:
+    """Crypto CD 信号扫描 — 24×7, 全天候.
+
+    币安所有周期原生提供, 每根 bar 闭合后即可扫。
+    各周期按 bar 闭合频率设置扫描间隔.
+    """
+    common = dict(args=(signal_scan, watchlist, notify_service),
+                  max_instances=1, coalesce=True, misfire_grace_time=300)
+
+    # 15m/30m: 每 15 分钟扫一次
+    sched.add_job(
+        _leader_gated(scan_cd_job),
+        CronTrigger(minute="*/15"),
+        id="cd:crypto:15m", kwargs={"interval": "15m", "market_filter": "crypto"}, **common,
+    )
+    sched.add_job(
+        _leader_gated(scan_cd_job),
+        CronTrigger(minute="*/30"),
+        id="cd:crypto:30m", kwargs={"interval": "30m", "market_filter": "crypto"}, **common,
+    )
+
+    # 60m: 每小时整点+5min (等 bar 闭合)
+    sched.add_job(
+        _leader_gated(scan_cd_job),
+        CronTrigger(minute=5),
+        id="cd:crypto:60m", kwargs={"interval": "60m", "market_filter": "crypto"}, **common,
+    )
+
+    # 4h: 每 4h +5min (UTC 00:05/04:05/08:05/12:05/16:05/20:05)
+    sched.add_job(
+        _leader_gated(scan_cd_job),
+        CronTrigger(hour="0,4,8,12,16,20", minute=5),
+        id="cd:crypto:4h", kwargs={"interval": "4h", "market_filter": "crypto"}, **common,
+    )
+
+    # 1d: UTC 00:05
+    sched.add_job(
+        _leader_gated(scan_cd_job),
+        CronTrigger(hour=0, minute=5),
+        id="cd:crypto:1d", kwargs={"interval": "1d", "market_filter": "crypto"}, **common,
+    )
+
+    log.info("scheduler.crypto_signal_jobs_attached")
+
+
 def attach_index_minute_job(
     sched: AsyncIOScheduler,
     *, cache,  # RedisCache

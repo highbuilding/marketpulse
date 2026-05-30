@@ -28,10 +28,13 @@ class SymbolDirectoryRepo:
         cur = await db.execute("PRAGMA table_info(symbol_directory)")
         cols = {r[1] for r in await cur.fetchall()}
         if "akshare_code" not in cols:
-            await db.execute(
-                "ALTER TABLE symbol_directory ADD COLUMN akshare_code TEXT"
-            )
-            await db.commit()
+            try:
+                await db.execute(
+                    "ALTER TABLE symbol_directory ADD COLUMN akshare_code TEXT"
+                )
+                await db.commit()
+            except Exception:  # 并发启动时其他进程已加列, 忽略
+                pass
 
     async def upsert_many(self, items: list[tuple[str, str, str]]) -> int:
         """items: list[(symbol, name, market)]."""

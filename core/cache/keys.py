@@ -90,6 +90,11 @@ def state_inflight(key: str) -> str:
     return f"state:inflight:{key}"
 
 
+def state_bar_subscription(market: str, symbol: str, interval: str) -> str:
+    """SSE bar 订阅注册。写入 collector 进程, bar_poller 据此启停轮询。TTL 120s。"""
+    return f"state:subscribe:{market}:{symbol}:{interval}"
+
+
 # === ratelimit: 限速器 ===
 def ratelimit_source(source: str) -> str:
     return f"ratelimit:source:{source}"
