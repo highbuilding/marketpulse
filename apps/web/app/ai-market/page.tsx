@@ -151,19 +151,14 @@ export default function AIMarketPage() {
   const downRatio = breadth && breadth.total > 0 ? breadth.decliners / breadth.total : 0
 
   return (
-    <main className="p-6 max-w-7xl mx-auto space-y-5">
-      <header className="flex items-baseline justify-between gap-4">
+    <div style={{ padding: 20 }}>
+      <div style={{ marginBottom: 20, display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
         <div>
-          <h1 className="text-2xl font-bold">AI 盘面数据包</h1>
-          <p className="mt-1 text-sm text-neutral-500">
-            程序负责聚合和触发，AI 负责基于事实总结。自动刷新 60 秒。
-          </p>
+          <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>🤖 AI 盘面数据包</h1>
+          <p style={{ color: 'var(--text2)', fontSize: 13 }}>程序负责聚合和触发，AI 负责基于事实总结。自动刷新 60 秒。</p>
         </div>
-        <div className="text-right">
-          <a href="/market" className="text-xs text-neutral-400 hover:text-neutral-200">市场</a>
-          <div className="mt-1 text-xs text-neutral-500">更新时间 {updatedAt}</div>
-        </div>
-      </header>
+        <div style={{ textAlign: 'right', color: 'var(--text3)', fontSize: 11 }}>更新 {updatedAt}</div>
+      </div>
 
       {error && <div className="rounded border border-red-900 bg-red-950/40 p-3 text-sm text-red-300">盘面数据包加载失败</div>}
       {isLoading && <div className="rounded border border-neutral-800 bg-neutral-950 p-4 text-sm text-neutral-500">载入中</div>}
@@ -253,6 +248,6 @@ export default function AIMarketPage() {
           </section>
         </>
       )}
-    </main>
+    </div>
   )
 }

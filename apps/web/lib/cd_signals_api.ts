@@ -3,12 +3,14 @@ import type { CDSignalDTO } from './types'
 export async function listCDSignals(params?: {
   intervals?: string[]
   symbol?: string
+  market?: string
   onlyUnack?: boolean
   limit?: number
 }): Promise<{ signals: CDSignalDTO[] }> {
   const sp = new URLSearchParams()
   if (params?.intervals) for (const iv of params.intervals) sp.append('intervals', iv)
   if (params?.symbol) sp.set('symbol', params.symbol)
+  if (params?.market) sp.set('market', params.market)
   if (params?.onlyUnack) sp.set('only_unack', 'true')
   if (params?.limit) sp.set('limit', String(params.limit))
   const r = await fetch(`/api/cd-signals?${sp}`, { cache: 'no-store' })

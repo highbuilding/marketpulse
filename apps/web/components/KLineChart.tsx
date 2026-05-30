@@ -4,14 +4,11 @@ import {
   createChart, IChartApi, CandlestickData, HistogramData, Time,
   ISeriesApi, SeriesMarker, IPriceLine, LineStyle,
 } from 'lightweight-charts'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 
-import { isMarketOpenNow, marketTz, tzOffsetSeconds, type Market } from '@/lib/markets'
+import { marketTz, tzOffsetSeconds, type Market } from '@/lib/markets'
 import { makeChartCrosshairFormatter, makeChartTickFormatter } from '@/lib/chart_time'
-import { intervalSeconds } from '@/lib/intervals'
 import type { BarDTO, Interval } from '@/lib/types'
-import type { ResponseMeta } from '@/lib/types'
-import { StaleBadge } from './StaleBadge'
 
 export interface SignalMarker {
   ts: string                 // ISO UTC, 与 bar.ts 同源
@@ -32,7 +29,6 @@ export interface KLineChartProps {
     cost90Low?: number | null
     cost90High?: number | null
   } | null
-  meta?: ResponseMeta
   // 滑动翻页 (历史懒加载, 币安口径): 可视区左边界逼近已加载最老一根时触发。
   onLoadMore?: () => void
   hasMore?: boolean
@@ -107,7 +103,7 @@ function computeStats(bars: BarDTO[]): Stats | null {
 }
 
 export function KLineChart({
-  bars, interval, market, height = 400, signals, livePrice, chipLevels, meta,
+  bars, interval, market, height = 400, signals, livePrice, chipLevels,
   onLoadMore, hasMore, loadingMore,
 }: KLineChartProps) {
   const ref = useRef<HTMLDivElement>(null)
@@ -116,6 +112,9 @@ export function KLineChart({
   const volumeRef = useRef<ISeriesApi<'Histogram'> | null>(null)
   const priceLineRefsRef = useRef<IPriceLine[]>([])
   const didFitRef = useRef(false)
+  const prevLenRef = useRef(0)         // 上次 bars.length, 判断增量/全量
+  const prevFirstTsRef = useRef<string | null>(null)  // 首 bar ts, 翻页/切周期检测
+  const prevKeyRef = useRef('')        // 上次 interval:market, 检测切周期
   // 翻页回调/状态用 ref 持有, 避免 subscribe 闭包拿到过期值 (subscribe 只在建图时挂一次)
   const loadMoreRef = useRef<(() => void) | undefined>(onLoadMore)
   const hasMoreRef = useRef<boolean | undefined>(hasMore)
@@ -125,14 +124,6 @@ export function KLineChart({
   loadingMoreRef.current = loadingMore
   const stats = useMemo(() => computeStats(bars), [bars])
   const intraday = INTRADAY.has(interval)
-
-  // 每 30 秒 tick 一次, 让 placeholder 即使在 bars 不变(SWR 命中)的情况下也能随时间扩张
-  const [ticker, setTicker] = useState(0)
-  useEffect(() => {
-    if (!intraday || interval === '1m') return
-    const id = setInterval(() => setTicker((n) => n + 1), 30_000)
-    return () => clearInterval(id)
-  }, [intraday, interval])
 
   // Effect 1: 创建 chart + series. 只在 height/interval/market 变 (interval 切换需要
   // 重建 timeScale 配置) 时重建. bars/signals/livePrice 等数据更新走下面的 effect 单独
@@ -199,101 +190,67 @@ export function KLineChart({
     }
   }, [height, interval, market, intraday])
 
-  // Effect 2: setData. bars / placeholder ticker / livePrice (影响占位末根) 变化时
-  // 仅 setData, 不动 chart 主体, 用户当前 visibleRange 保留.
+  // Effect 2: 数据更新. 区分全量 setData 与增量 update:
+  // - 切周期/翻页/首次 → setData (全量)
+  // - SSE tick 更新末根 → update (O(1), 不中断用户交互)
   useEffect(() => {
     const candle = candleRef.current
     const volume = volumeRef.current
     if (!candle || !volume) return
 
-    const candleData: CandlestickData[] = bars.map((b) => ({
-      time: toBarTime(b.ts, interval, market),
-      open: b.open, high: b.high, low: b.low, close: b.close,
-    }))
-    const volData: HistogramData[] = bars.map((b) => ({
-      time: toBarTime(b.ts, interval, market),
-      value: b.volume,
-      color: b.close >= b.open ? '#22c55e44' : '#ef444444',
-    }))
+    const len = bars.length
+    const firstTs = bars[0]?.ts ?? null
+    const key = `${interval}:${market}`
+    const needsFull = prevLenRef.current === 0          // 首次
+      || prevKeyRef.current !== key                     // 切周期/市场
+      || prevFirstTsRef.current !== firstTs             // 翻页/切周期
+      || Math.abs(len - prevLenRef.current) > 1         // 批量增删
 
-    // 占位 bar (intraday + 1d, 不含 1m): 末根真实 bar 已收盘后, 后续 bucket 用占位
-    if (intraday && interval !== '1m' && bars.length > 0 && isMarketOpenNow(market)) {
-      const lastBar = bars[bars.length - 1]
-      const lastCloseMs = new Date(lastBar.ts).getTime()
-      const intervalMs = intervalSeconds(interval) * 1000
-      const nowMs = Date.now()
-      const MAX_PLACEHOLDERS = 6
-      let nextCloseMs = lastCloseMs + intervalMs
-      const placeholdersToAdd: number[] = []
-      while (nowMs >= nextCloseMs && placeholdersToAdd.length < MAX_PLACEHOLDERS - 1) {
-        placeholdersToAdd.push(nextCloseMs)
-        nextCloseMs += intervalMs
+    if (len === 0) {
+      candle.setData([])
+      volume.setData([])
+    } else if (needsFull) {
+      // 全量 setData
+      const candleData: CandlestickData[] = bars.map((b) => ({
+        time: toBarTime(b.ts, interval, market),
+        open: b.open, high: b.high, low: b.low, close: b.close,
+      }))
+      const volData: HistogramData[] = bars.map((b) => ({
+        time: toBarTime(b.ts, interval, market),
+        value: b.volume,
+        color: b.close >= b.open ? '#22c55e44' : '#ef444444',
+      }))
+      candle.setData(dedupAscByTime(candleData))
+      volume.setData(dedupAscByTime(volData))
+      if (!didFitRef.current || prevKeyRef.current !== key) {
+        chartRef.current?.timeScale().fitContent()
+        didFitRef.current = true
       }
-      if (placeholdersToAdd.length < MAX_PLACEHOLDERS) {
-        placeholdersToAdd.push(nextCloseMs)
-      }
-      if (placeholdersToAdd.length > 0) {
-        let gHigh = -Infinity
-        let gLow = Infinity
-        for (const b of bars) {
-          if (b.high > gHigh) gHigh = b.high
-          if (b.low < gLow) gLow = b.low
-        }
-        const grayTransparent = '#73737344'
-        const lastIdx = placeholdersToAdd.length - 1
-
-        for (let i = 0; i < placeholdersToAdd.length; i++) {
-          const ms = placeholdersToAdd[i]
-          const placeholderIso = new Date(ms).toISOString()
-          const placeholderTime = toBarTime(placeholderIso, interval, market)
-          const isCurrent = (i === lastIdx)
-
-          if (isCurrent && livePrice !== undefined && livePrice !== null && Number.isFinite(livePrice)) {
-            const openPrice = lastBar.close
-            const isUp = livePrice >= openPrice
-            const liveColor = isUp ? '#22c55e' : '#ef4444'
-            candleData.push({
-              time: placeholderTime,
-              open: openPrice,
-              high: Math.max(openPrice, livePrice),
-              low: Math.min(openPrice, livePrice),
-              close: livePrice,
-              color: liveColor,
-              borderColor: '#fbbf24',
-              wickColor: liveColor,
-            } as CandlestickData)
-            volData.push({
-              time: placeholderTime,
-              value: 0,
-              color: `${liveColor}66`,
-            })
-          } else {
-            candleData.push({
-              time: placeholderTime,
-              open: gLow, high: gHigh, low: gLow, close: gHigh,
-              color: grayTransparent,
-              borderColor: grayTransparent,
-              wickColor: grayTransparent,
-            } as CandlestickData)
-            volData.push({
-              time: placeholderTime,
-              value: 0,
-              color: grayTransparent,
-            })
-          }
-        }
+    } else {
+      // 增量: 只更新末根 (SSE tick/bar → 原地替换 或 追加一根)
+      const last = bars[len - 1]
+      const time = toBarTime(last.ts, interval, market)
+      try {
+        candle.update({ time, open: last.open, high: last.high, low: last.low, close: last.close } as CandlestickData)
+        volume.update({ time, value: last.volume, color: last.close >= last.open ? '#22c55e44' : '#ef444444' } as HistogramData)
+      } catch {
+        // update 失败 (bar 不存在) → 回退 setData
+        candle.setData(dedupAscByTime(bars.map((b) => ({
+          time: toBarTime(b.ts, interval, market),
+          open: b.open, high: b.high, low: b.low, close: b.close,
+        }))))
+        volume.setData(dedupAscByTime(bars.map((b) => ({
+          time: toBarTime(b.ts, interval, market),
+          value: b.volume,
+          color: b.close >= b.open ? '#22c55e44' : '#ef444444',
+        }))))
       }
     }
 
-    candle.setData(dedupAscByTime(candleData))
-    volume.setData(dedupAscByTime(volData))
-
-    // 仅在第一次有数据时 fit 一次, 之后保留用户 visibleRange (鼠标拖看历史不会被强制拉回末端)
-    if (!didFitRef.current && candleData.length > 0) {
-      chartRef.current?.timeScale().fitContent()
-      didFitRef.current = true
-    }
-  }, [bars, interval, market, intraday, livePrice, ticker])
+    prevLenRef.current = len
+    prevFirstTsRef.current = firstTs
+    prevKeyRef.current = key
+  }, [bars, interval, market])
 
   // Effect 3: signals 变化 → setMarkers
   useEffect(() => {
@@ -377,7 +334,6 @@ export function KLineChart({
             <span className="ml-3">区间低 <span className="font-mono text-neutral-300">{fmtPrice(stats.low)}</span></span>
             <span className="ml-3">成交 <span className="font-mono text-neutral-300">{fmtVolume(stats.vol)}</span></span>
           </div>
-          <StaleBadge meta={meta} />
         </div>
       )}
       <div ref={ref} className="w-full" />

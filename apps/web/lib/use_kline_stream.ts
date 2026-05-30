@@ -33,6 +33,8 @@ export function useKlineStream(
       setBars([])
       return
     }
+    // 切周期/切标的 → 清空旧 bar, 避免 mergeBarsAsc 混入错误周期的数据导致闪动
+    setBars([])
     // SSE 直连 api 端口, 绕开 Next.js dev rewrites 代理 (代理会 buffer chunked stream
     // 导致浏览器 EventSource 即便 readyState=OPEN 也收不到 init/tick 帧).
     // 生产环境若同源部署可直接相对路径; 本地 dev 显式指定 8787.

@@ -13,7 +13,7 @@ import { VolumeIndicatorsPanel } from '@/components/VolumeIndicatorsPanel'
 import { fetchBars, fetchChipSummary, fetchSymbolProfile } from '@/lib/symbol_api'
 import { listCDSignalsBySymbol } from '@/lib/cd_signals_api'
 import { CD_MARKER_INTERVALS, klineTabsForMarket } from '@/lib/intervals'
-import { inferMarket, isInTradingSession, isMarketOpenNow } from '@/lib/markets'
+import { inferMarket, isInTradingSession } from '@/lib/markets'
 import { useKlineStream } from '@/lib/use_kline_stream'
 import { useBarsHistory, mergeBarsAsc } from '@/lib/use_bars_history'
 import type { BarDTO, Interval } from '@/lib/types'
@@ -22,9 +22,8 @@ const EMPTY_BARS: BarDTO[] = []
 
 export default function SymbolPage({ params }: { params: { code: string } }) {
   const symbol = decodeURIComponent(params.code)
-  // crypto 默认 5m (Binance WS 不推 1m, 默认落到第一个有数据的周期);
-  // 其他 market 默认 1m (分时图)
-  const initialInterval: Interval = inferMarket(symbol) === 'crypto' ? '5m' : '1m'
+  // crypto default 5m; A 股/美股 default 5m (1m 只有 WS 实时推, 无历史回填)
+  const initialInterval: Interval = '5m'
   const [interval, setInterval] = useState<Interval>(initialInterval)
   const router = useRouter()
 
@@ -52,39 +51,33 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
   )
 
   const isIntraday = ['1m', '5m', '15m', '30m', '60m'].includes(interval)
-  const isCryptoMarket = effectiveMarket === 'crypto'
+  const isKlineMode = interval !== '1m'  // 1m 用 IntradayChart, 其他用 KLineChart
 
-  // === 取数模型 (业界标准: 历史拉取 + 实时推送两通道解耦) ===
-  // 1m 分时: 仍走 SWR fetchBars (当日分时图特殊路径, 不入历史分页)。
-  // 其他周期 K 线: useBarsHistory 游标分页打底 (所有市场通用, 首屏 500 根 + 滑动翻页),
-  //   crypto 额外用 SSE 推实时尾部 (最右一根), merge 到分页历史之上。
-  const isKline = interval !== '1m'
-  const useSSE = isCryptoMarket && isKline  // crypto K 线走 SSE 实时尾部
-
-  // 1m 分时仍用 SWR (KLineService 1m 进程内 55s 短缓存, WS 不推 1m)
-  const { data, error, isLoading } = useSWR(
-    interval === '1m' ? `bars:${symbol}:1m:1` : null,
-    () => fetchBars(symbol, '1m', 1),
-    {
-      refreshInterval: () => (isMarketOpenNow(effectiveMarket) ? 60_000 : 0),
-      revalidateOnFocus: true,
-    },
-  )
-
-  // K 线历史: 游标分页 (首屏最新一页 + 向左滑翻更早页)。盘中轮询刷新最新一根。
+  // === 统一数据管道: 历史 REST 分页 + SSE 实时尾部 (三市场通用) ===
+  // - useBarsHistory: 游标分页打底 (首屏最新一页 + 滑动翻页), 所有周期通用
+  // - useKlineStream: SSE push 实时尾部 (最右一根), 所有市场+周期通用
+  // - mergeBarsAsc: 两通道合并, SSE 实时尾部覆盖 REST 历史
   const hist = useBarsHistory(symbol, interval, effectiveMarket, {
-    enabled: isKline,
-    poll: isIntraday,  // intraday 盘中刷新最新一根; 日/周/月线 head 基本不变, 不轮询
+    enabled: true,
+    poll: false,  // SSE 推送实时尾部, 不需要 REST 轮询
   })
 
-  // crypto 实时尾部 (SSE): 只更新最右一根, 不再扛历史
-  const streamBars = useKlineStream(symbol, interval, useSSE)
+  const streamBars = useKlineStream(symbol, interval, true)  // 所有市场+周期 SSE
 
-  // K 线渲染数据源: 分页历史打底 + (crypto) SSE 实时尾部覆盖末根
   const displayBars: BarDTO[] = useMemo(() => {
-    if (!isKline) return EMPTY_BARS
-    return useSSE ? mergeBarsAsc(hist.bars, streamBars) : hist.bars
-  }, [isKline, useSSE, hist.bars, streamBars])
+    return mergeBarsAsc(hist.bars, streamBars)
+  }, [hist.bars, streamBars])
+
+  // 1m 分时: 从 displayBars 过滤当日 bars
+  const todayBars = useMemo(() => {
+    if (interval !== '1m' || displayBars.length === 0) return []
+    const lastBar = displayBars[displayBars.length - 1]
+    const lastDate = new Date(lastBar.ts).toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' })
+    return displayBars.filter((b) => {
+      const bDate = new Date(b.ts).toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' })
+      return bDate === lastDate
+    })
+  }, [displayBars, interval])
 
   const { data: chipSummary, error: chipError, isLoading: chipLoading } = useSWR(
     effectiveMarket === 'ashare' ? `chip:${symbol}` : null,
@@ -113,8 +106,6 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
   )
   const markers: SignalMarker[] = useMemo(() => {
     if (!signalsResp || displayBars.length === 0) return []
-    // 过滤超出 bars 时间窗口的历史 marker, 否则 lightweight-charts 会把越界 marker
-    // 全部堆到最左边那根 bar 上 (intraday 视图 days=5, 但信号是全量历史的)
     const minTs = new Date(displayBars[0].ts).getTime()
     const maxTs = new Date(displayBars[displayBars.length - 1].ts).getTime()
     return signalsResp.signals
@@ -130,43 +121,18 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
     interval === '1m' ? `bars:${symbol}:1d:5` : null,
     () => fetchBars(symbol, '1d', 5),
   )
-  const todayBars = useMemo(() => {
-    if (!data || interval !== '1m' || data.bars.length === 0) return data?.bars ?? []
-    // 先按交易 session 过滤掉凌晨/午休/盘后等脏点 (历史数据残留 + 防御 source 异常返回)
-    const sessionBars = data.bars.filter((b) => isInTradingSession(b.ts, effectiveMarket))
-    if (sessionBars.length === 0) return []
-    // 取最后一根 bar 的本市场时区日期,只保留同一交易日
-    const lastBar = sessionBars[sessionBars.length - 1]
-    const lastDate = new Date(lastBar.ts).toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' })
-    return sessionBars.filter((b) => {
-      const bDate = new Date(b.ts).toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' })
-      return bDate === lastDate
-    })
-  }, [data, interval, effectiveMarket])
-
   const prevClose = useMemo(() => {
     if (!daily || daily.bars.length < 2) return null
-    // 倒数第二根日线作昨收(最后一根可能就是今日实时不准)
     return daily.bars[daily.bars.length - 2]?.close ?? daily.bars[daily.bars.length - 1]?.close
   }, [daily])
-  const latestClose = useMemo(() => {
-    const source = interval === '1m' ? todayBars : displayBars
-    if (!source || source.length === 0) return null
-    return source[source.length - 1]?.close ?? null
-  }, [displayBars, interval, todayBars])
 
-  // 当前价位指针(K 线模式用): 拉 1m 分时, 取最末根 close 作 livePrice
-  // 在 5m/15m/30m/60m/4h K 线上画一条水平虚线, 让用户即使当前 bar 没收盘也能看到价位
-  const isKlineMode = interval !== '1m' && interval !== '1d' && interval !== '1wk' && interval !== '1mo'
-  const { data: live1m } = useSWR(
-    isKlineMode ? `bars:${symbol}:1m:1` : null,
-    () => fetchBars(symbol, '1m', 1),
-    { refreshInterval: () => isMarketOpenNow(effectiveMarket) ? 30_000 : 0 },
-  )
+  // livePrice: 从 SSE 流式 bar 中取末根 close (所有市场通用)
   const livePrice: number | null = useMemo(() => {
-    if (!live1m || live1m.bars.length === 0) return null
-    return live1m.bars[live1m.bars.length - 1].close
-  }, [live1m])
+    const bars = displayBars.length > 0 ? displayBars
+      : (interval === '1m' ? todayBars : null)
+    if (!bars || bars.length === 0) return null
+    return bars[bars.length - 1].close
+  }, [displayBars, interval, todayBars])
 
   return (
     <main className="p-6 max-w-7xl mx-auto space-y-4">
@@ -193,19 +159,24 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
             </button>
           ))}
         </div>
-        {/* 1m 分时: SWR 状态 */}
-        {interval === '1m' && isLoading && !data && <p className="text-sm text-neutral-500">加载中…</p>}
-        {interval === '1m' && error && !data && <p className="text-sm text-red-400">加载失败:{String(error)}</p>}
-        {/* K 线: 分页历史状态 */}
-        {isKline && hist.loading && displayBars.length === 0 && (
+
+        {/* 1m 分时: loading/error 状态 */}
+        {interval === '1m' && hist.loading && todayBars.length === 0 && (
           <p className="text-sm text-neutral-500">加载中…</p>
         )}
-        {isKline && hist.error && displayBars.length === 0 && (
-          <p className="text-sm text-red-400">加载失败:{String(hist.error)}</p>
+        {interval === '1m' && !!hist.error && todayBars.length === 0 && (
+          <p className="text-sm text-red-400">加载失败</p>
+        )}
+        {/* K 线: loading/error 状态 */}
+        {isKlineMode && hist.loading && displayBars.length === 0 && (
+          <p className="text-sm text-neutral-500">加载中…</p>
+        )}
+        {isKlineMode && !!hist.error && displayBars.length === 0 && (
+          <p className="text-sm text-red-400">加载失败</p>
         )}
 
         {/* 分时模式 */}
-        {interval === '1m' && data && todayBars.length > 0 && (
+        {interval === '1m' && todayBars.length > 0 && (
           <IntradayChart
             bars={todayBars}
             prevClose={prevClose}
@@ -213,12 +184,12 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
             market={effectiveMarket}
           />
         )}
-        {interval === '1m' && data && todayBars.length === 0 && (
+        {interval === '1m' && !hist.loading && todayBars.length === 0 && (
           <p className="text-sm text-yellow-400">当日无分时数据(可能未开盘或源不通)。</p>
         )}
 
-        {/* 其他周期:K 线 */}
-        {isKline && displayBars.length > 0 && (
+        {/* K 线模式 */}
+        {isKlineMode && displayBars.length > 0 && (
           <KLineChart
             bars={displayBars}
             interval={interval}
@@ -227,13 +198,12 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
             signals={signalInterval ? markers : undefined}
             livePrice={isKlineMode ? livePrice : null}
             chipLevels={chipLevels}
-            meta={hist.meta}
             onLoadMore={hist.loadMore}
             hasMore={hist.hasMore}
             loadingMore={hist.loadingMore}
           />
         )}
-        {isKline && !hist.loading && displayBars.length === 0 && (
+        {isKlineMode && !hist.loading && displayBars.length === 0 && (
           <p className="text-sm text-yellow-400">无数据。请先 <code>make warmup</code> 或本周期还未抓取。</p>
         )}
       </section>
@@ -243,7 +213,7 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
           data={chipSummary}
           error={chipError}
           isLoading={chipLoading}
-          currentPrice={latestClose}
+          currentPrice={livePrice}
         />
       )}
       <VolumeIndicatorsPanel symbol={symbol} interval={interval} />
