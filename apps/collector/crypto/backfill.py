@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import structlog
 
@@ -39,6 +39,14 @@ def _start_for(interval: str, end: datetime) -> datetime:  # noqa: ARG001
     return BINANCE_GENESIS
 
 
+# 各周期"可接受的最大缺口"——超过此阈值则认为需要补数据
+_GAP_TOLERANCE = {
+    "1m": timedelta(minutes=3), "5m": timedelta(minutes=10),
+    "15m": timedelta(minutes=30), "30m": timedelta(hours=1),
+    "60m": timedelta(hours=2), "4h": timedelta(hours=8),
+    "1d": timedelta(days=2), "1wk": timedelta(days=10), "1mo": timedelta(days=35),
+}
+
 async def backfill_one(
     adapter: BinanceAdapter,
     repo: BarRepo,
@@ -47,7 +55,38 @@ async def backfill_one(
     interval: str,
 ) -> None:
     end = datetime.now(timezone.utc)
-    start = _start_for(interval, end)
+    tolerance = _GAP_TOLERANCE.get(interval, timedelta(days=2))
+
+    # 查已有数据 → 检测连续性缺口
+    try:
+        recent = repo.fetch_history(
+            "crypto", symbol,
+            end - timedelta(days=7), end, interval=interval,
+        )
+        if recent and len(recent) >= 2:
+            # 检查相邻 bar 间隔: 找到第一个缺口位置
+            last_ts = recent[-1].ts
+            gap_start = None
+            for i in range(len(recent) - 1, 0, -1):
+                bar_gap = recent[i].ts - recent[i - 1].ts
+                if bar_gap > tolerance:
+                    gap_start = recent[i - 1].ts  # 缺口起始
+                    break
+            if gap_start is None and (end - last_ts) <= tolerance:
+                return  # 数据连续, 跳过
+            # 有缺口: 从缺口位置开始补
+            start = (gap_start + timedelta(seconds=1)) if gap_start else BINANCE_GENESIS
+        elif recent and len(recent) >= 1:
+            # 只有 1 条: 检查它是否太旧
+            last_ts = recent[-1].ts
+            if (end - last_ts) <= tolerance:
+                return
+            start = last_ts + timedelta(seconds=1)
+        else:
+            start = BINANCE_GENESIS
+    except Exception:  # noqa: BLE001
+        start = BINANCE_GENESIS
+
     try:
         bars = await adapter.fetch_klines(symbol, interval, start, end)
     except Exception as e:  # noqa: BLE001

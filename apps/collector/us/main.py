@@ -157,6 +157,29 @@ async def lifespan(app: FastAPI):
     )
     attach_us_index_minute_job(sched, cache=redis_cache, baseline_repo=baseline_repo)
     sched.start()
+
+    # === Alpaca WS 实时 bar 推送 ===
+    from apps.collector.us.ws_consumer import consume_loop as ws_consume_loop
+    _ws_task = asyncio.create_task(
+        ws_consume_loop(repo=bar_repo, redis_bars=redis_bars, redis_cache=redis_cache),
+        name="us.ws_consumer",
+    )
+    log.info("ws_consumer.bootstrapped")
+
+    # === 定期聚合派生周期 (60m/4h/1wk/1mo) ===
+    from apps.collector.jobs.aggregate_derived import sweep_derived
+    from pathlib import Path as _Path
+    _us_syms = [l.strip() for l in open(
+        _Path(__file__).resolve().parents[3] / "data" / "us_backfill_symbols.txt"
+    ) if l.strip()]
+    sched.add_job(
+        sweep_derived,
+        "interval", minutes=30,
+        args=(bar_repo, "us", _us_syms),
+        id="us:sweep_derived",
+        max_instances=1, coalesce=True,
+    )
+
     log.info("collector_us.started", markets=registry.markets())
 
     try:
@@ -166,6 +189,11 @@ async def lifespan(app: FastAPI):
         _leader_task.cancel()
         try:
             await _leader_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        _ws_task.cancel()
+        try:
+            await _ws_task
         except (asyncio.CancelledError, Exception):
             pass
         await leader.release()

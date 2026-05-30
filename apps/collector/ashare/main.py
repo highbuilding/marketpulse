@@ -180,6 +180,29 @@ async def lifespan(app: FastAPI):
                             chip_service=get_chip_service(),
                             watchlist=get_watchlist_service())
     sched.start()
+
+    # === A 股按需 K 线轮询 (SSE 订阅驱动 + 大盘默认) ===
+    from apps.collector.ashare.bar_poller import run_bar_poller
+    _poller_task = asyncio.create_task(
+        run_bar_poller(bar_repo, redis_cache),
+        name="ashare.bar_poller",
+    )
+
+    # === 定期聚合派生周期 (60m/4h/1wk/1mo) ===
+    from apps.collector.jobs.aggregate_derived import sweep_derived
+    from pathlib import Path as _Path
+    _ash_syms = [l.strip() for l in open(
+        _Path(__file__).resolve().parents[3] / "data" / "ashare_backfill_symbols.txt"
+    ) if l.strip()]
+    sched.add_job(
+        sweep_derived,
+        "interval", minutes=30,
+        args=(bar_repo, "ashare", _ash_syms),
+        id="ashare:sweep_derived",
+        max_instances=1, coalesce=True,
+    )
+    log.info("bar_poller.bootstrapped")
+
     log.info("collector_ashare.started", markets=registry.markets())
 
     try:
@@ -192,6 +215,11 @@ async def lifespan(app: FastAPI):
         except (asyncio.CancelledError, Exception):
             pass
         await leader.release()
+        _poller_task.cancel()
+        try:
+            await _poller_task
+        except (asyncio.CancelledError, Exception):
+            pass
         _refill_task.cancel()
         try:
             await _refill_task

@@ -73,6 +73,8 @@ def attach_bars_history_route(app: FastAPI, get_repo, market: str) -> None:
     => 零 DuckDB 锁冲突。api 进程通过 httpx 转发到此, 自己绝不碰 DuckDB
     (DuckDB 单写多读互斥: api 直连 read_only 会撞锁甚至踢掉 collector 的写)。
 
+    派生周期 (60m/4h/1wk/1mo) 在 init_data 时预生成, 这里只管查询。
+
     游标分页 (币安/TradingView 反向翻页口径):
       GET /internal/bars/history?symbol=&interval=&before=&limit=
       before 空 = 最新一页; 返回严格早于 before 的最近 limit 根, 升序。

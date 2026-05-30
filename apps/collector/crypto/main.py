@@ -76,7 +76,7 @@ async def lifespan(app: FastAPI):
         name="crypto.ws_consumer",
     )
 
-    # === APScheduler 每日 04:00 UTC 兜底 ===
+    # === APScheduler: 每日兜底回填 + CD 信号扫描 ===
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
     from apscheduler.triggers.cron import CronTrigger
 
@@ -89,6 +89,17 @@ async def lifespan(app: FastAPI):
         max_instances=1,
         coalesce=True,
     )
+
+    # CD 信号扫描 (24×7)
+    from apps.api.deps import get_signal_scan_service, get_watchlist_service, get_notification_service
+    from core.scheduler.scheduler import attach_crypto_signal_jobs
+    attach_crypto_signal_jobs(
+        sched,
+        signal_scan=get_signal_scan_service(),
+        watchlist=get_watchlist_service(),
+        notify_service=get_notification_service(),
+    )
+
     sched.start()
     log.info(
         "collector_crypto.started",
