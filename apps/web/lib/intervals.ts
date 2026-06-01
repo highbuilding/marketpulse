@@ -12,7 +12,7 @@ export interface IntervalSpec {
 }
 
 export const INTERVAL_SPECS: IntervalSpec[] = [
-  { key: '1m',  labelCn: '分时',   isKline: true,  isSignal: false, cryptoOnly: false },
+  { key: '1m',  labelCn: '分时',   isKline: false, isSignal: false, cryptoOnly: false }, // 废弃: 分时图取代
   { key: '5m',  labelCn: '5分',    isKline: true,  isSignal: false, cryptoOnly: false },
   { key: '15m', labelCn: '15分',   isKline: true,  isSignal: true,  cryptoOnly: false },
   { key: '30m', labelCn: '30分',   isKline: true,  isSignal: true,  cryptoOnly: false },

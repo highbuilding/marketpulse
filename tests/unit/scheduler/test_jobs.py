@@ -59,13 +59,11 @@ async def test_tick_handles_adapter_error():
     assert cache.snapshot("ashare") == []
 
 
-def test_flush_quotes_converts_to_bars_and_writes():
+def test_flush_quotes_deprecated_returns_empty():
+    """flush_quotes_to_duckdb 已废弃(1m 伪 bar 由分时图取代),应直接返回空列表,不写 DuckDB。"""
     cache = QuoteCache(ttl_s=60)
     cache.put(_q("ashare", "A", "1.5"))
     repo = MagicMock()
-    flush_quotes_to_duckdb("ashare", cache, repo)
-    assert repo.insert_bars.called
-    bars = repo.insert_bars.call_args[0][0]
-    assert len(bars) == 1
-    assert bars[0].symbol == "A"
-    assert bars[0].interval == "1m"
+    result = flush_quotes_to_duckdb("ashare", cache, repo)
+    assert result == []
+    assert not repo.insert_bars.called

@@ -28,7 +28,7 @@ class IntervalSpec:
 
 _SPECS: list[IntervalSpec] = [
     # K 线分时(信号不扫)
-    IntervalSpec("1m",  "分时",   True,  False, 0,   240, False),
+    IntervalSpec("1m",  "分时",   False, False, 0,   240, False),  # 废弃: 分时图取代
     IntervalSpec("5m",  "5分",    True,  False, 0,   48,  False),
     # 信号 + K 线
     IntervalSpec("15m", "15分",   True,  True,  1000, 16, False),

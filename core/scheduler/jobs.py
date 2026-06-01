@@ -82,30 +82,8 @@ async def tick_snapshot_once(
 def flush_quotes_to_duckdb(
     market: str, cache: QuoteCache, repo: BarRepo,
 ) -> list[Bar]:
-    """同步部分: gate + DuckDB 写. 返回写入的 bars 给上层做 Redis 异步 upsert."""
-    from core.domain.market_calendar import is_trading_day
-    from core.domain.market_sessions import is_market_session_open
-    if not is_trading_day(market):
-        return []
-    if not is_market_session_open(market):
-        return []
-    quotes = cache.snapshot(market)
-    if not quotes:
-        return []
-    bars = [
-        Bar(
-            market=q.market, symbol=q.symbol, ts=q.ts,
-            open=q.price, high=q.price, low=q.price, close=q.price,
-            volume=q.volume, interval="1m",
-        )
-        for q in quotes
-    ]
-    try:
-        repo.insert_bars(bars)
-    except Exception as e:  # noqa: BLE001
-        log.warning("flush.failed", market=market, error=str(e))
-        return []
-    return bars
+    """已废弃: 1m 伪 bar(open=high=low=close=price)由分时图取代。保留空壳避免调用方报错。"""
+    return []
 
 
 def flush_all_quotes_to_duckdb(
