@@ -16,6 +16,7 @@ class Quote:
     change_pct: float
     volume: int
     source: str
+    amount: float | None = None  # 当日累计成交额(元), sina parts[9]
     def __post_init__(self) -> None:
         if self.price < 0:
             raise ValueError(f"price must be >= 0, got {self.price}")

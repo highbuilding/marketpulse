@@ -152,6 +152,7 @@ class AShareAdapter:
                 prev_close = float(parts[2])
                 price = float(parts[3])
                 volume = int(float(parts[8])) if len(parts) > 8 else 0
+                amount = float(parts[9]) if len(parts) > 9 and parts[9] else None
             except (ValueError, IndexError):
                 continue
             if price == 0:
@@ -165,6 +166,7 @@ class AShareAdapter:
                 change_pct=change_pct,
                 volume=volume,
                 source="sina",
+                amount=amount,
             ))
         return out
 
