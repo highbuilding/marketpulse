@@ -135,6 +135,41 @@ class BarRepo:
         rows.reverse()  # DESC 取最近 limit 根后翻成升序
         return self._rows_to_bars(market, symbol, rows)
 
+    def fetch_last_ts_map(
+        self, market: str, interval: str, symbols: list[str],
+    ) -> dict[str, datetime]:
+        """返回 {symbol: max(ts)}，仅返回有数据的 symbol。
+
+        用于 sweep_derived 批量子查询，复用 repo 连接避免 read_only 冲突。
+        """
+        if not symbols:
+            return {}
+        placeholders = ",".join(["?"] * len(symbols))
+        with self._lock, self._conn() as c:
+            rows = c.execute(f"""
+                SELECT symbol, MAX(ts) FROM bars
+                WHERE market=? AND interval=?
+                  AND symbol IN ({placeholders})
+                GROUP BY symbol
+            """, [market, interval] + list(symbols)).fetchall()
+        return {r[0]: r[1].replace(tzinfo=timezone.utc) for r in rows}
+
+    def fetch_first_ts_map(
+        self, market: str, interval: str, symbols: list[str],
+    ) -> dict[str, datetime]:
+        """返回 {symbol: min(ts)}，用于检测派生周期是否漏了早期历史。"""
+        if not symbols:
+            return {}
+        placeholders = ",".join(["?"] * len(symbols))
+        with self._lock, self._conn() as c:
+            rows = c.execute(f"""
+                SELECT symbol, MIN(ts) FROM bars
+                WHERE market=? AND interval=?
+                  AND symbol IN ({placeholders})
+                GROUP BY symbol
+            """, [market, interval] + list(symbols)).fetchall()
+        return {r[0]: r[1].replace(tzinfo=timezone.utc) for r in rows}
+
     @staticmethod
     def _rows_to_bars(market: str, symbol: str, rows: list) -> list[Bar]:
         out: list[Bar] = []

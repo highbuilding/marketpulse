@@ -29,7 +29,7 @@ def aggregate_intraday(
     """
     if not raw_bars:
         return []
-    target_interval = "60m" if interval_minutes == 60 else "4h"
+    target_interval = "4h" if interval_minutes == 240 else f"{interval_minutes}m"
     sample = raw_bars[0]
 
     # 按 raw bar 落在哪个 (local_date, bucket_idx) 分组

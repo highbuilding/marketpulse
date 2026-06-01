@@ -55,5 +55,15 @@ class RedisCache:
 
 
 def make_redis(url: str = "redis://127.0.0.1:6379/0") -> AsyncRedis:
-    """单例工厂。生产中由依赖注入使用,测试时直接 new fakeredis。"""
-    return AsyncRedis.from_url(url, decode_responses=False)
+    """单例工厂。生产中由依赖注入使用,测试时直接 new fakeredis。
+
+    socket_timeout=None: redis-py 8.x 默认改为 5s, 会导致 XREADGROUP block=5s 超时。
+    显式恢复为 None (无超时), 让 XREADGROUP 自然等待到 block_ms 后返回空。
+    health_check_interval=30: 每 30s 对空闲连接发 PING, 防止网络中间设备断开长连接。
+    """
+    return AsyncRedis.from_url(
+        url, decode_responses=False,
+        socket_timeout=None,
+        socket_connect_timeout=5,
+        health_check_interval=30,
+    )
