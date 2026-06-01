@@ -189,6 +189,7 @@ async def lifespan(app: FastAPI):
     )
 
     # === 定期聚合派生周期 (60m/4h/1wk/1mo) ===
+    from datetime import datetime, timedelta, timezone
     from apps.collector.jobs.aggregate_derived import sweep_derived
     from pathlib import Path as _Path
     _ash_syms = [l.strip() for l in open(
@@ -200,6 +201,7 @@ async def lifespan(app: FastAPI):
         args=(bar_repo, "ashare", _ash_syms),
         id="ashare:sweep_derived",
         max_instances=1, coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=10),
     )
     log.info("bar_poller.bootstrapped")
 

@@ -167,6 +167,7 @@ async def lifespan(app: FastAPI):
     log.info("ws_consumer.bootstrapped")
 
     # === 定期聚合派生周期 (60m/4h/1wk/1mo) ===
+    from datetime import datetime, timedelta, timezone
     from apps.collector.jobs.aggregate_derived import sweep_derived
     from pathlib import Path as _Path
     _us_syms = [l.strip() for l in open(
@@ -178,6 +179,7 @@ async def lifespan(app: FastAPI):
         args=(bar_repo, "us", _us_syms),
         id="us:sweep_derived",
         max_instances=1, coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=10),
     )
 
     log.info("collector_us.started", markets=registry.markets())
