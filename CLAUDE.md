@@ -424,8 +424,14 @@ grep -c "ak_call.banned_signature\|breaker.opened" /tmp/collector_*.log  # 异�
 - **进程拆分已完成**:collector ×3(ashare 8788 / us 8789 / crypto 8790)+ api(8787)+ web(3000)+ redis(6379,docker)。各 collector 内嵌 FastAPI(health + 只读历史分页)
 - **apps/api/ 真正 0 ak_call + 0 DuckDB 直连** — 实时走 Redis cache,历史走转发 collector(雷区 6)
 - **K 线历史分页已全市场跑通(后端)**:三市场 `/internal/bars/history` 都已生效,api 转发已验证。crypto 已端到端验证(滑到 BTC 上市首日 2017-08-17)
-- **前端 K 线滑动翻页已全市场通用**:`useBarsHistory` 对 ashare/us/crypto 都启用(`enabled: isKline`),首屏 500 根 + 向左滑翻页。**差异**:只有 crypto 接了 SSE 实时尾部(`useKlineStream`);**美股/A股目前无实时推送**(SSE collector job 仅 crypto 有),盘中刷新最新一根靠 SWR 轮询(intraday 周期 60s)
-- **后续支持美股/A股实时(候选)**:若要让美股/A股 K 线也有 crypto 那样的秒级实时尾部,需在 us/ashare collector 加 SSE 推送源(当前它们只有 cron + tick_snapshot,无 WS)。架构上 SSE 通道已通用,只差数据源
+- **前端 K 线滑动翻页已全市场通用**:`useBarsHistory` 对 ashare/us/crypto 都启用(`enabled: isKline`),首屏 500 根 + 向左滑翻页
+- **三市场都已有实时 K 线进行中态 + 分时图**(2026-06-01 落地,过去"美股/A股无实时推送"的说法已作废):
+  - **crypto**:Binance WS 8 周期全推 `final=false/true`(标杆,ts=open 对齐)
+  - **A 股**:sina quote 驱动 `quote_bar_ticker` 进行中态(`final=false`)+ quote 累计成交额驱动分时图(均价线);收线由 `bar_poller` 拉 sina + 事件驱动聚合发 bus
+  - **美股**:Alpaca IEX WS **`trades` 逐笔**驱动 `TradeHub` → 进行中态(`final=false`)+ 真 VWAP 分时图(`Σp×s/Σs`);**1m 不落库**(对齐 A股/crypto);收线走 **REST SIP**(`UsBarPoller`,权威成交量喂 CD 信号/量指标,~15-20min 延迟),桶滚动 `UsBarTicker.publish_provisional` 仅发 bus 填 SIP 延迟洞(不入库,DuckDB 只存 SIP 权威收线 bar)
+- **美股成交量分两源**:实时/分时走 IEX(偏小,仅 IEX 交所,分时量柱有注脚标注);收线/信号走 SIP(全市场权威)。分时图**仅 RTH**(09:30-16:00 ET);盘前/盘后详情页默认落 K 线(`isUsRegularSession`),K 线含盘前盘后照常可取
+- **分时图通道(全新子系统)**:独立库 `intraday_{market}.duckdb`(物理隔离规避雷区 6)+ `bus:intraday.updated` + SSE `/api/sse/intraday/{symbol}` + 前端 `IntradayLineChart`(价格线 + 均价线 + 昨收基准线 + 红绿染色)。90 天 purge cron。
+- **共享桶纯函数** `core/domain/bucket_state.py`(`BucketState`/`update_bucket`/`current_bucket`/`seed_baseline`)A 股 + 美股 ticker 共用
 - **crypto K 线 ts 用 open 对齐**(雷区 3 例外,见 memory `project-crypto-open-aligned`);拉全历史到上市首日,`BINANCE_GENESIS=2017-07-01`
 - **DuckDB 批量写用 DataFrame**(见 memory `project-duckdb-bulk-upsert`),别退回 executemany 逐行
 - **大盘 IndexCard market_extras**:A 股 8 指数显示北向 + 成交额 + 同比;美股 SPY/QQQ/DIA ETF 代理显示 prev_close + amount。Crypto / HK 暂未实装
