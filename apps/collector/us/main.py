@@ -174,7 +174,7 @@ async def lifespan(app: FastAPI):
     _us_ticker = UsBarTicker(redis_cache)
     _hub = TradeHub(redis=redis_cache, repo=bar_repo, writer=_us_writer, ticker=_us_ticker)
 
-    _ws_task = asyncio.create_task(ws_consume_loop(hub=_hub), name="us.ws_consumer")
+    _ws_task = asyncio.create_task(ws_consume_loop(hub=_hub, redis=redis_cache), name="us.ws_consumer")
     _hub_task = asyncio.create_task(run_trade_hub(_hub), name="us.trade_hub")
     us_adapter = registry.get("us")
     _poller_task = asyncio.create_task(
