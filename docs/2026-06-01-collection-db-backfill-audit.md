@@ -105,7 +105,7 @@ state.db 的 5 个空表(app_state / fund_flow_sector / health_log / sector_cons
 
 - 设计要求 1m 不入库(`flush_quotes_to_duckdb` 空壳、`_get_one_minute_bars` 不落库、trade_hub/bar_ticker 注明)。但 `bars_us.duckdb` 有 **2431 行 1m**(26 标的)。
 - **根因**:改造前的旧 `ws_consumer`(`bars` 频道,1m 三写)。本次会话 Task 8 已把它换成 `trades`(`04c7669`,不再写 1m),**泄漏源已堵**。
-- **待办**:① 重启后验证 1m 不再新增;② `BarRepo.insert_bars` 加 `interval != '1m'` 守卫(`duckdb_repo.py:57` 无 interval 白名单,防御性);③ 清存量 `DELETE FROM bars WHERE interval='1m'`(删后需 VACUUM 才缩文件)。
+- **✅ 已修(2026-06-01)**:① `insert_bars` 加 `interval != '1m'` 守卫(`a30bc92`,永久杜绝任何路径再写 1m,带 TDD);② 清存量 `DELETE FROM bars WHERE interval='1m'` + VACUUM,**2431 → 0 行**;③ 验证最新 1m ts = `12:27 UTC`(= Task 8 重启时刻),确认泄漏源彻底堵死,此后零新增。
 
 ### 3.4 存储边界策略(已确认)
 
@@ -117,9 +117,9 @@ state.db 的 5 个空表(app_state / fund_flow_sector / health_log / sector_cons
 |---|---|---|---|---|
 | crypto | 不采不存(WS 周期不含 1m)| 不存(只写 `:current`)| 存(`k.x=true`)| ✅ 完全符合,**不需改动** |
 | A股 | 已废弃不存 | 不存(ticker 只写 `:current`)| 存 | ✅ |
-| 美股 | **2431 行孤儿(B4)** | 不存 | 存 | ⚠️ 仅 1m 孤儿违反 |
+| 美股 | ✅ **已清零**(B4 已修)| 不存 | 存 | ✅ |
 
-**唯一偏差 = 美股 1m 孤儿(B4)**:旧 ws_consumer 遗留,源已被 Task 8 堵。落实策略只需 B4 的两步:`insert_bars` 加 `interval!='1m'` 守卫 + 清存量。
+~~唯一偏差 = 美股 1m 孤儿~~ → **B4 已修(`a30bc92`)**:`insert_bars` 加 `interval!='1m'` 守卫 + 清存量 2431→0。三市场现已完全符合存储边界策略。
 
 ---
 
@@ -211,7 +211,7 @@ SSE 只覆盖 **K 线 + 分时**(价格序列);其余面板**无 push 通道**,�
 | B2 | 前端默认列表(硬编码)与后端采集集合(DB watchlist)脱节 | 🔴高 | 待修 | page.tsx vs watchlist |
 | B3 | 派生周期"中段缺口"不重聚合 | 🔴高 | 待修 | aggregate_derived._decide_window |
 | B-startup | A股/美股无冷启动 backfill + 无 kill 后启动 reconcile | 🔴高 | 待修 | ashare/us main lifespan |
-| B4 | 美股 1m 孤儿 2431 行(泄漏源已堵)| 🟡中 | 部分(源已堵,待守卫+清理)| bars_us、insert_bars |
+| B4 | 美股 1m 孤儿 2431 行(泄漏源已堵)| 🟡中 | ✅ 已修 `a30bc92`(守卫+清存量 2431→0)| bars_us、insert_bars |
 | B5 | A股 15m/30m 双源覆盖竞态 | 🟡中 | 待修 | ashare bar_poller + 聚合 |
 | B6 | crypto gap 检测只看 7 天 | 🟡中 | 待修 | crypto/backfill.py:62 |
 | B7 | `*_backfill_symbols.txt` 缺失 → sweep 只聚合默认标的 | 🟡中 | 待修 | main.py symbols 来源 |
