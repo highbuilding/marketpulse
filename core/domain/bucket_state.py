@@ -7,8 +7,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
-from core.domain.market_sessions import bucket_grid
+from core.domain.market_sessions import MARKET_TZ, bucket_grid
 
 
 @dataclass
@@ -40,8 +41,14 @@ def update_bucket(state: BucketState | None, price: Decimal, *, volume: int) -> 
 def current_bucket(
     market: str, now: datetime, interval_min: int,
 ) -> tuple[datetime, datetime] | None:
-    """返回 now 落在的桶 (open_utc, close_utc]; 不在任何桶(休市)返回 None。"""
-    grid = bucket_grid(market, now.date(), interval_min)
+    """返回 now 落在的桶 (open_utc, close_utc]; 不在任何桶(休市)返回 None。
+
+    用市场本地日历日定位 grid (而非 UTC now.date()): 美股盘后在冬令时(EST)
+    跨 UTC 日 (19:00-20:00 ET = 00:00-01:00 次日 UTC), 用 UTC 日会错位到次日 grid
+    找不到桶。A 股/crypto session 不跨 UTC 日, 本地日 == UTC 日, 行为不变。
+    """
+    local_date = now.astimezone(ZoneInfo(MARKET_TZ[market])).date()
+    grid = bucket_grid(market, local_date, interval_min)
     for open_utc, close_utc in grid:
         if open_utc <= now < close_utc:
             return (open_utc, close_utc)

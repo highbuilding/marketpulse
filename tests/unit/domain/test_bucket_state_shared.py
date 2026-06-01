@@ -52,3 +52,15 @@ def test_seed_baseline_from_smaller_bars():
 
 def test_seed_baseline_empty_returns_none():
     assert seed_baseline([]) is None
+
+
+def test_current_bucket_us_winter_afterhours_cross_utc_day():
+    # 冬令时 EST(UTC-5): 19:30 ET Jan 14 = 00:30 UTC Jan 15(跨 UTC 日)
+    # 盘后 60m 桶 19:00-20:00 ET = 00:00-01:00 UTC Jan 15
+    # 用 UTC now.date()(Jan 15)定位会找不到该桶 → None(回归); 用 ET 本地日(Jan 14)才对
+    now = datetime(2026, 1, 15, 0, 30, tzinfo=timezone.utc)
+    ob = current_bucket("us", now, 60)
+    assert ob is not None
+    open_utc, close_utc = ob
+    assert open_utc == datetime(2026, 1, 15, 0, 0, tzinfo=timezone.utc)
+    assert close_utc == datetime(2026, 1, 15, 1, 0, tzinfo=timezone.utc)
