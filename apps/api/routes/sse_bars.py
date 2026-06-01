@@ -33,6 +33,21 @@ def _sse_event(event: str, data: dict) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
 
 
+async def _register_subscriptions(symbols: set[str], interval: str, redis_cache) -> None:
+    """把'谁在看'写进订阅登记表 (TTL 120s, 边看边续期)。
+
+    collector 的进行中态 ticker / 分时 writer / poller 扫这张表决定给哪些标的算实时。
+    每个 symbol 按其市场写 state:subscribe:{market}:{symbol}:{interval}。失败仅忽略(优雅降级)。
+    """
+    for sym in symbols:
+        try:
+            market = infer_market(sym)
+            await redis_cache._r.set(  # noqa: SLF001
+                keys.state_bar_subscription(market, sym, interval), b"1", ex=120)
+        except Exception as e:  # noqa: BLE001
+            log.warning("sse.register_sub_failed", symbol=sym, error=str(e))
+
+
 async def _stream_gen(symbols: set[str], interval: str, redis_cache) -> None:
     """共享 generator: 订阅 bus, 匹配任意 symbol.
 
@@ -42,6 +57,9 @@ async def _stream_gen(symbols: set[str], interval: str, redis_cache) -> None:
     server_ts = datetime.now(timezone.utc).isoformat()
     # 立刻发出 connected 事件, 防止浏览器在 init 为空时超时
     yield _sse_event("connected", {"symbols": list(symbols), "interval": interval, "server_ts": server_ts})
+
+    # 连上后立即写订阅登记表,激活 collector 进行中态 ticker / 分时 writer
+    await _register_subscriptions(symbols, interval, redis_cache)
 
     for sym in symbols:
         market = infer_market(sym)
@@ -71,6 +89,8 @@ async def _stream_gen(symbols: set[str], interval: str, redis_cache) -> None:
 
     last_ping = datetime.now(timezone.utc)
     while True:
+        # 循环开头续期订阅登记表 (xread block=30s,循环至少每 30s 转一次,TTL 120s 不会过期)
+        await _register_subscriptions(symbols, interval, redis_cache)
         try:
             entries = await redis_cache._r.xread(
                 streams={keys.BUS_BARS_UPDATED: last_id},
