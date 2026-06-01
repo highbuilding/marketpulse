@@ -10,10 +10,12 @@ DuckDB upsert (ON CONFLICT) 自动去重, 重复聚合无副作用。
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 
 import structlog
 
+from core.cache import keys
 from core.domain.models import Bar
 from core.persistence.duckdb_repo import BarRepo
 from core.services.intraday_aggregator import aggregate_intraday
@@ -186,6 +188,55 @@ async def aggregate_derived_for_symbol(
                         symbol=symbol, target=target, error=str(e))
 
     return stats
+
+
+# 各目标周期事件驱动聚合用的增量窗口(天)
+_TARGET_WINDOW = {
+    "15m": dict(window_15m=2), "30m": dict(window_30m=2),
+    "60m": dict(window_60m=2), "4h": dict(window_4h=2),
+    "1wk": dict(window_1wk=14), "1mo": dict(window_1mo=40),
+}
+
+
+async def aggregate_and_publish(
+    repo, redis, market: str, symbol: str,
+    *, targets: tuple[str, ...], now: datetime | None = None,
+) -> None:
+    """事件驱动: 聚合 targets 指定的周期, 对已收线(ts<=now)的最新桶发 bus(final=true)。
+
+    未收线的桶(ts>now)交给进行中态组件 ticker, 这里不发。
+    """
+    now = now or datetime.now(timezone.utc)
+    kw: dict = {}
+    for t in targets:
+        kw.update(_TARGET_WINDOW.get(t, {}))
+    try:
+        await aggregate_derived_for_symbol(repo, market, symbol, **kw)
+    except Exception as e:  # noqa: BLE001
+        log.warning("derived.publish_agg_failed", symbol=symbol, error=str(e))
+        return
+    for t in targets:
+        try:
+            latest = repo.fetch_history_paged(market, symbol, t, before=None, limit=1)
+            if not latest:
+                continue
+            bar = latest[-1]
+            if bar.ts > now:  # 未收线, 交给 ticker
+                continue
+            payload = {
+                "market": market, "symbol": symbol, "interval": t,
+                "ts": bar.ts.isoformat(), "open": float(bar.open),
+                "high": float(bar.high), "low": float(bar.low),
+                "close": float(bar.close), "volume": int(bar.volume),
+                "final": True,
+            }
+            await redis._r.xadd(  # noqa: SLF001
+                keys.BUS_BARS_UPDATED,
+                {"data": json.dumps(payload).encode()},
+                maxlen=10000, approximate=True,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("derived.publish_failed", symbol=symbol, target=t, error=str(e))
 
 
 async def sweep_derived(
