@@ -8,9 +8,13 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, datetime
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 import structlog
+
+from core.domain.bucket_state import BucketState, current_bucket, seed_baseline, update_bucket
+from apps.collector.us.bar_ticker import INTERVAL_MIN, BucketTracker
 
 log = structlog.get_logger(__name__)
 
@@ -47,3 +51,61 @@ class TradeAccumulator:
 
     def vwap(self) -> float:
         return (self.cum_amount / self.cum_volume) if self.cum_volume else 0.0
+
+
+class TradeHub:
+    """逐笔中枢: 累加器 + 进行中桶维护 + ~1s 节流分发。"""
+
+    def __init__(self, redis, repo, writer, ticker):
+        self._redis = redis
+        self._repo = repo          # bar_repo (RW, 同进程查已收 5m 补基线)
+        self._writer = writer      # UsIntradayWriter
+        self._ticker = ticker      # UsBarTicker
+        self._accums: dict[str, TradeAccumulator] = {}
+        self._buckets: dict[tuple[str, str], BucketTracker] = {}
+        self._just_closed: dict[tuple[str, str], BucketTracker] = {}
+        self._subs: dict[str, set[str]] = {}   # symbol -> {interval} (订阅)
+        self._dirty: set[str] = set()
+        self._stopped = False
+
+    def on_trade(self, symbol: str, *, price: float, size: int, ts: datetime) -> None:
+        """逐笔处理 (同步纯内存)。累加 + 更新各订阅周期当前桶 + 滚动检测。"""
+        acc = self._accums.get(symbol)
+        if acc is None:
+            acc = self._accums[symbol] = TradeAccumulator()
+        acc.add_trade(price=price, size=size, ts=ts)
+
+        price_dec = Decimal(str(price))
+        for interval in self._subs.get(symbol, set()):
+            mins = INTERVAL_MIN.get(interval)
+            if mins is None:
+                continue
+            ob = current_bucket("us", ts, mins)
+            if ob is None:
+                continue
+            open_ts, close_ts = ob
+            key = (symbol, interval)
+            tr = self._buckets.get(key)
+            if tr is None or tr.open_ts != open_ts:
+                if tr is not None:
+                    self._just_closed[key] = tr   # 旧桶滚动 → provisional 待发
+                base = self._seed(symbol, interval, mins, open_ts, close_ts)
+                base_vol = base.volume if base else 0
+                state = update_bucket(base, price_dec, volume=base_vol + size)
+                tr = BucketTracker(open_ts=open_ts, close_ts=close_ts, state=state)
+            else:
+                state = update_bucket(tr.state, price_dec, volume=tr.state.volume + size)
+                tr.state = state
+            self._buckets[key] = tr
+        self._dirty.add(symbol)
+
+    def _seed(self, symbol, interval, mins, open_ts, close_ts):
+        """大周期当前桶用已收线 5m bar 补基线 (重启/中途订阅防 open 漂移)。"""
+        if self._repo is None or mins <= 5:
+            return None
+        try:
+            src = self._repo.fetch_history_paged("us", symbol, "5m", before=close_ts, limit=mins // 5)
+            src = [b for b in src if open_ts < b.ts <= close_ts]
+            return seed_baseline(src)
+        except Exception:  # noqa: BLE001
+            return None
