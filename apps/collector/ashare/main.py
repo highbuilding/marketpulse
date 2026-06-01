@@ -188,6 +188,13 @@ async def lifespan(app: FastAPI):
         name="ashare.bar_poller",
     )
 
+    # === A 股进行中 bar ticker (quote 驱动, 10s 一次) ===
+    from apps.collector.ashare.quote_bar_ticker import run_quote_bar_ticker
+    _ticker_task = asyncio.create_task(
+        run_quote_bar_ticker(redis_cache, bar_repo),
+        name="ashare.quote_bar_ticker",
+    )
+
     # === 定期聚合派生周期 (60m/4h/1wk/1mo) ===
     from datetime import datetime, timedelta, timezone
     from apps.collector.jobs.aggregate_derived import sweep_derived
@@ -220,6 +227,11 @@ async def lifespan(app: FastAPI):
         _poller_task.cancel()
         try:
             await _poller_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        _ticker_task.cancel()
+        try:
+            await _ticker_task
         except (asyncio.CancelledError, Exception):
             pass
         _refill_task.cancel()

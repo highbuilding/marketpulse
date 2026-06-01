@@ -43,3 +43,30 @@ async def test_tick_once_skips_outside_session():
     now = datetime(2026, 6, 1, 8, 0, tzinfo=timezone.utc)  # 16:00 BJT 收盘后
     await t.tick_once("600519.SH", "5m", now=now)
     assert redis._r.xadd.await_count == 0
+
+
+from decimal import Decimal as _D
+from datetime import datetime as _dt, timezone as _tz
+from core.domain.models import Bar
+from apps.collector.ashare.quote_bar_ticker import seed_baseline
+
+
+def test_seed_baseline_from_smaller_bars():
+    bars = [
+        Bar(market="ashare", symbol="X", ts=_dt(2026,6,1,5,5,tzinfo=_tz.utc),
+            open=_D("10"), high=_D("12"), low=_D("9"), close=_D("11"),
+            volume=100, interval="5m"),
+        Bar(market="ashare", symbol="X", ts=_dt(2026,6,1,5,10,tzinfo=_tz.utc),
+            open=_D("11"), high=_D("15"), low=_D("10"), close=_D("14"),
+            volume=200, interval="5m"),
+    ]
+    st = seed_baseline(bars)
+    assert st.open == _D("10")
+    assert st.high == _D("15")
+    assert st.low == _D("9")
+    assert st.close == _D("14")
+    assert st.volume == 300
+
+
+def test_seed_baseline_empty_returns_none():
+    assert seed_baseline([]) is None

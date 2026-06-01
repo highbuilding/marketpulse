@@ -6,15 +6,17 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import structlog
 
 from core.cache import keys
-from core.domain.market_sessions import bucket_grid
+from core.domain.market_calendar import is_trading_day
+from core.domain.market_sessions import bucket_grid, is_market_session_open
 
 log = structlog.get_logger(__name__)
 
@@ -59,6 +61,19 @@ def current_bucket(
     return None
 
 
+def seed_baseline(bars: list) -> BucketState | None:
+    """用更小周期已收线 bar 序列算出当前大桶到目前为止的 OHLC 基线。"""
+    if not bars:
+        return None
+    return BucketState(
+        open=bars[0].open,
+        high=max(b.high for b in bars),
+        low=min(b.low for b in bars),
+        close=bars[-1].close,
+        volume=sum(int(b.volume) for b in bars),
+    )
+
+
 class QuoteBarTicker:
     """quote 驱动所有被订阅周期的进行中 bar (final=false), 不入库。"""
 
@@ -86,8 +101,20 @@ class QuoteBarTicker:
         volume = int(q.get("volume") or 0)
         tk = f"{symbol}:{interval}"
         prev = self._buckets.get(tk)
-        # 新桶则从头攒(基线补全在 Task 10 接入, 这里先 None)
-        state = None if (prev is None or prev[0] != open_ts) else prev[1]
+        if prev is None or prev[0] != open_ts:
+            # 新桶: 用已收线 5m bar 补 OHLC 基线(大周期才需要)
+            base = None
+            if self._repo is not None and mins > 5:
+                try:
+                    src = self._repo.fetch_history_paged(
+                        "ashare", symbol, "5m", before=close_ts, limit=mins // 5)
+                    src = [b for b in src if open_ts < b.ts <= close_ts]
+                    base = seed_baseline(src)
+                except Exception:  # noqa: BLE001
+                    base = None
+            state = base
+        else:
+            state = prev[1]
         state = update_bucket(state, price, volume=volume)
         self._buckets[tk] = (open_ts, state)
         payload = {
@@ -110,3 +137,37 @@ class QuoteBarTicker:
         except Exception as e:  # noqa: BLE001
             log.warning("ticker.publish_failed",
                         symbol=symbol, interval=interval, error=str(e))
+
+    async def _scan_subscribed(self) -> set[tuple[str, str]]:
+        active: set[tuple[str, str]] = set()
+        try:
+            cursor = 0
+            while True:
+                cursor, found = await self._redis._r.scan(  # noqa: SLF001
+                    cursor, match="state:subscribe:ashare:*", count=200)
+                for k in found:
+                    key = k.decode() if isinstance(k, bytes) else k
+                    parts = key.split(":")
+                    if len(parts) >= 5 and parts[4] in _INTERVAL_MIN:
+                        active.add((parts[3], parts[4]))
+                if cursor == 0:
+                    break
+        except Exception as e:  # noqa: BLE001
+            log.warning("ticker.scan_failed", error=str(e))
+        return active
+
+    async def run(self) -> None:
+        log.info("quote_bar_ticker.started")
+        while not self._stopped:
+            try:
+                if is_trading_day("ashare") and is_market_session_open("ashare"):
+                    now = datetime.now(timezone.utc)
+                    for symbol, interval in await self._scan_subscribed():
+                        await self.tick_once(symbol, interval, now=now)
+            except Exception as e:  # noqa: BLE001
+                log.warning("ticker.loop_error", error=str(e))
+            await asyncio.sleep(TICK_INTERVAL_S)
+
+
+async def run_quote_bar_ticker(redis, repo) -> None:
+    await QuoteBarTicker(redis, repo).run()
