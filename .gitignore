@@ -17,10 +17,10 @@ apps/web/out/
 apps/web/test-results/
 apps/web/tsconfig.tsbuildinfo
 .DS_Store
-scratch/
 
-# 一次性手动备份, 不入 git
-data/*.duckdb.before-*
-
-# 一次性救火脚本, 历史用
-apps/repair_intraday_today.py
+# scratch/ 中已过时的一次性脚本, 不入库
+scratch/cd_poc.py
+scratch/dump_fixture.py
+scratch/fill_us_gap.py
+scratch/crypto_backfill_standalone.py
+scratch/ui-demos/
