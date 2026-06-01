@@ -16,6 +16,7 @@ import {
 } from 'lightweight-charts'
 import { useEffect, useRef } from 'react'
 
+import { inferMarket } from '@/lib/markets'
 import { useIntradayLine } from '@/lib/use_intraday_line'
 
 export interface IntradayLineChartProps {
@@ -42,9 +43,10 @@ export function IntradayLineChart({ symbol, height = 380, enabled = true }: Intr
   const chartRef = useRef<IChartApi | null>(null)
   const priceSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
   const avgSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const prevCloseSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
   const didFitRef = useRef(false)
 
-  const { points, stale } = useIntradayLine(symbol, enabled)
+  const { points, stale, prevClose } = useIntradayLine(symbol, enabled)
 
   // Effect 1: 创建 chart + series。height 变化时重建。
   useEffect(() => {
@@ -86,6 +88,15 @@ export function IntradayLineChart({ symbol, height = 380, enabled = true }: Intr
       title: '均价',
     })
 
+    // 昨收基准线(灰色虚线,水平覆盖当日时间轴)
+    prevCloseSeriesRef.current = chart.addLineSeries({
+      color: '#6b7280',
+      lineWidth: 1,
+      lineStyle: LineStyle.Dashed,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    })
+
     const ro = new ResizeObserver(() => {
       if (ref.current) chart.applyOptions({ width: ref.current.clientWidth })
     })
@@ -99,6 +110,7 @@ export function IntradayLineChart({ symbol, height = 380, enabled = true }: Intr
       chartRef.current = null
       priceSeriesRef.current = null
       avgSeriesRef.current = null
+      prevCloseSeriesRef.current = null
       didFitRef.current = false
     }
   }, [height])
@@ -125,12 +137,31 @@ export function IntradayLineChart({ symbol, height = 380, enabled = true }: Intr
     priceSeries.setData(dedupAsc(priceData))
     avgSeries.setData(dedupAsc(avgData))
 
+    // 价格线染色:末价 ≥ 昨收 → 红(A 股口径);< 昨收 → 绿;无昨收 → 白
+    if (prevClose != null && priceData.length > 0) {
+      const last = priceData[priceData.length - 1].value as number
+      const color = last >= prevClose ? '#ef4444' : '#22c55e'
+      priceSeries.applyOptions({ color })
+    } else {
+      priceSeries.applyOptions({ color: '#f5f5f5' })
+    }
+
+    // 昨收基准线:覆盖当日时间轴首尾两点的水平虚线
+    if (prevClose != null && points.length > 0) {
+      const t0 = toChartTime(points[0].ts) as LineData['time']
+      const t1 = toChartTime(points[points.length - 1].ts) as LineData['time']
+      prevCloseSeriesRef.current?.setData([
+        { time: t0, value: prevClose },
+        { time: t1, value: prevClose },
+      ])
+    }
+
     // 仅首次 fit,后续刷新保留用户缩放/平移
     if (!didFitRef.current) {
       chart.timeScale().fitContent()
       didFitRef.current = true
     }
-  }, [points])
+  }, [points, prevClose])
 
   return (
     <div className="w-full">
@@ -138,6 +169,9 @@ export function IntradayLineChart({ symbol, height = 380, enabled = true }: Intr
         <div className="text-xs text-neutral-500 mb-1">数据可能陈旧</div>
       )}
       <div ref={ref} className="w-full" />
+      {inferMarket(symbol) === 'us' && (
+        <div className="text-xs text-neutral-600 mt-1">成交量为 IEX 口径(免费层),仅供参考</div>
+      )}
     </div>
   )
 }
