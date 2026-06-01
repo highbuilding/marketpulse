@@ -138,12 +138,12 @@ def attach_signal_jobs(
         _leader_gated(scan_cd_job), CronTrigger(day_of_week="mon-fri", hour=7, minute=30),
         id="cd:1d", kwargs={"interval": "1d", "market_filter": "ashare"}, **common,
     )
-    # 5m: is_signal=False, 不扫信号, 只入库给详情页 K 线用。BJT 09:30-15:00,
-    # 每 15 min 跑一次(sina 不限频, 但太密无意义)
+    # 5m: is_signal=False, 不扫信号, 只入库给详情页 K 线用。BJT 09:30-15:00.
+    # 每 5 min 跑一次 — 5m 是所有派生周期的源数据, 越快越好.
     if kline is not None:
         sched.add_job(
             _leader_gated(fetch_intraday_job),
-            CronTrigger(day_of_week="mon-fri", hour="1-7", minute="*/15"),
+            CronTrigger(day_of_week="mon-fri", hour="1-7", minute="*/5"),
             args=(kline, watchlist),
             kwargs={"interval": "5m", "market_filter": "ashare"},
             id="fetch:ashare:5m",
