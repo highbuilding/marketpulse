@@ -74,6 +74,17 @@ def expected_bar_ts(
     return [close for _, close in bucket_grid(market, local_date, interval_minutes)]
 
 
+def is_us_regular_session(when: datetime | None = None) -> bool:
+    """美股正常交易时段 RTH (09:30-16:00 ET, 不含 16:00 端点)。
+
+    区别于 is_market_session_open('us'): 后者含盘前 04:00 + 盘后 20:00。
+    分时图只画 RTH (券商口径); 周末/节假日由调用方 is_trading_day 门控。
+    """
+    tz = ZoneInfo(MARKET_TZ["us"])
+    cur = (when or datetime.now(timezone.utc)).astimezone(tz).time()
+    return time(9, 30) <= cur < time(16, 0)
+
+
 def is_market_session_open(market: Market, when: datetime | None = None) -> bool:
     """当前是否在该市场交易 session 内 (本市场时区)。
 
