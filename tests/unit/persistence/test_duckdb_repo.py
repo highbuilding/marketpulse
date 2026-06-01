@@ -17,6 +17,24 @@ def _bar(market, symbol, day_offset, close):
     )
 
 
+def test_insert_bars_drops_1m(tmp_path):
+    """审计 B4: insert_bars 永久杜绝 1m 落库; 混合批次只入 5m+。"""
+    repo = BarRepo(str(tmp_path / "bars.duckdb"))
+    repo.init()
+
+    def _mk(iv, off):
+        ts = datetime(2026, 5, 1, tzinfo=timezone.utc) + timedelta(minutes=off)
+        return Bar(market="us", symbol="AAPL", ts=ts,
+                   open=Decimal("1"), high=Decimal("2"), low=Decimal("1"),
+                   close=Decimal("2"), volume=10, interval=iv)
+
+    repo.insert_bars([_mk("1m", 0), _mk("5m", 5)])
+    start = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    assert len(repo.fetch_history("us", "AAPL", start=start, end=end, interval="1m")) == 0
+    assert len(repo.fetch_history("us", "AAPL", start=start, end=end, interval="5m")) == 1
+
+
 def test_insert_and_select(tmp_path):
     repo = BarRepo(str(tmp_path / "bars.duckdb"))
     repo.init()

@@ -7,8 +7,11 @@ from threading import RLock
 
 import duckdb
 import pandas as pd
+import structlog
 
 from core.domain.models import Bar
+
+log = structlog.get_logger(__name__)
 
 
 class BarRepo:
@@ -58,6 +61,15 @@ class BarRepo:
         with self._lock:
             if not bars:
                 return
+            # 1m 已废弃 (审计 B4): 永久杜绝任何路径写 1m 伪 bar。
+            # 存储边界策略: 1m + 进行中态不存, 5m+ 收线才入库。
+            dropped = sum(1 for b in bars if b.interval == "1m")
+            if dropped:
+                log.warning("bars.insert_dropped_1m", count=dropped,
+                            market=bars[0].market, symbol=bars[0].symbol)
+                bars = [b for b in bars if b.interval != "1m"]
+                if not bars:
+                    return
             rows = [(
                 b.market, b.symbol, b.ts.astimezone(timezone.utc).replace(tzinfo=None),
                 b.interval, b.open, b.high, b.low, b.close, b.volume,
