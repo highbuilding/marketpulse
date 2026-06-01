@@ -7,13 +7,15 @@ TradeHub 维护进行中桶 + ~1s 节流分发给分时 writer / K 线 ticker。
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 import structlog
 
 from core.domain.bucket_state import BucketState, current_bucket, seed_baseline, update_bucket
+from core.domain.market_calendar import is_trading_day
+from core.domain.market_sessions import is_market_session_open
 from apps.collector.us.bar_ticker import INTERVAL_MIN, BucketTracker
 
 log = structlog.get_logger(__name__)
@@ -109,3 +111,64 @@ class TradeHub:
             return seed_baseline(src)
         except Exception:  # noqa: BLE001
             return None
+
+    async def _scan_subs(self) -> None:
+        """刷新订阅: state:subscribe:us:{symbol}:{interval}。"""
+        subs: dict[str, set[str]] = {}
+        try:
+            cursor = 0
+            while True:
+                cursor, found = await self._redis._r.scan(  # noqa: SLF001
+                    cursor, match="state:subscribe:us:*", count=200)
+                for k in found:
+                    kk = k.decode() if isinstance(k, bytes) else k
+                    parts = kk.split(":")
+                    if len(parts) >= 5 and parts[4] in INTERVAL_MIN:
+                        subs.setdefault(parts[3], set()).add(parts[4])
+                if cursor == 0:
+                    break
+        except Exception as e:  # noqa: BLE001
+            log.warning("us_hub.scan_failed", error=str(e))
+        self._subs = subs
+
+    async def _flush(self, *, now: datetime) -> None:
+        # 1. 桶滚动 provisional (填 SIP 洞)
+        for (symbol, interval), tr in list(self._just_closed.items()):
+            await self._ticker.publish_provisional(symbol, interval, tr)
+        self._just_closed.clear()
+        # 2. dirty 标的: 分时 + 进行中态
+        dirty = list(self._dirty)
+        self._dirty.clear()
+        for symbol in dirty:
+            acc = self._accums.get(symbol)
+            if acc is not None:
+                try:
+                    await self._writer.flush(symbol, acc, now=now)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("us_hub.writer_failed", symbol=symbol, error=str(e))
+            for interval in self._subs.get(symbol, set()):
+                tr = self._buckets.get((symbol, interval))
+                if tr is not None:
+                    try:
+                        await self._ticker.publish_current(symbol, interval, tr)
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("us_hub.ticker_failed",
+                                    symbol=symbol, interval=interval, error=str(e))
+
+    async def run(self) -> None:
+        log.info("us_trade_hub.started")
+        tick = 0
+        while not self._stopped:
+            try:
+                if tick % SUBS_REFRESH_TICKS == 0:
+                    await self._scan_subs()
+                tick += 1
+                if is_trading_day("us") and is_market_session_open("us"):
+                    await self._flush(now=datetime.now(timezone.utc))
+            except Exception as e:  # noqa: BLE001
+                log.warning("us_hub.loop_error", error=str(e))
+            await asyncio.sleep(FLUSH_INTERVAL_S)
+
+
+async def run_trade_hub(hub: TradeHub) -> None:
+    await hub.run()
