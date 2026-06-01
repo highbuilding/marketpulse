@@ -158,13 +158,39 @@ async def lifespan(app: FastAPI):
     attach_us_index_minute_job(sched, cache=redis_cache, baseline_repo=baseline_repo)
     sched.start()
 
-    # === Alpaca WS 实时 bar 推送 ===
+    # === 美股实时链路: trades WS → TradeHub → writer/ticker; REST SIP poller 收线 ===
+    from core.persistence.intraday_repo import IntradayLineRepo
+    from apps.collector.us.intraday_line_writer import UsIntradayWriter
+    from apps.collector.us.bar_ticker import UsBarTicker
+    from apps.collector.us.trade_hub import TradeHub, run_trade_hub
+    from apps.collector.us.bar_poller import run_us_bar_poller
     from apps.collector.us.ws_consumer import consume_loop as ws_consume_loop
-    _ws_task = asyncio.create_task(
-        ws_consume_loop(repo=bar_repo, redis_bars=redis_bars, redis_cache=redis_cache),
-        name="us.ws_consumer",
-    )
-    log.info("ws_consumer.bootstrapped")
+    from apps.collector.us.main import set_us_intraday_repo_override
+
+    intraday_repo = IntradayLineRepo(str(_DATA / "intraday_us.duckdb"))
+    set_us_intraday_repo_override(intraday_repo)
+
+    _us_writer = UsIntradayWriter(intraday_repo, redis_cache)
+    _us_ticker = UsBarTicker(redis_cache)
+    _hub = TradeHub(redis=redis_cache, repo=bar_repo, writer=_us_writer, ticker=_us_ticker)
+
+    _ws_task = asyncio.create_task(ws_consume_loop(hub=_hub), name="us.ws_consumer")
+    _hub_task = asyncio.create_task(run_trade_hub(_hub), name="us.trade_hub")
+    us_adapter = registry.get("us")
+    _poller_task = asyncio.create_task(
+        run_us_bar_poller(bar_repo, redis_cache, us_adapter), name="us.bar_poller")
+    log.info("us_realtime.bootstrapped")
+
+    # === 分时 90 天 purge cron ===
+    async def _purge_intraday():
+        from datetime import datetime, timezone, timedelta
+        try:
+            intraday_repo.purge_before(datetime.now(timezone.utc) - timedelta(days=90))
+            log.info("us_intraday.purged", before_days=90)
+        except Exception as e:  # noqa: BLE001
+            log.warning("us_intraday.purge_failed", error=str(e))
+    sched.add_job(_purge_intraday, "cron", hour=7, minute=30,
+                  id="us:intraday_purge", max_instances=1, coalesce=True)
 
     # === 定期聚合派生周期 (60m/4h/1wk/1mo) ===
     from datetime import datetime, timedelta, timezone
@@ -181,7 +207,7 @@ async def lifespan(app: FastAPI):
                     path=str(_syms_file), fallback_count=len(_us_syms))
     sched.add_job(
         sweep_derived,
-        "interval", minutes=30,
+        "interval", minutes=120,
         args=(bar_repo, "us", _us_syms),
         id="us:sweep_derived",
         max_instances=1, coalesce=True,
@@ -204,6 +230,12 @@ async def lifespan(app: FastAPI):
             await _ws_task
         except (asyncio.CancelledError, Exception):
             pass
+        for _t in (_hub_task, _poller_task):
+            _t.cancel()
+            try:
+                await _t
+            except (asyncio.CancelledError, Exception):
+                pass
         await leader.release()
         _refill_task.cancel()
         try:
@@ -225,6 +257,19 @@ app.router.lifespan_context = lifespan
 from apps.collector.base import attach_bars_history_route  # noqa: E402
 from apps.api.deps import get_bar_repo  # noqa: E402
 attach_bars_history_route(app, get_bar_repo, "us")
+
+# 分时只读接口 (module 级挂载, 惰性解析 repo —— lifespan set override)
+from apps.collector.base import attach_intraday_route  # noqa: E402
+
+_us_intraday_repo = None  # lifespan 内 set_us_intraday_repo_override 注入
+
+
+def set_us_intraday_repo_override(repo) -> None:
+    global _us_intraday_repo
+    _us_intraday_repo = repo
+
+
+attach_intraday_route(app, lambda: _us_intraday_repo, "us", get_bar_repo=get_bar_repo)
 
 
 def main() -> None:
