@@ -33,7 +33,7 @@ POLL_INTERVAL_S = 10
 SCAN_INTERVAL_S = 30
 
 # 支持从 sina 拉的周期 → ak_call period 参数
-INTERVAL_TO_PERIOD = {"1m": "1", "5m": "5", "15m": "15", "30m": "30"}
+INTERVAL_TO_PERIOD = {"5m": "5", "15m": "15", "30m": "30"}
 
 # 大盘默认标的 (始终轮询, 不受 SSE 订阅影响)
 _DEFAULT_SYMBOLS = (
@@ -115,15 +115,21 @@ class BarPoller:
         if not bars:
             return
 
-        # DuckDB upsert
+        # 进行中根(ts>now)交给 ticker, poller 只处理已收线根
+        now = datetime.now(timezone.utc)
+        closed_bars = [b for b in bars if b.ts <= now]
+        if not closed_bars:
+            return
+
+        # DuckDB upsert(仅已收线根)
         try:
-            self._repo.insert_bars(bars)
+            self._repo.insert_bars(closed_bars)
         except Exception as e:  # noqa: BLE001
             log.warning("bar_poller.db_write_failed",
                         symbol=symbol, interval=interval, error=str(e))
 
-        # 发布最新 bar 到 SSE 总线
-        latest = bars[-1]
+        # 发布最新已收线 bar 到 SSE 总线(final=true)
+        latest = closed_bars[-1]
         payload = {
             "market": "ashare", "symbol": latest.symbol,
             "interval": latest.interval, "ts": latest.ts.isoformat(),
@@ -139,6 +145,14 @@ class BarPoller:
             )
         except Exception as e:  # noqa: BLE001
             log.warning("bar_poller.xadd_failed", error=str(e))
+
+        # 5m 收线触发大周期事件驱动聚合 + 发 bus
+        if interval == "5m":
+            from apps.collector.jobs.aggregate_derived import aggregate_and_publish
+            await aggregate_and_publish(
+                self._repo, self._redis, "ashare", symbol,
+                targets=("15m", "30m", "60m", "4h"), now=now,
+            )
 
     async def _poll_loop(self, symbol: str, interval: str) -> None:
         """单标的轮询循环. 被 cancel 时干净退出."""
