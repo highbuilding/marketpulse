@@ -4,13 +4,13 @@ import { useRouter } from 'next/navigation'
 import { useMemo, useState } from 'react'
 import useSWR from 'swr'
 
-import { IntradayChart } from '@/components/IntradayChart'
+import { IntradayLineChart } from '@/components/IntradayLineChart'
 import { KLineChart, type SignalMarker } from '@/components/KLineChart'
 import { FundFlowPanel } from '@/components/FundFlowPanel'
 import { CDSignalPanel } from '@/components/CDSignalPanel'
 import { ChipSummaryPanel } from '@/components/ChipSummaryPanel'
 import { VolumeIndicatorsPanel } from '@/components/VolumeIndicatorsPanel'
-import { fetchBars, fetchChipSummary, fetchSymbolProfile } from '@/lib/symbol_api'
+import { fetchChipSummary, fetchSymbolProfile } from '@/lib/symbol_api'
 import { listCDSignalsBySymbol } from '@/lib/cd_signals_api'
 import { CD_MARKER_INTERVALS, klineTabsForMarket } from '@/lib/intervals'
 import { inferMarket, isInTradingSession } from '@/lib/markets'
@@ -50,8 +50,12 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
     [effectiveMarket],
   )
 
-  const isIntraday = ['1m', '5m', '15m', '30m', '60m'].includes(interval)
-  const isKlineMode = interval !== '1m'  // 1m 用 IntradayChart, 其他用 KLineChart
+  // 视图模式: 分时折线(券商口径) vs K 线蜡烛。
+  // 美股/A 股默认分时折线; crypto 不做分时, 默认 K 线(且隐藏分时 tab)。
+  const supportsIntraday = effectiveMarket === 'ashare' || effectiveMarket === 'us'
+  const [viewMode, setViewMode] = useState<'intraday' | 'kline'>('intraday')
+  const isIntradayView = supportsIntraday && viewMode === 'intraday'
+  const isKlineMode = !isIntradayView
 
   // === 统一数据管道: 历史 REST 分页 + SSE 实时尾部 (三市场通用) ===
   // - useBarsHistory: 游标分页打底 (首屏最新一页 + 滑动翻页), 所有周期通用
@@ -67,17 +71,6 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
   const displayBars: BarDTO[] = useMemo(() => {
     return mergeBarsAsc(hist.bars, streamBars)
   }, [hist.bars, streamBars])
-
-  // 1m 分时: 从 displayBars 过滤当日 bars
-  const todayBars = useMemo(() => {
-    if (interval !== '1m' || displayBars.length === 0) return []
-    const lastBar = displayBars[displayBars.length - 1]
-    const lastDate = new Date(lastBar.ts).toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' })
-    return displayBars.filter((b) => {
-      const bDate = new Date(b.ts).toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' })
-      return bDate === lastDate
-    })
-  }, [displayBars, interval])
 
   const { data: chipSummary, error: chipError, isLoading: chipLoading } = useSWR(
     effectiveMarket === 'ashare' ? `chip:${symbol}` : null,
@@ -116,23 +109,11 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
       .map((s) => ({ ts: s.bar_ts, signal_type: s.signal_type }))
   }, [signalsResp, displayBars])
 
-  // 分时模式:拉日线最后一根作 prevClose,只展示当日
-  const { data: daily } = useSWR(
-    interval === '1m' ? `bars:${symbol}:1d:5` : null,
-    () => fetchBars(symbol, '1d', 5),
-  )
-  const prevClose = useMemo(() => {
-    if (!daily || daily.bars.length < 2) return null
-    return daily.bars[daily.bars.length - 2]?.close ?? daily.bars[daily.bars.length - 1]?.close
-  }, [daily])
-
   // livePrice: 从 SSE 流式 bar 中取末根 close (所有市场通用)
   const livePrice: number | null = useMemo(() => {
-    const bars = displayBars.length > 0 ? displayBars
-      : (interval === '1m' ? todayBars : null)
-    if (!bars || bars.length === 0) return null
-    return bars[bars.length - 1].close
-  }, [displayBars, interval, todayBars])
+    if (displayBars.length === 0) return null
+    return displayBars[displayBars.length - 1].close
+  }, [displayBars])
 
   return (
     <main className="p-6 max-w-7xl mx-auto space-y-4">
@@ -149,24 +130,28 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
 
       <section className="rounded-lg border border-neutral-800 bg-neutral-950 p-4">
         <div className="flex gap-1 mb-3">
+          {supportsIntraday && (
+            <button
+              onClick={() => setViewMode('intraday')}
+              className={`px-2 py-1 text-xs rounded ${isIntradayView ? 'bg-neutral-700 text-white' : 'bg-neutral-900 text-neutral-400 hover:bg-neutral-800'}`}
+            >
+              分时
+            </button>
+          )}
           {intervalTabs.map((iv) => (
             <button
               key={iv.key}
-              onClick={() => setInterval(iv.key)}
-              className={`px-2 py-1 text-xs rounded ${interval === iv.key ? 'bg-neutral-700 text-white' : 'bg-neutral-900 text-neutral-400 hover:bg-neutral-800'}`}
+              onClick={() => {
+                setViewMode('kline')
+                setInterval(iv.key)
+              }}
+              className={`px-2 py-1 text-xs rounded ${!isIntradayView && interval === iv.key ? 'bg-neutral-700 text-white' : 'bg-neutral-900 text-neutral-400 hover:bg-neutral-800'}`}
             >
               {iv.label}
             </button>
           ))}
         </div>
 
-        {/* 1m 分时: loading/error 状态 */}
-        {interval === '1m' && hist.loading && todayBars.length === 0 && (
-          <p className="text-sm text-neutral-500">加载中…</p>
-        )}
-        {interval === '1m' && !!hist.error && todayBars.length === 0 && (
-          <p className="text-sm text-red-400">加载失败</p>
-        )}
         {/* K 线: loading/error 状态 */}
         {isKlineMode && hist.loading && displayBars.length === 0 && (
           <p className="text-sm text-neutral-500">加载中…</p>
@@ -175,17 +160,9 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
           <p className="text-sm text-red-400">加载失败</p>
         )}
 
-        {/* 分时模式 */}
-        {interval === '1m' && todayBars.length > 0 && (
-          <IntradayChart
-            bars={todayBars}
-            prevClose={prevClose}
-            height={420}
-            market={effectiveMarket}
-          />
-        )}
-        {interval === '1m' && !hist.loading && todayBars.length === 0 && (
-          <p className="text-sm text-yellow-400">当日无分时数据(可能未开盘或源不通)。</p>
+        {/* 分时折线模式 (券商口径: 当日逐分钟价格 + 均价线) */}
+        {isIntradayView && (
+          <IntradayLineChart symbol={symbol} height={420} enabled={isIntradayView} />
         )}
 
         {/* K 线模式 */}
