@@ -89,7 +89,7 @@ function SymbolName({ symbol }: { symbol: string }) {
 }
 
 // ── Page ──
-export default function DashboardPage() {
+export default function HomePage() {
   const { market } = useMarket()
   const indices = INDEX_CONFIG[market] || INDEX_CONFIG.ashare
   const watchlist = DEFAULT_WATCHLIST[market] || DEFAULT_WATCHLIST.ashare
