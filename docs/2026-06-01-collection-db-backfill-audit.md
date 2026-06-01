@@ -107,9 +107,19 @@ state.db 的 5 个空表(app_state / fund_flow_sector / health_log / sector_cons
 - **根因**:改造前的旧 `ws_consumer`(`bars` 频道,1m 三写)。本次会话 Task 8 已把它换成 `trades`(`04c7669`,不再写 1m),**泄漏源已堵**。
 - **待办**:① 重启后验证 1m 不再新增;② `BarRepo.insert_bars` 加 `interval != '1m'` 守卫(`duckdb_repo.py:57` 无 interval 白名单,防御性);③ 清存量 `DELETE FROM bars WHERE interval='1m'`(删后需 VACUUM 才缩文件)。
 
-### 3.4 crypto 存储边界(待确认)
+### 3.4 存储边界策略(已确认)
 
-crypto **进行中态(final=false)本来就不入库**(只写 `:current`),**收线 bar 入库**(K 线历史翻页依赖,436M)。若需求是"crypto 实时 tick 不落库"——现状已符合,不需改动;若需求是"crypto 连收线也不存"——会破坏 K 线历史,需重新设计历史来源。**需 zhonghuai 最终确认。**
+**统一策略(zhonghuai 2026-06-01 确认)**:**1 分钟 + 实时(进行中态)数据不存;5 分钟(含)以上的收线 bar 要存。**
+
+三市场现状核对——该策略即项目设计意图,三市场基本已符合:
+
+| 市场 | 1m | 进行中态 final=false | 5m+ 收线 | 符合? |
+|---|---|---|---|---|
+| crypto | 不采不存(WS 周期不含 1m)| 不存(只写 `:current`)| 存(`k.x=true`)| ✅ 完全符合,**不需改动** |
+| A股 | 已废弃不存 | 不存(ticker 只写 `:current`)| 存 | ✅ |
+| 美股 | **2431 行孤儿(B4)** | 不存 | 存 | ⚠️ 仅 1m 孤儿违反 |
+
+**唯一偏差 = 美股 1m 孤儿(B4)**:旧 ws_consumer 遗留,源已被 Task 8 堵。落实策略只需 B4 的两步:`insert_bars` 加 `interval!='1m'` 守卫 + 清存量。
 
 ---
 
@@ -248,6 +258,6 @@ SSE 只覆盖 **K 线 + 分时**(价格序列);其余面板**无 push 通道**,�
 
 ## 9. 待确认 / 后续
 
-- **待 zhonghuai 确认**:crypto 存储边界(§3.4)——"ws 不入库"指进行中态(已符合)还是连收线(需重设计)。
+- ~~crypto 存储边界~~ → **已确认**(§3.4):1m+进行中态不存、5m+ 收线存;三市场已符合,唯一偏差是美股 1m 孤儿(B4)。
 - **待修范围授权**:P0 涉及 A 股已交付的启动/聚合逻辑,改前需对齐。
 - **另立文档**:**多用户 / VPS(~100 并发)扩展性评审**——当前 SSE 全局流 per-consumer 扇出(O(用户×消息))、单 uvicorn worker、Alpaca 免费 IEX 30 符号上限、refill 放大、DuckDB 读耦合 collector,均为"单机单人"假设的产物,100 人会撞墙,需专门的读/实时下发侧多用户化设计。
