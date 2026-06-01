@@ -123,7 +123,13 @@ def attach_bars_history_route(app: FastAPI, get_repo, market: str) -> None:
         }
 
 
-def attach_intraday_route(app: FastAPI, get_intraday_repo, market: str) -> None:
+def attach_intraday_route(
+    app: FastAPI,
+    get_intraday_repo,
+    market: str,
+    *,
+    get_bar_repo=None,
+) -> None:
     """在 collector 自己的 FastAPI 上挂分时只读接口 (内部, 仅 127.0.0.1 可达).
 
     **必须在 module 级 (app 定义后) 调用**, 不能在 lifespan 内挂 ——
@@ -135,19 +141,32 @@ def attach_intraday_route(app: FastAPI, get_intraday_repo, market: str) -> None:
 
     GET /internal/intraday-line?symbol=&date=
     date 空 = 当日 (UTC); 返回升序分时点列表。
+
+    get_bar_repo (可选): 提供时, 响应顶层带 prev_close (该标的最近一根 1d bar
+    的 close), 用作美股分时图的昨收基准线。A 股不传此参数, prev_close=None。
     """
     @app.get("/internal/intraday-line")
     async def _intraday_line(symbol: str, date: str | None = None) -> dict:  # noqa: ANN202
         from datetime import datetime, timezone
         repo = get_intraday_repo()
         if repo is None:
-            return {"symbol": symbol, "points": [],
+            return {"symbol": symbol, "points": [], "prev_close": None,
                     "meta": {"stale": True, "reason": "repo_not_ready"}}
         try:
             day = (datetime.fromisoformat(date).date() if date
                    else datetime.now(timezone.utc).date())
             pts = repo.fetch_day(symbol, day)
         except Exception as e:  # noqa: BLE001
-            return {"symbol": symbol, "points": [],
+            return {"symbol": symbol, "points": [], "prev_close": None,
                     "meta": {"stale": True, "reason": str(e)}}
-        return {"symbol": symbol, "points": pts, "meta": {"stale": False}}
+        prev_close = None
+        if get_bar_repo is not None:
+            try:
+                br = get_bar_repo()
+                daily = br.fetch_history_paged(market, symbol, "1d", before=None, limit=1)
+                if daily:
+                    prev_close = float(daily[-1].close)
+            except Exception:  # noqa: BLE001
+                prev_close = None
+        return {"symbol": symbol, "points": pts, "prev_close": prev_close,
+                "meta": {"stale": False}}
