@@ -28,3 +28,23 @@ def test_baseline_seeds_ohlc():
     assert st.high == Decimal("112")  # 新高
     assert st.low == Decimal("88")
     assert st.close == Decimal("112")
+
+
+from datetime import datetime, timezone
+from apps.collector.ashare.quote_bar_ticker import current_bucket
+
+
+def test_current_bucket_finds_open_close():
+    # 13:50:30 BJT = 05:50:30 UTC, 5m 桶应为 05:50-05:55 UTC (13:50-13:55 BJT)
+    now = datetime(2026, 6, 1, 5, 50, 30, tzinfo=timezone.utc)
+    ob = current_bucket("ashare", now, 5)
+    assert ob is not None
+    open_utc, close_utc = ob
+    assert open_utc.hour == 5 and open_utc.minute == 50
+    assert close_utc.hour == 5 and close_utc.minute == 55
+
+
+def test_current_bucket_none_outside_session():
+    # 08:00 UTC = 16:00 BJT 已收盘, 不在任何桶
+    now = datetime(2026, 6, 1, 8, 0, tzinfo=timezone.utc)
+    assert current_bucket("ashare", now, 5) is None

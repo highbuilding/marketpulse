@@ -7,7 +7,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
+
+from core.domain.market_sessions import bucket_grid
 
 
 @dataclass
@@ -34,3 +37,14 @@ def update_bucket(state: BucketState | None, price: Decimal, *, volume: int) -> 
         close=price,
         volume=volume,
     )
+
+
+def current_bucket(
+    market: str, now: datetime, interval_min: int,
+) -> tuple[datetime, datetime] | None:
+    """返回 now 落在的桶 (open_utc, close_utc]; 不在任何桶(休市)返回 None。"""
+    grid = bucket_grid(market, now.date(), interval_min)
+    for open_utc, close_utc in grid:
+        if open_utc <= now < close_utc:
+            return (open_utc, close_utc)
+    return None
