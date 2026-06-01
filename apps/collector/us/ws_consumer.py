@@ -1,12 +1,9 @@
-"""Alpaca bar WebSocket 长连消费 (与 crypto ws_consumer 对等).
+"""Alpaca trades WebSocket 长连消费 (与 crypto ws_consumer 对等).
 
-Alpaca Streaming API (IEX free tier) 原生只推送 1m bar。
-收到 1m bar 事件:
-- DuckDB insert + Redis tail upsert
-- xadd bus:bars.updated (SSE 总线)
+Alpaca Streaming API trades 频道推送逐笔成交。
+收到 trade 事件后分发到 TradeHub, 由 TradeHub 聚合 1m bar 并驱动后续写库/推送。
 
-5m/15m/30m/60m 由 KLineService.aggregate_intraday 从 1m 聚合派生,
-或走 REST 轮询补充 (bar_poller)。
+旧 bars(1m) 频道已废弃: 1m bar 不再由 WS 直接落库,改由 TradeHub 聚合。
 
 标的集合: 从 US_SEEDS + watchlist 动态读取。
 设计原则: 优雅降级不 fail-fast。WS 断线指数退避 reconnect (1s → 60s)。
@@ -18,17 +15,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from datetime import datetime, timezone
 
 import structlog
 import websockets
-
-from core.cache import keys
-from core.cache.redis_bars_cache import RedisBarsCache
-from core.cache.redis_client import RedisCache
-from core.domain.models import Bar
-from core.persistence.duckdb_repo import BarRepo
 
 log = structlog.get_logger(__name__)
 
@@ -61,168 +51,75 @@ def _load_symbols() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# bar 解析
+# trade 解析
 # ---------------------------------------------------------------------------
 
-def _parse_bar(item: dict) -> Bar | None:
-    """Alpaca 1m bar 消息 → Bar.
+def _parse_trade(item: dict) -> tuple[str, float, int, datetime] | None:
+    """Alpaca trade 消息 → (symbol, price, size, ts_utc)。
 
-    Alpaca 消息格式:
-      {"T":"b", "S":"AAPL", "o":150.0, "h":151.0, "l":149.0, "c":150.5,
-       "v":1000, "t":"2024-06-01T09:30:00Z"}
-
-    ts 语义: Alpaca bar.timestamp 是 bar START。
-    按雷区 3, 美股 intraday bar.ts = close 时刻 → ts + 1min。
+    格式: {"T":"t","S":"AAPL","p":150.25,"s":100,"t":"2026-06-01T14:30:00.123Z"}
     """
     try:
         symbol = item.get("S")
         if not symbol:
             return None
-        ts_str = item.get("t", "").replace("Z", "+00:00")
-        ts_start = datetime.fromisoformat(ts_str)
-        return Bar(
-            market="us",
-            symbol=symbol,
-            ts=ts_start + timedelta(minutes=1),  # START → CLOSE (雷区 3)
-            open=Decimal(str(item["o"])),
-            high=Decimal(str(item["h"])),
-            low=Decimal(str(item["l"])),
-            close=Decimal(str(item["c"])),
-            volume=int(float(item.get("v", 0))),
-            interval="1m",
-        )
+        ts = datetime.fromisoformat(item["t"].replace("Z", "+00:00")).astimezone(timezone.utc)
+        return (symbol, float(item["p"]), int(float(item["s"])), ts)
     except Exception as e:  # noqa: BLE001
-        log.warning("ws_us.parse_failed", error=str(e), item=str(item)[:200])
+        log.warning("ws_us.parse_trade_failed", error=str(e), item=str(item)[:200])
         return None
-
-
-# ---------------------------------------------------------------------------
-# 三写
-# ---------------------------------------------------------------------------
-
-def _bar_to_event(bar: Bar) -> dict:
-    return {
-        "market": bar.market,
-        "symbol": bar.symbol,
-        "interval": bar.interval,
-        "ts": bar.ts.astimezone(timezone.utc).isoformat(),
-        "open": float(bar.open),
-        "high": float(bar.high),
-        "low": float(bar.low),
-        "close": float(bar.close),
-        "volume": int(bar.volume),
-        "final": True,
-    }
-
-
-async def handle_bar(
-    bar: Bar,
-    *,
-    repo: BarRepo,
-    redis_bars: RedisBarsCache,
-    redis_cache: RedisCache,
-) -> None:
-    """三写: DuckDB + Redis tail + Streams. 任何失败仅 warning."""
-    # 1. DuckDB
-    try:
-        repo.insert_bars([bar])
-    except Exception as e:  # noqa: BLE001
-        log.warning("ws_us.duckdb_write_failed",
-                    symbol=bar.symbol, error=str(e))
-    # 2. Redis tail
-    try:
-        await redis_bars.upsert_tail("us", bar.symbol, bar.interval, [bar])
-    except Exception as e:  # noqa: BLE001
-        log.warning("ws_us.tail_write_failed",
-                    symbol=bar.symbol, error=str(e))
-    # 3. SSE 总线
-    payload = _bar_to_event(bar)
-    try:
-        await redis_cache._r.xadd(  # noqa: SLF001
-            keys.BUS_BARS_UPDATED,
-            {"data": json.dumps(payload).encode()},
-            maxlen=10000,
-            approximate=True,
-        )
-    except Exception as e:  # noqa: BLE001
-        log.warning("ws_us.xadd_failed", error=str(e))
 
 
 # ---------------------------------------------------------------------------
 # 主循环
 # ---------------------------------------------------------------------------
 
-async def consume_loop(
-    *,
-    repo: BarRepo,
-    redis_bars: RedisBarsCache,
-    redis_cache: RedisCache,
-) -> None:
-    """Alpaca WS 长连消费循环。被 cancel 干净退出, 其他异常指数退避 reconnect."""
+async def consume_loop(*, hub) -> None:
+    """Alpaca WS trades 长连消费。逐笔 → hub.on_trade。被 cancel 干净退出。"""
     api_key = os.getenv("ALPACA_API_KEY", "")
     api_secret = os.getenv("ALPACA_SECRET_KEY", "")
     if not api_key or not api_secret:
         log.warning("ws_us.no_alpaca_keys", note="WS consumer 无法启动")
         return
-
     symbols = _load_symbols()
     log.info("ws_us.start", symbols=len(symbols))
-
     backoff = 1.0
     while True:
         try:
-            async with websockets.connect(
-                _WS_URL, ping_interval=30, ping_timeout=10,
-            ) as ws:
-                # 认证
-                await ws.send(json.dumps({
-                    "action": "auth", "key": api_key, "secret": api_secret,
-                }))
+            async with websockets.connect(_WS_URL, ping_interval=30, ping_timeout=10) as ws:
+                await ws.send(json.dumps({"action": "auth", "key": api_key, "secret": api_secret}))
                 auth_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
                 if isinstance(auth_resp, list):
                     for item in auth_resp:
                         if item.get("T") == "error":
                             log.error("ws_us.auth_failed", msg=item.get("msg", ""))
-                            return  # 认证失败不重试
+                            return
                 log.info("ws_us.authenticated")
-
-                # 订阅
-                await ws.send(json.dumps({
-                    "action": "subscribe", "bars": symbols,
-                }))
+                await ws.send(json.dumps({"action": "subscribe", "trades": symbols}))
                 sub_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
                 if isinstance(sub_resp, list):
                     for item in sub_resp:
                         if item.get("T") == "subscription":
-                            log.info("ws_us.subscribed",
-                                     count=len(item.get("bars", [])))
-
+                            log.info("ws_us.subscribed", count=len(item.get("trades", [])))
                 log.info("ws_us.connected", symbols=len(symbols))
                 backoff = 1.0
-
-                # 消费
                 async for raw in ws:
                     try:
                         msgs = json.loads(raw)
                         if not isinstance(msgs, list):
                             continue
                         for item in msgs:
-                            if item.get("T") == "b":
-                                bar = _parse_bar(item)
-                                if bar:
-                                    await handle_bar(
-                                        bar, repo=repo, redis_bars=redis_bars,
-                                        redis_cache=redis_cache,
-                                    )
+                            if item.get("T") == "t":
+                                tr = _parse_trade(item)
+                                if tr:
+                                    hub.on_trade(tr[0], price=tr[1], size=tr[2], ts=tr[3])
                             elif item.get("T") == "error":
                                 log.warning("ws_us.stream_error",
-                                            code=item.get("code"),
-                                            msg=item.get("msg"))
+                                            code=item.get("code"), msg=item.get("msg"))
                     except asyncio.CancelledError:
                         raise
                     except Exception as e:  # noqa: BLE001
                         log.warning("ws_us.handle_failed", error=str(e))
-
         except asyncio.CancelledError:
             log.info("ws_us.cancelled")
             return
