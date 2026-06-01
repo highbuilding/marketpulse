@@ -121,3 +121,33 @@ def attach_bars_history_route(app: FastAPI, get_repo, market: str) -> None:
             } for b in bars],
             "meta": {"stale": False, "count": len(bars)},
         }
+
+
+def attach_intraday_route(app: FastAPI, get_intraday_repo, market: str) -> None:
+    """在 collector 自己的 FastAPI 上挂分时只读接口 (内部, 仅 127.0.0.1 可达).
+
+    **必须在 module 级 (app 定义后) 调用**, 不能在 lifespan 内挂 ——
+    Starlette 在 lifespan 启动后才加的路由不会被路由表识别 (实测 404)。
+    repo 通过 get_intraday_repo() 在**请求时惰性解析** (lifespan 已注入 repo)。
+
+    关键: collector 进程本就持有 RW intraday_repo, 在同一进程内用同一连接查询
+    => 零 DuckDB 锁冲突。api 进程通过 httpx 转发到此, 自己绝不碰 DuckDB。
+
+    GET /internal/intraday-line?symbol=&date=
+    date 空 = 当日 (UTC); 返回升序分时点列表。
+    """
+    @app.get("/internal/intraday-line")
+    async def _intraday_line(symbol: str, date: str | None = None) -> dict:  # noqa: ANN202
+        from datetime import datetime, timezone
+        repo = get_intraday_repo()
+        if repo is None:
+            return {"symbol": symbol, "points": [],
+                    "meta": {"stale": True, "reason": "repo_not_ready"}}
+        try:
+            day = (datetime.fromisoformat(date).date() if date
+                   else datetime.now(timezone.utc).date())
+            pts = repo.fetch_day(symbol, day)
+        except Exception as e:  # noqa: BLE001
+            return {"symbol": symbol, "points": [],
+                    "meta": {"stale": True, "reason": str(e)}}
+        return {"symbol": symbol, "points": pts, "meta": {"stale": False}}

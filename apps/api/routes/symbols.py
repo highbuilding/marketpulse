@@ -286,6 +286,30 @@ async def bars_history(
     )
 
 
+@router.get("/{symbol}/intraday-line")
+async def intraday_line(
+    symbol: str,
+    date: str | None = Query(None, description="ISO 日期, 空=当日"),
+    client=Depends(get_collector_http_client),
+):
+    """分时图当日/历史点。转发 collector 内嵌只读接口(api 不碰 DuckDB)。"""
+    market = infer_market(symbol)
+    base = collector_base_url(market) if market else None
+    if base is None:
+        return {"symbol": symbol, "points": [],
+                "meta": {"stale": True, "reason": "unknown_market"}}
+    params = {"symbol": symbol}
+    if date:
+        params["date"] = date
+    try:
+        resp = await client.get(f"{base}/internal/intraday-line", params=params)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:  # noqa: BLE001
+        return {"symbol": symbol, "points": [],
+                "meta": {"stale": True, "reason": "collector_unreachable"}}
+
+
 @router.get("/{symbol}/bars", response_model=BarsResponse)
 async def bars(
     symbol: str,

@@ -31,6 +31,9 @@ log = structlog.get_logger(__name__)
 _BASE = Path(__file__).resolve().parents[3]
 _DATA = _BASE / "data"
 
+# module 级可变容器: lifespan 注入 intraday_repo, attach_intraday_route 惰性读取
+_intraday_repo_holder: dict = {"repo": None}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -43,6 +46,11 @@ async def lifespan(app: FastAPI):
     bar_repo = BarRepo(str(_DATA / "bars_ashare.duckdb"))
     bar_repo.init()
     set_bar_repo_override(bar_repo)
+
+    # === 分时 IntradayLineRepo ===
+    from core.persistence.intraday_repo import IntradayLineRepo
+    intraday_repo = IntradayLineRepo(str(_DATA / "intraday_ashare.duckdb"))
+    _intraday_repo_holder["repo"] = intraday_repo
 
     # === Redis ===
     from apps.api.deps import get_redis_cache, get_redis_bars_cache
@@ -195,6 +203,13 @@ async def lifespan(app: FastAPI):
         name="ashare.quote_bar_ticker",
     )
 
+    # === A 股分时图写入器 (quote 驱动, 10s 一次) ===
+    from apps.collector.ashare.intraday_line_writer import run_intraday_line_writer
+    _intraday_task = asyncio.create_task(
+        run_intraday_line_writer(intraday_repo, redis_cache),
+        name="ashare.intraday_line_writer",
+    )
+
     # === 定期聚合派生周期 (60m/4h/1wk/1mo) ===
     from datetime import datetime, timedelta, timezone
     from apps.collector.jobs.aggregate_derived import sweep_derived
@@ -234,6 +249,11 @@ async def lifespan(app: FastAPI):
             await _ticker_task
         except (asyncio.CancelledError, Exception):
             pass
+        _intraday_task.cancel()
+        try:
+            await _intraday_task
+        except (asyncio.CancelledError, Exception):
+            pass
         _refill_task.cancel()
         try:
             await _refill_task
@@ -264,6 +284,10 @@ app.router.lifespan_context = lifespan
 from apps.collector.base import attach_bars_history_route  # noqa: E402
 from apps.api.deps import get_bar_repo  # noqa: E402
 attach_bars_history_route(app, get_bar_repo, "ashare")
+
+# 分时只读接口 (module 级挂载; repo 请求时惰性解析 —— lifespan 已注入 _intraday_repo_holder)
+from apps.collector.base import attach_intraday_route  # noqa: E402
+attach_intraday_route(app, lambda: _intraday_repo_holder["repo"], "ashare")
 
 
 def main() -> None:
