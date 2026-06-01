@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 from core.domain.markets import Market
 
-IntradayMinutes = Literal[15, 30, 60, 240]
+IntradayMinutes = Literal[5, 15, 30, 60, 240]
 
 # 各市场本地 wall-clock session 列表 (start_hhmm, end_hhmm)
 SESSIONS: dict[Market, list[tuple[str, str]]] = {
