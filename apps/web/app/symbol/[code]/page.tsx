@@ -13,7 +13,7 @@ import { VolumeIndicatorsPanel } from '@/components/VolumeIndicatorsPanel'
 import { fetchChipSummary, fetchSymbolProfile } from '@/lib/symbol_api'
 import { listCDSignalsBySymbol } from '@/lib/cd_signals_api'
 import { CD_MARKER_INTERVALS, klineTabsForMarket } from '@/lib/intervals'
-import { inferMarket, isInTradingSession } from '@/lib/markets'
+import { inferMarket, isInTradingSession, isUsRegularSession } from '@/lib/markets'
 import { useKlineStream } from '@/lib/use_kline_stream'
 import { useBarsHistory, mergeBarsAsc } from '@/lib/use_bars_history'
 import type { BarDTO, Interval } from '@/lib/types'
@@ -52,8 +52,12 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
 
   // 视图模式: 分时折线(券商口径) vs K 线蜡烛。
   // 美股/A 股默认分时折线; crypto 不做分时, 默认 K 线(且隐藏分时 tab)。
+  // 美股非 RTH(盘前/盘后/隔夜/周末): 分时无数据, 默认落 K 线视图。
   const supportsIntraday = effectiveMarket === 'ashare' || effectiveMarket === 'us'
-  const [viewMode, setViewMode] = useState<'intraday' | 'kline'>('intraday')
+  const usPremarket = effectiveMarket === 'us' && !isUsRegularSession()
+  const [viewMode, setViewMode] = useState<'intraday' | 'kline'>(
+    usPremarket ? 'kline' : 'intraday',
+  )
   const isIntradayView = supportsIntraday && viewMode === 'intraday'
   const isKlineMode = !isIntradayView
 

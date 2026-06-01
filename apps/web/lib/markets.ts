@@ -90,6 +90,20 @@ export function isMarketOpenNow(market: Market): boolean {
   return false
 }
 
+// 美股 RTH 判定 (09:30-16:00 ET)。分时图仅 RTH; 非 RTH 详情页默认 K 线。
+export function isUsRegularSession(now: Date = new Date()): boolean {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', hour12: false,
+    hour: '2-digit', minute: '2-digit', weekday: 'short',
+  }).formatToParts(now)
+  const wd = parts.find((p) => p.type === 'weekday')?.value
+  if (wd === 'Sat' || wd === 'Sun') return false
+  const hh = Number(parts.find((p) => p.type === 'hour')?.value ?? '0') % 24
+  const mm = Number(parts.find((p) => p.type === 'minute')?.value ?? '0')
+  const mins = hh * 60 + mm
+  return mins >= 9 * 60 + 30 && mins < 16 * 60
+}
+
 // 给定 ISO 时刻 (UTC) 是否落在本市场交易时段。用于过滤 1m bars 的脏数据,
 // 防止凌晨/午休的点出现在分时图。crypto 永远 true。不判节假日。
 export function isInTradingSession(iso: string, market: Market): boolean {
