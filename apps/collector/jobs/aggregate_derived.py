@@ -262,16 +262,11 @@ async def sweep_derived(
     full_init_count = 0
     skipped = 0
     for sym in symbols:
-        w_15m = _decide_window(
-            first["5m"].get(sym), last["5m"].get(sym),
-            first["15m"].get(sym), last["15m"].get(sym),
-            full_gap=timedelta(days=2), incr_window=_AGG_WINDOW_DAYS,
-        )
-        w_30m = _decide_window(
-            first["5m"].get(sym), last["5m"].get(sym),
-            first["30m"].get(sym), last["30m"].get(sym),
-            full_gap=timedelta(days=2), incr_window=_AGG_WINDOW_DAYS,
-        )
+        # 审计 B5: 15m/30m 单一来源 = 源头直取(sina/REST 原生分钟线)。
+        # sweep 不再从 5m 聚合 15m/30m(否则与直取双写、ON CONFLICT 覆盖竞态)。
+        # 60m/4h(从 5m)、1wk/1mo(从 1d)仍由聚合派生(无直取源)。
+        w_15m = _NOOP
+        w_30m = _NOOP
         w_60m = _decide_window(
             first["5m"].get(sym), last["5m"].get(sym),
             first["60m"].get(sym), last["60m"].get(sym),

@@ -147,11 +147,12 @@ class BarPoller:
             log.warning("bar_poller.xadd_failed", error=str(e))
 
         # 5m 收线触发大周期事件驱动聚合 + 发 bus
+        # 审计 B5: 15m/30m 走源头直取(本 poller 已直取),不再聚合,只聚合 60m/4h(无直取源)
         if interval == "5m":
             from apps.collector.jobs.aggregate_derived import aggregate_and_publish
             await aggregate_and_publish(
                 self._repo, self._redis, "ashare", symbol,
-                targets=("15m", "30m", "60m", "4h"), now=now,
+                targets=("60m", "4h"), now=now,
             )
 
     async def _poll_loop(self, symbol: str, interval: str) -> None:
