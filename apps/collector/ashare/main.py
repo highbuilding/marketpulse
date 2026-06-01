@@ -219,11 +219,30 @@ async def lifespan(app: FastAPI):
     ) if l.strip()]
     sched.add_job(
         sweep_derived,
-        "interval", minutes=30,
+        "interval", minutes=120,  # 事件驱动聚合为主, sweep 降频兜底
         args=(bar_repo, "ashare", _ash_syms),
         id="ashare:sweep_derived",
         max_instances=1, coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(seconds=10),
+    )
+
+    # === 分时数据 90 天 purge (每日 02:30 UTC) ===
+    from apscheduler.triggers.cron import CronTrigger
+
+    async def _purge_intraday() -> None:
+        from datetime import datetime, timezone, timedelta
+        repo = _intraday_repo_holder["repo"]
+        if repo is None:
+            return
+        try:
+            repo.purge_before(datetime.now(timezone.utc) - timedelta(days=90))
+            log.info("intraday.purged", before_days=90)
+        except Exception as e:  # noqa: BLE001
+            log.warning("intraday.purge_failed", error=str(e))
+
+    sched.add_job(
+        _purge_intraday, CronTrigger(hour=2, minute=30),
+        id="ashare:intraday_purge", max_instances=1, coalesce=True,
     )
     log.info("bar_poller.bootstrapped")
 
