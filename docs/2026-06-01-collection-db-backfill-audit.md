@@ -33,7 +33,7 @@
 | 周期 | 来源 | 入库 | 进行中态 | 频率 |
 |---|---|---|---|---|
 | 5m | 源头直取 sina `stock_zh_a_minute`(`bar_poller.py:36`)| ✅ 仅收线根 | ✅ quote_bar_ticker | ticker 10s;poller 10s |
-| 15m / 30m | ⚠️**双源**:sina 直取(`bar_poller.py:36`)**+** 5m 聚合(`aggregate_derived.py:159-160`)| ✅ 双写 | ✅ ticker | 10s |
+| 15m / 30m | 源头直取 sina(`bar_poller.py:36`)— ✅ B5 已修:去掉 5m 聚合,单一来源 | ✅ | ✅ ticker | 10s |
 | 60m / 4h | 聚合自 5m(`aggregate_derived.py:161-162`)| ✅ 聚合 | ✅ ticker | ticker 10s;5m 收线事件驱动 + sweep 120min |
 | 1d | 源头直取 `stock_zh_a_daily`,cd:1d cron BJT15:30 | ✅ | ❌ | 每日 1 次 |
 | 1wk / 1mo | resample 自 1d(`aggregate_derived.py:176-177`)| ✅ | ❌ | **仅** sweep 120min(非事件驱动) |
@@ -212,11 +212,11 @@ SSE 只覆盖 **K 线 + 分时**(价格序列);其余面板**无 push 通道**,�
 | B3 | 派生周期"中段缺口"不重聚合 | 🔴高 | 待修 | aggregate_derived._decide_window |
 | B-startup | A股/美股无冷启动 backfill + 无 kill 后启动 reconcile | 🔴高 | 待修 | ashare/us main lifespan |
 | B4 | 美股 1m 孤儿 2431 行(泄漏源已堵)| 🟡中 | ✅ 已修 `a30bc92`(守卫+清存量 2431→0)| bars_us、insert_bars |
-| B5 | A股 15m/30m 双源覆盖竞态 | 🟡中 | 待修 | ashare bar_poller + 聚合 |
-| B6 | crypto gap 检测只看 7 天 | 🟡中 | 待修 | crypto/backfill.py:62 |
+| B5 | 15m/30m 双源覆盖竞态(实为三市场,经 sweep)| 🟡中 | ✅ 已修 `7115f99`(事件驱动+sweep 两处去 15m/30m 聚合,改直取单源)| ashare bar_poller + aggregate_derived |
+| B6 | crypto gap 检测只看 7 天 | 🟡中 | ⏸ 记录待后修(zhonghuai 决定)| crypto/backfill.py:62 |
 | B7 | `*_backfill_symbols.txt` 缺失 → sweep 只聚合默认标的 | 🟡中 | 待修 | main.py symbols 来源 |
 | B8 | 1d/1wk/1mo 在 A股/美股无进行中态(与 crypto 不对等)| 🟢低 | 设计取舍 | — |
-| B9 | 遗留库 bars.duckdb + 备份 ~187M | 🟢低 | 待清理 | data/ |
+| B9 | 遗留库 bars.duckdb + 备份 ~187M | 🟢低 | ✅ 已删(释放 ~179M,现役库完好)| data/ |
 | B-fixed-1 | 美股冬令时盘后桶错位 | — | ✅ 已修 `5c0b77c` | bucket_state.current_bucket |
 | B-fixed-2 | `state:subscribe` 无生产者(A股美股实时空转)| — | ✅ 已修 `2ca9ef5` | sse_bars |
 | B-fixed-3 | 美股 trades 149 符号撞 405 上限 | — | ✅ 已修 `a76a0ac` | us/ws_consumer |
@@ -245,10 +245,10 @@ SSE 只覆盖 **K 线 + 分时**(价格序列);其余面板**无 push 通道**,�
 
 ### P2 — B4 / B5 / B6 / B9
 
-- **B4**:`insert_bars` 加 `interval != '1m'` 守卫;清 `bars_us` 1m 存量 + VACUUM。
-- **B5**:A 股 15m/30m 去重——poller `INTERVAL_TO_PERIOD` 只保留 5m(15m/30m 全交聚合),或聚合不覆盖 poller 已直采的 15m/30m(单一来源)。
-- **B6**:crypto `backfill.py:62` gap 窗口按 interval 自适应(1d/1wk/1mo 查全量或 365 天,5m/15m 查 30 天)。
-- **B9**:删 4 个遗留库文件(腾 ~187M),删前再核对一次 per-market 行数。
+- **B4** ✅ 已修(`a30bc92`):`insert_bars` 加 `interval != '1m'` 守卫;清 `bars_us` 1m 存量 2431→0 + VACUUM。
+- **B5** ✅ 已修(`7115f99`):15m/30m 改单一来源(源头直取)。两处去掉聚合:① ashare bar_poller 事件驱动 `targets=("60m","4h")`;② `sweep_derived` 设 `w_15m=w_30m=_NOOP`(三市场共用,US 同样受益)。已核实无覆盖损失(直取 5m 的 poller/cron 同时直取 15m/30m)。
+- **B6** ⏸ 记录待后修:crypto `backfill.py:62` gap 窗口只看 7 天。**注意(2026-06-01 复盘):仅扩窗口不够**——现算法只补"最近一个缺口、从缺口一路拉到 now",需配套"检测全部缺口 + 逐段精确回补 + 窗口按 interval 自适应";要"理论零空洞"则需"按时间网格 diff 出缺失再补"。两档方案,zhonghuai 后续决定。
+- **B9** ✅ 已删(释放 ~179M):`bars.duckdb` + 3 个 `.before-*` 备份;现役 bars_*/intraday_*/state 完好。
 
 ### P3 — B8(可选)
 
