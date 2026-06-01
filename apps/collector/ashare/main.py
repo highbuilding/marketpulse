@@ -214,9 +214,15 @@ async def lifespan(app: FastAPI):
     from datetime import datetime, timedelta, timezone
     from apps.collector.jobs.aggregate_derived import sweep_derived
     from pathlib import Path as _Path
-    _ash_syms = [l.strip() for l in open(
-        _Path(__file__).resolve().parents[3] / "data" / "ashare_backfill_symbols.txt"
-    ) if l.strip()]
+    _syms_file = _Path(__file__).resolve().parents[3] / "data" / "ashare_backfill_symbols.txt"
+    try:
+        _ash_syms = [l.strip() for l in open(_syms_file) if l.strip()]
+    except OSError:
+        # 优雅降级 (原则 2): symbols 文件缺失 → 退回 bar_poller 默认标的, 不让 collector 启动失败
+        from apps.collector.ashare.bar_poller import _DEFAULT_SYMBOLS
+        _ash_syms = list(_DEFAULT_SYMBOLS)
+        log.warning("sweep_derived.symbols_file_missing",
+                    path=str(_syms_file), fallback_count=len(_ash_syms))
     sched.add_job(
         sweep_derived,
         "interval", minutes=120,  # 事件驱动聚合为主, sweep 降频兜底
