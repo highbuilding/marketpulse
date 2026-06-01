@@ -8,70 +8,20 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 
 import structlog
 
 from core.cache import keys
+from core.domain.bucket_state import BucketState, current_bucket, seed_baseline, update_bucket
 from core.domain.market_calendar import is_trading_day
-from core.domain.market_sessions import bucket_grid, is_market_session_open
+from core.domain.market_sessions import is_market_session_open
 
 log = structlog.get_logger(__name__)
 
 _INTERVAL_MIN = {"5m": 5, "15m": 15, "30m": 30, "60m": 60, "4h": 240}
 TICK_INTERVAL_S = 10
-
-
-@dataclass
-class BucketState:
-    open: Decimal
-    high: Decimal
-    low: Decimal
-    close: Decimal
-    volume: int
-
-
-def update_bucket(state: BucketState | None, price: Decimal, *, volume: int) -> BucketState:
-    """用新 quote 价更新进行中桶 OHLC。
-
-    state=None 时新建桶 (open=high=low=close=price)。
-    已有 state 时: open 保持, high=max, low=min, close=price, volume 取累计最新值。
-    """
-    if state is None:
-        return BucketState(open=price, high=price, low=price, close=price, volume=volume)
-    return BucketState(
-        open=state.open,
-        high=max(state.high, price),
-        low=min(state.low, price),
-        close=price,
-        volume=volume,
-    )
-
-
-def current_bucket(
-    market: str, now: datetime, interval_min: int,
-) -> tuple[datetime, datetime] | None:
-    """返回 now 落在的桶 (open_utc, close_utc]; 不在任何桶(休市)返回 None。"""
-    grid = bucket_grid(market, now.date(), interval_min)
-    for open_utc, close_utc in grid:
-        if open_utc <= now < close_utc:
-            return (open_utc, close_utc)
-    return None
-
-
-def seed_baseline(bars: list) -> BucketState | None:
-    """用更小周期已收线 bar 序列算出当前大桶到目前为止的 OHLC 基线。"""
-    if not bars:
-        return None
-    return BucketState(
-        open=bars[0].open,
-        high=max(b.high for b in bars),
-        low=min(b.low for b in bars),
-        close=bars[-1].close,
-        volume=sum(int(b.volume) for b in bars),
-    )
 
 
 class QuoteBarTicker:
