@@ -21,6 +21,7 @@ BUS_BARS_UPDATED = "bus:bars.updated"
 BUS_SIGNAL_NEW = "bus:signal.new"
 BUS_SOURCE_STATUS = "bus:source.status"
 BUS_BARS_REFILL_REQUEST = "bus:bars.refill_request"
+BUS_INTRADAY_UPDATED = "bus:intraday.updated"
 
 
 # === cache: 热缓存层 ===
@@ -62,6 +63,11 @@ def cache_bars_current(market: str, symbol: str, interval: str) -> str:
     P3 由 ws_consumer 写入,api SSE 路由读出当前 tick 推给前端。
     """
     return f"cache:bars:{market}:{symbol}:{interval}:current"
+
+
+def cache_intraday_current(market: str, symbol: str) -> str:
+    """分时图当前点 cache。intraday_line_writer 写, SSE init 读。"""
+    return f"cache:intraday:{market}:{symbol}:current"
 
 
 def cache_fundflow(symbol: str, *, days: int) -> str:

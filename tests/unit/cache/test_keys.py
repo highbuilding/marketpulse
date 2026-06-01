@@ -94,3 +94,13 @@ def test_validate_key_accepts_well_formed():
     keys.validate("state:source:sina")
     keys.validate("bus:quote.tick")
     keys.validate("ratelimit:source:sina")
+
+
+def test_bus_intraday_updated_constant():
+    assert keys.BUS_INTRADAY_UPDATED == "bus:intraday.updated"
+
+
+def test_cache_intraday_current_key():
+    k = keys.cache_intraday_current("ashare", "600519.SH")
+    assert k == "cache:intraday:ashare:600519.SH:current"
+    keys.validate(k)  # 不抛
