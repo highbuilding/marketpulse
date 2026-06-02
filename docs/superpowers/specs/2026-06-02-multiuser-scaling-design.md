@@ -116,6 +116,7 @@ class StreamHub:
 ## 4. 工作包 ③ 多 worker + 生产化
 
 - **api**:生产用 `uvicorn apps.api.main:app --workers N`(N≈核数-2)或 `gunicorn -k uvicorn.workers.UvicornWorker -w N`。**api 无 V8/无 ak_call → 多 worker 安全**(雷区 1 只在 collector;dev 仍单 worker 不变)。出 `deploy/` 生产启动脚本/compose。
+- **HTTP/2(解决 W10 浏览器连接数上限)**:HTTP/1.1 下浏览器对单域名仅 ~6 条并发连接,且**多标签页共享**;SSE 长连接占名额 → 几个标签就把名额占满、新请求排队。**nginx 开 TLS + HTTP/2** 后,浏览器↔nginx 用一条连接**多路复用**(`http2_max_concurrent_streams` 默认 128),SSE + 轮询 + 多标签共享,6-限消失。**SSE 协议不变**(仍 `text/event-stream`,前端 EventSource 零改);h2 由 **nginx 终结**(nginx↔uvicorn 仍 h1.1,uvicorn 不说 h2);h2 浏览器侧强制 HTTPS,故 TLS+h2 一套。不上 WebSocket(只需单向推)/ HTTP3(对 100 人过度)。
 - **Redis 池**:`make_redis` 加 `max_connections`(如 50)防 fd 爆。
 - **Next.js**:`next build && next start`(生产);静态资源走 nginx/CDN。
 - **collector 不动**(单实例 leader 锁)。
