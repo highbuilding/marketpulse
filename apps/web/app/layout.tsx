@@ -7,11 +7,13 @@ import { useState, useEffect } from 'react'
 import { MarketProvider, useMarket, MARKET_LABELS, type MarketId } from '@/lib/market-context'
 
 const NAV_ITEMS = [
-  { id: 'dashboard', label: '大盘', icon: '📊', href: '/' },
-  { id: 'market',   label: '行情', icon: '📈', href: '/market' },
-  { id: 'watchlist',label: '自选', icon: '⭐', href: '/watchlist' },
-  { id: 'signals',  label: '信号', icon: '🎯', href: '/notifications' },
-  { id: 'ai',       label: 'AI',   icon: '🤖', href: '/ai-market' },
+  { id: 'dashboard', label: '概览',     icon: '📊', href: '/' },
+  { id: 'market',    label: '行情',     icon: '📈', href: '/market' },
+  { id: 'watchlist', label: '自选',     icon: '⭐', href: '/watchlist' },
+  { id: 'signals',   label: 'CD 信号',  icon: '🎯', href: '/signals' },
+  { id: 'strategy',  label: '策略回测', icon: '🧪', href: '/strategy' },
+  { id: 'assistant', label: 'AI 助手',  icon: '🤖', href: '/assistant' },
+  { id: 'trading',   label: '自动交易', icon: '⚡', href: '/trading' },
 ]
 
 function ClientTime() {
@@ -31,8 +33,13 @@ function Sidebar() {
   const activeNav = pathname === '/' ? 'dashboard'
     : pathname.startsWith('/market') ? 'market'
     : pathname.startsWith('/watchlist') ? 'watchlist'
+    : pathname.startsWith('/signals') ? 'signals'
     : pathname.startsWith('/notifications') ? 'signals'
-    : pathname.startsWith('/ai-market') ? 'ai'
+    : pathname.startsWith('/strategy') ? 'strategy'
+    : pathname.startsWith('/assistant') ? 'assistant'
+    : pathname.startsWith('/trading') ? 'trading'
+    : pathname.startsWith('/settings') ? 'settings'
+    : pathname.startsWith('/ai-market') ? 'market'
     : 'market'
 
   useEffect(() => {
@@ -54,8 +61,8 @@ function Sidebar() {
         </Link>
       ))}
       <div className="sidebar-nav-label">系统</div>
-      <Link href="/notifications"
-        className={`sidebar-item`}
+      <Link href="/settings"
+        className={`sidebar-item ${activeNav === 'settings' ? 'active' : ''}`}
         style={{ color: 'inherit', textDecoration: 'none' }}
       >
         <span>⚙️</span> 设置
