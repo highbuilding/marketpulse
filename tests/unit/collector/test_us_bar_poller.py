@@ -44,3 +44,12 @@ async def test_poll_skips_already_stored(monkeypatch):
     await poller.poll_one("AAPL", "5m")
     repo.insert_bars.assert_not_called()
     assert redis._r.xadd.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_scan_symbols_includes_core_baseline():
+    redis = MagicMock(); redis._r = MagicMock()
+    redis._r.scan = AsyncMock(return_value=(0, []))  # 无人订阅
+    poller = UsBarPoller(MagicMock(), redis, MagicMock())
+    syms = await poller._scan_symbols()
+    assert "AAPL" in syms and "QQQ" in syms   # CORE.us baseline 仍在采

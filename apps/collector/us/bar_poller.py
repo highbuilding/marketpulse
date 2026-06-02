@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import structlog
 
 from core.cache import keys
+from core.domain.core_symbols import core_symbols
 from core.domain.market_calendar import is_trading_day
 from core.domain.market_sessions import is_market_session_open
 from apps.collector.jobs.aggregate_derived import aggregate_and_publish
@@ -85,6 +86,7 @@ class UsBarPoller:
                     break
         except Exception as e:  # noqa: BLE001
             log.warning("us_poller.scan_failed", error=str(e))
+        active.update(core_symbols("us"))   # 美股 baseline: 核心标的无条件轮询(不依赖订阅)
         return active
 
     async def run(self) -> None:
