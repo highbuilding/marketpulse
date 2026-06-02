@@ -48,6 +48,12 @@ async def _register_subscriptions(symbols: set[str], interval: str, redis_cache)
                 keys.state_bar_subscription(market, sym, interval), b"1", ex=120)
         except Exception as e:  # noqa: BLE001
             log.warning("sse.register_sub_failed", symbol=sym, error=str(e))
+        if infer_market(sym) == "us":
+            try:
+                import time as _t
+                await redis_cache._r.zadd("state:us:viewed", {sym: _t.time()})  # noqa: SLF001
+            except Exception as e:  # noqa: BLE001
+                log.warning("sse.us_viewed_zadd_failed", symbol=sym, error=str(e))
 
 
 async def _stream_gen(symbols: set[str], interval: str, hub, redis_cache):
