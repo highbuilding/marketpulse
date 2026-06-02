@@ -23,6 +23,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from apps.api.deps import get_state_repo
+from apps.api.auth import AuthMiddleware, router as auth_router
 from apps.api.routes import (
     ai_market, cd_signals, dashboard, health, indices, market_extras, north_flow,
     notifications, sse_bars, sse_intraday, symbols, watchlists,
@@ -52,11 +53,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="MarketPulse", lifespan=lifespan)
+# AuthMiddleware 先加 → CORS 后加 → Starlette LIFO: CORS 最外层处理
+# 确保 OPTIONS 预检 + 401 响应都带 CORS 头
+app.add_middleware(AuthMiddleware)
 app.add_middleware(
     CORSMiddleware, allow_origins=["http://localhost:3000"],
     allow_methods=["*"], allow_headers=["*"],
 )
 
+app.include_router(auth_router)
 app.include_router(health.router)
 app.include_router(ai_market.router)
 app.include_router(market_extras.router)
