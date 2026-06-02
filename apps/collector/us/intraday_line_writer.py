@@ -53,6 +53,6 @@ class UsIntradayWriter:
                 {"data": json.dumps(payload).encode()},
                 maxlen=20000, approximate=True)
             await self._redis.set_msgpack(
-                keys.cache_intraday_current("us", symbol), payload, ttl=120)
+                keys.cache_intraday_current("us", symbol), payload, ttl_s=120)
         except Exception as e:  # noqa: BLE001
             log.warning("us_intraday.publish_failed", symbol=symbol, error=str(e))

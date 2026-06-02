@@ -52,7 +52,7 @@ class UsBarTicker:
                 {"data": json.dumps(payload).encode()},
                 maxlen=10000, approximate=True)
             await self._redis.set_msgpack(
-                keys.cache_bars_current("us", symbol, interval), payload, ttl=mins * 120)
+                keys.cache_bars_current("us", symbol, interval), payload, ttl_s=mins * 120)
         except Exception as e:  # noqa: BLE001
             log.warning("us_ticker.publish_failed",
                         symbol=symbol, interval=interval, error=str(e))

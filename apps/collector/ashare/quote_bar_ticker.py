@@ -82,7 +82,7 @@ class QuoteBarTicker:
             )
             await self._redis.set_msgpack(
                 keys.cache_bars_current("ashare", symbol, interval),
-                payload, ttl=mins * 120,
+                payload, ttl_s=mins * 120,
             )
         except Exception as e:  # noqa: BLE001
             log.warning("ticker.publish_failed",
