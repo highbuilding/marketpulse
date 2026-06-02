@@ -69,9 +69,9 @@ make dev → honcho 拉起(Procfile):
 美股实时(分时 + 进行中态)靠订阅 IEX `trades`,免费层一次最多 ~30 只(`ws_consumer._desired_trade_symbols` 已 cap 30)。单/少用户没问题;**100 人看 >30 只不同美股 → 超出的标的无实时**。
 → 必须升级 **Alpaca 付费(SIP/无上限)**,或改"服务端固定订阅热门 N 只 + 冷门降级轮询"。
 
-**W2. refill 放大(数据源被刷爆)**
-api cache miss → 发 `bus:bars.refill_request` → collector 真 `ak_call`/Alpaca 拉数据。单人无所谓;**100 个公网用户狂点冷门标的 → 瞬间几百 refill → sina/Alpaca 限频/封 IP**(B-sina 已是隐患,公网会放大)。
-→ api 侧 refill 必须加 **去重(`state:inflight`)+ 令牌桶限流 + 标的白名单**。
+**W2. refill 放大(数据源被刷爆 / 间接 DoS 自己的数据源)**
+api cache miss → 发 `bus:bars.refill_request` → collector 真 `ak_call`/Alpaca 拉数据。单人无所谓;**100 个公网用户点冷门/任意标的 → 大量(失败的)ak_call 灌爆熔断器 + 抢限速配额 + 从同一 IP 加剧 sina 封禁**(B-sina 隐患被公网放大)。**机制详析见附录 A。**
+→ api 侧 refill 必须加 **标的白名单(最关键)+ 去重(`state:inflight`)+ 独立令牌桶限流**。
 
 **W3. 零鉴权 / 零限流**
 公网裸奔,任何人可无限请求。
@@ -178,3 +178,46 @@ api cache miss → 发 `bus:bars.refill_request` → collector 真 `ak_call`/Alp
 2. **W1 Alpaca 决策**(付费 vs 妥协)——影响美股实时体验上限,需尽早定。
 3. **W4 SSE 重构**是支撑 100+ 的核心工程,单独立计划(spec → plan)。
 4. 现阶段若先小范围(≤20 人)灰度,可只做 P0 安全闸 + Next.js 生产构建,SSE/多worker 暂缓。
+
+---
+
+## 附录 A · W2 refill 放大机制详析
+
+### A.1 链路(精确, 带行号)
+
+```
+前端请求 /api/symbols/{symbol}/bars  (用户在详情页 URL 输任意 code 都能触发)
+  → svc.get_bars_cache_only(symbol)          # 只读 Redis cache, 不碰 DB / 不 ak_call
+  → 若 cache 空 (not bars_list):
+       _publish_refill_request(...)           # symbols.py:333 → xadd bus:bars.refill_request
+       返回 stale "warming_up"
+  ↓ (collector 侧)
+  refill_consumer.consume_loop                # consumer group "collector", count=10 block=5s
+  → handle_refill_message → refill_fn         # = kline.fetch_fresh_bars
+  → adapter fetch → ak_call(sina) / Alpaca    # ← 真正打数据源, 经 ratelimit + breaker
+```
+
+### A.2 已有"刹车"(所以不是无限放大)
+
+1. **bus `maxlen=100 approximate`**(`symbols.py:366`):refill 队列内存上限 ~100 条。
+2. **单 consumer 串行**(`count=10 block=5s`):一次最多处理 10 条。
+3. **ak_call 三层中间件**:sina 令牌桶(5/s)+ 熔断器 → raw req/s 被限速封顶。
+
+→ "无限刷爆内存"不会发生。但下面 4 个缺失,让它在 100 人公网下仍能搞挂数据源。
+
+### A.3 放大向量(缺失的防护)
+
+1. **无去重 → N 用户 = N 次重复拉同一标的**:`_publish_refill_request` 发前无 `state:inflight` 去重。100 人同时开同一冷门标的 → 100 条 refill → consumer 逐条 → 同一标的 `fetch_fresh_bars` ~100 次(一次就够),浪费 100 份配额。
+2. **无白名单 → 可触发任意标的(最危险)**:`get_bars_cache_only` 对任何 cache 没有的 symbol 都算 miss → refill。用户 URL 输任意 code(冷门/退市/垃圾)都触发 `fetch_fresh_bars`;垃圾/illiquid 标的 sina 返回空/错 → 这次 ak_call 记为**熔断器失败样本**。
+3. **熔断器被灌爆 → 连带搞挂正常采集**:60s 窗失败率 ≥60% → open 5min。用户触发的冷门/垃圾拉取大量失败 → 失败样本灌满 → 熔断器 open → **共用同一 sina breaker 的 live 采集(8 指数/watchlist)一起被熔断**;半开探针又失败就再开,形成 ban 循环。**几个用户狂试乱码标的就能把整个 A 股采集熔断。**
+4. **配额抢占 + 加剧封 IP**:refill 的 ak_call 与 live 采集**共用同一 sina 5/s 令牌桶** → refill 洪峰把桶吸干 → live 采集被饿死;且 100 人请求从**同一出口 IP** 发出,叠加 B-sina,**封 IP 概率与时长被推高**。
+
+### A.4 一句话
+
+不是"无限刷爆内存",而是:**公网用户可借后端、用任意标的触发失败的 ak_call,这些失败既灌爆熔断器(连带搞挂正常采集),又和正常采集抢同一限速配额,还从同一 IP 加剧 sina 封禁** —— 单人无害,100 人变成"用户可间接 DoS 自己的数据源"。
+
+### A.5 修复(按重要度)
+
+1. **白名单(最关键)**:只允许 **CORE ∪ watchlist** 标的触发 refill;不在名单的直接返回 stale,**绝不打数据源**。直接掐断"任意标的灌爆熔断器"。**对当前 B-sina 也立即减压。**
+2. **去重**:发 refill 前 `state:inflight:{symbol}:{interval}`(短 TTL)挡重复,N 用户同标的只拉 1 次。
+3. **独立限流预算**:refill 单独令牌桶(或全局 refill 上限),不与 live 采集抢配额,避免饿死正常采集。
