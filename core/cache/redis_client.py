@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import ormsgpack
@@ -66,4 +67,5 @@ def make_redis(url: str = "redis://127.0.0.1:6379/0") -> AsyncRedis:
         socket_timeout=None,
         socket_connect_timeout=5,
         health_check_interval=30,
+        max_connections=int(os.getenv("REDIS_MAX_CONNECTIONS", "50")),
     )
