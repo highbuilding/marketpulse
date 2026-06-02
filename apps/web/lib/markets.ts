@@ -90,6 +90,48 @@ export function isMarketOpenNow(market: Market): boolean {
   return false
 }
 
+// 市场当前时段细分状态(本市场时区)。用于 TopBar 展示开盘/盘前/午休/盘后/休市。
+export type MarketPhase = 'pre' | 'open' | 'lunch' | 'after' | 'closed'
+
+const PHASE_LABEL: Record<MarketPhase, string> = {
+  pre: '盘前', open: '交易中', lunch: '午间休市', after: '盘后', closed: '已休市',
+}
+export function marketPhaseLabel(p: MarketPhase): string {
+  return PHASE_LABEL[p]
+}
+
+export function marketPhase(market: Market, now: Date = new Date()): MarketPhase {
+  if (market === 'crypto') return 'open' // 7x24
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: TZ[market], weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(now)
+  const wd = parts.find((p) => p.type === 'weekday')?.value ?? ''
+  if (wd === 'Sat' || wd === 'Sun') return 'closed'
+  const hh = Number(parts.find((p) => p.type === 'hour')?.value ?? '0') % 24
+  const mm = Number(parts.find((p) => p.type === 'minute')?.value ?? '0')
+  const t = hh * 60 + mm
+
+  // 美股:盘前 04:00-09:30 / RTH 09:30-16:00 / 盘后 16:00-20:00
+  if (market === 'us') {
+    if (t < 4 * 60) return 'closed'
+    if (t < 9 * 60 + 30) return 'pre'
+    if (t < 16 * 60) return 'open'
+    if (t < 20 * 60) return 'after'
+    return 'closed'
+  }
+
+  // A股/港股:盘前 + 交易中 + 午间休市 + 盘后
+  const sess = SESSIONS[market]
+  const first = _hhmmToMinutes(sess[0][0])
+  const lastMin = _hhmmToMinutes(sess[sess.length - 1][1])
+  if (t < first) return 'pre'
+  if (t >= lastMin) return 'after'
+  for (const [s, e] of sess) {
+    if (t >= _hhmmToMinutes(s) && t < _hhmmToMinutes(e)) return 'open'
+  }
+  return 'lunch' // 在首末之间但不在任何 session 内 = 午休
+}
+
 // 美股 RTH 判定 (09:30-16:00 ET)。分时图仅 RTH; 非 RTH 详情页默认 K 线。
 export function isUsRegularSession(now: Date = new Date()): boolean {
   const parts = new Intl.DateTimeFormat('en-US', {

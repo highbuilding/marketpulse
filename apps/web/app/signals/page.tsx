@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import useSWR from 'swr'
 import { listCDSignals } from '@/lib/cd_signals_api'
+import { fetchSymbolProfiles } from '@/lib/symbol_api'
 import { inferMarket, type Market } from '@/lib/markets'
 import { fmtSignalTs } from '@/lib/signal_time'
 import type { CDSignalDTO, AnySignalInterval } from '@/lib/types'
@@ -23,8 +24,12 @@ export default function SignalsPage() {
   const [interval, setIntervalSel] = useState('全部')
 
   const { data, isLoading, error } = useSWR(
-    'cd-signals:page',
-    () => listCDSignals({ limit: 200 }),
+    ['cd-signals:page', market, interval],
+    () => listCDSignals({
+      market: market === 'all' ? undefined : market,
+      intervals: interval === '全部' ? undefined : [interval],
+      limit: 200,
+    }),
     { refreshInterval: 60_000 },
   )
   const all: CDSignalDTO[] = data?.signals ?? []
@@ -32,13 +37,18 @@ export default function SignalsPage() {
   const toggleDir = (d: 'buy' | 'sell') =>
     setDirs((cur) => (cur.includes(d) ? cur.filter((x) => x !== d) : [...cur, d]))
 
+  // 市场/周期已下推到服务端筛选;前端只按买卖方向过滤,并推断 market 用于展示
   const rows = all
     .map((s) => ({ ...s, market: inferMarket(s.symbol) }))
-    .filter((s) =>
-      (market === 'all' || s.market === market) &&
-      dirs.includes(s.signal_type) &&
-      (interval === '全部' || s.interval === interval)
-    )
+    .filter((s) => dirs.includes(s.signal_type))
+
+  // 批量查 symbol→中文名(代码旁展示更直观)
+  const symbols = Array.from(new Set(rows.map((s) => s.symbol)))
+  const { data: profiles } = useSWR(
+    symbols.length ? ['signal-names', symbols.join(',')] : null,
+    () => fetchSymbolProfiles(symbols),
+  )
+  const nameMap = new Map((profiles ?? []).map((p) => [p.symbol, p.name]))
 
   const chip = (active: boolean): React.CSSProperties => ({
     fontSize: 12, padding: '3px 12px', borderRadius: 14, cursor: 'pointer',
@@ -87,7 +97,10 @@ export default function SignalsPage() {
             <span style={{ color: s.signal_type === 'buy' ? 'var(--red)' : 'var(--green)', fontSize: 12, fontWeight: 600, width: 28 }}>
               {s.signal_type === 'buy' ? '买入' : '卖出'}
             </span>
-            <b className="font-mono" style={{ minWidth: 110 }}>{s.symbol}</b>
+            <b className="font-mono" style={{ minWidth: 96 }}>{s.symbol}</b>
+            {nameMap.get(s.symbol) && (
+              <span style={{ color: 'var(--text)', fontSize: 13, minWidth: 72 }}>{nameMap.get(s.symbol)}</span>
+            )}
             <span style={{ color: 'var(--text3)', fontSize: 12 }}>{s.interval}</span>
             <span style={{ color: 'var(--text2)', fontSize: 12 }}>{s.signal_type === 'buy' ? '底背离' : '顶背离'}</span>
             <span className="font-mono" style={{ marginLeft: 'auto', color: 'var(--text3)', fontSize: 12 }}>
