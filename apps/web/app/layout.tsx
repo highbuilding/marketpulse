@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { useState, useEffect } from 'react'
 import { MarketProvider, useMarket, MARKET_LABELS, type MarketId } from '@/lib/market-context'
+import { marketPhase, marketPhaseLabel, type MarketPhase } from '@/lib/markets'
 
 const NAV_ITEMS = [
   { id: 'dashboard', label: '概览',     icon: '📊', href: '/' },
@@ -24,6 +25,27 @@ function ClientTime() {
     return () => clearInterval(id)
   }, [])
   return <span style={{ fontSize: 12, color: 'var(--text3)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{t || '--:--:--'} BJT</span>
+}
+
+const PHASE_COLOR: Record<MarketPhase, string> = {
+  open: 'var(--green)', pre: '#e0a73e', after: '#e0a73e', lunch: '#e0a73e', closed: 'var(--text3)',
+}
+
+function MarketPhaseBadge({ market }: { market: MarketId }) {
+  const [phase, setPhase] = useState<MarketPhase | null>(null)
+  useEffect(() => {
+    const tick = () => setPhase(marketPhase(market))
+    tick()
+    const id = setInterval(tick, 30_000)
+    return () => clearInterval(id)
+  }, [market])
+  if (!phase) return <span style={{ fontSize: 12, color: 'var(--text3)', whiteSpace: 'nowrap' }}>--</span>
+  return (
+    <span style={{ fontSize: 12, color: 'var(--text2)', whiteSpace: 'nowrap' }}>
+      <span style={{ width: 7, height: 7, borderRadius: '50%', background: PHASE_COLOR[phase], display: 'inline-block', marginRight: 4 }} />
+      {marketPhaseLabel(phase)}
+    </span>
+  )
 }
 
 function Sidebar() {
@@ -101,10 +123,7 @@ function TopBar() {
             }
           }}
         />
-        <span style={{ fontSize: 12, color: 'var(--text2)', whiteSpace: 'nowrap' }}>
-          <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--green)', display: 'inline-block', marginRight: 4 }} />
-          实时
-        </span>
+        <MarketPhaseBadge market={market} />
         <ClientTime />
         <div style={{ width: 28, height: 28, borderRadius: '50%', background: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 600, fontSize: 11 }}>Z</div>
       </div>
