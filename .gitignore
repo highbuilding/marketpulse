@@ -24,3 +24,6 @@ scratch/dump_fixture.py
 scratch/fill_us_gap.py
 scratch/crypto_backfill_standalone.py
 scratch/ui-demos/
+
+# brainstorm visual companion
+.superpowers/
