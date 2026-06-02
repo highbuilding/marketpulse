@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -246,11 +247,13 @@ async def bars_history(
     before: str | None = Query(None, description="ISO ts 游标, 空=最新一页"),
     limit: int = Query(500, ge=1, le=2000),
     client=Depends(get_collector_http_client),
+    redis_cache=Depends(get_redis_cache),
 ) -> BarsResponse:
     """游标分页历史 (币安/TradingView 反向翻页口径)。
 
     转发到对应市场 collector 的只读接口 (collector 同进程查 DuckDB, 零锁冲突)。
     api 自己绝不碰 DuckDB。collector 不可达 → 优雅降级 stale。
+    游标页(before 非空)长 TTL 86400s; 最新页短 TTL 30s。collector 不可达的 stale 不缓存。
     """
     if interval not in KLINE_INTERVALS:
         raise HTTPException(400, f"invalid interval: {interval}")
@@ -262,6 +265,19 @@ async def bars_history(
             symbol=symbol, interval=interval, bars=[],
             meta=BarsResponseMeta(stale=True, reason="unknown_market"),
         )
+
+    # --- 查页缓存 ---
+    cache_key = keys.cache_barspage(market, symbol, interval, before, limit)
+    try:
+        cached = await redis_cache._r.get(cache_key)  # noqa: SLF001
+        if cached:
+            cp = json.loads(cached)
+            return BarsResponse(
+                symbol=symbol, interval=interval,
+                bars=[BarDTO(**b) for b in cp.get("bars", [])],
+                meta=BarsResponseMeta(stale=False))
+    except Exception:  # noqa: BLE001
+        pass
 
     params = {"symbol": symbol, "interval": interval, "limit": limit}
     if before:
@@ -278,6 +294,15 @@ async def bars_history(
 
     raw = payload.get("bars", [])
     meta = payload.get("meta", {})
+
+    # --- 回写页缓存(仅成功转发时写; collector 不可达的 stale 不缓存) ---
+    try:
+        ttl = 86400 if before else 30  # 游标页(历史不可变)长TTL; 最新页短TTL
+        await redis_cache._r.set(  # noqa: SLF001
+            cache_key, json.dumps({"bars": raw, "meta": meta}), ex=ttl)
+    except Exception:  # noqa: BLE001
+        pass
+
     return BarsResponse(
         symbol=symbol, interval=interval,
         bars=[BarDTO(**b) for b in raw],
