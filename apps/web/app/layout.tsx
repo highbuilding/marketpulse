@@ -6,6 +6,8 @@ import { usePathname, useRouter } from 'next/navigation'
 import { useState, useEffect } from 'react'
 import { MarketProvider, useMarket, MARKET_LABELS, type MarketId } from '@/lib/market-context'
 import { marketPhase, marketPhaseLabel, type MarketPhase } from '@/lib/markets'
+import { fetchHealth } from '@/lib/api'
+import useSWR from 'swr'
 
 const NAV_ITEMS = [
   { id: 'dashboard', label: '概览',     icon: '📊', href: '/' },
@@ -39,6 +41,22 @@ function MarketPhaseBadge({ market }: { market: MarketId }) {
     const id = setInterval(tick, 30_000)
     return () => clearInterval(id)
   }, [market])
+
+  // 数据源健康: crypto 市场对应 adapter 名是 binance, 其余同名
+  const { data: health } = useSWR('health', fetchHealth, { refreshInterval: 30_000 })
+  const adapterKey = market === 'crypto' ? 'binance' : market
+  const adapter = health?.adapters?.[adapterKey as MarketId]
+  const offline = adapter && (adapter.state === 'down' || adapter.state === 'degraded')
+
+  if (offline) {
+    return (
+      <span style={{ fontSize: 12, color: 'var(--red)', whiteSpace: 'nowrap' }}
+        title={adapter?.detail ?? '数据源不可用'}>
+        <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--red)', display: 'inline-block', marginRight: 4 }} />
+        数据源离线
+      </span>
+    )
+  }
   if (!phase) return <span style={{ fontSize: 12, color: 'var(--text3)', whiteSpace: 'nowrap' }}>--</span>
   return (
     <span style={{ fontSize: 12, color: 'var(--text2)', whiteSpace: 'nowrap' }}>
