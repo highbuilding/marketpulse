@@ -22,7 +22,7 @@ _DIRECT_INTRADAY = ("5m", "15m", "30m")
 _DAILY_LOOKBACK_DAYS = 1000
 _DAILY_STALE = timedelta(days=2)      # 日线落后超 2 天才补
 _INTRADAY_STALE = timedelta(days=4)   # intraday 落后超 4 天才补(否则 live poller 自愈)
-THROTTLE_S = 0.3
+THROTTLE_S = 1.5   # 温和节流: 摊平 startup burst, 不加剧 sina/Alpaca 限频(P0 复盘)
 
 
 def _stale(last: datetime | None, now: datetime, thresh: timedelta) -> bool:
