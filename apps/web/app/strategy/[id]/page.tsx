@@ -1,6 +1,5 @@
 'use client'
 import Link from 'next/link'
-import { use } from 'react'
 import {
   DEMO_STRATEGIES, DEMO_EQUITY_CURVE, DEMO_METRICS, DEMO_TRADES,
 } from '@/lib/demo_fixtures'
@@ -22,8 +21,8 @@ function EquityCurve({ points }: { points: number[] }) {
   )
 }
 
-export default function StrategyReport({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = use(params)
+export default function StrategyReport({ params }: { params: { id: string } }) {
+  const { id } = params
   const strategy = DEMO_STRATEGIES.find((s) => s.id === id)
 
   return (
