@@ -213,23 +213,26 @@ async def lifespan(app: FastAPI):
     # === 定期聚合派生周期 (60m/4h/1wk/1mo) ===
     from datetime import datetime, timedelta, timezone
     from apps.collector.jobs.aggregate_derived import sweep_derived
-    from pathlib import Path as _Path
-    _syms_file = _Path(__file__).resolve().parents[3] / "data" / "ashare_backfill_symbols.txt"
-    try:
-        _ash_syms = [l.strip() for l in open(_syms_file) if l.strip()]
-    except OSError:
-        # 优雅降级 (原则 2): symbols 文件缺失 → 退回 bar_poller 默认标的, 不让 collector 启动失败
-        from apps.collector.ashare.bar_poller import _DEFAULT_SYMBOLS
-        _ash_syms = list(_DEFAULT_SYMBOLS)
-        log.warning("sweep_derived.symbols_file_missing",
-                    path=str(_syms_file), fallback_count=len(_ash_syms))
+    from core.domain.core_symbols import core_symbols as _core_symbols
+    from core.domain.markets import infer_market as _infer_market
+    _wl_syms = await get_watchlist_service().dynamic_universe()
+    _sweep_syms = sorted({s for s in (set(_wl_syms) | set(_core_symbols("ashare")))
+                          if _infer_market(s) == "ashare"})
+    log.info("sweep_derived.symbols_ready", market="ashare", count=len(_sweep_syms))
     sched.add_job(
         sweep_derived,
         "interval", minutes=120,  # 事件驱动聚合为主, sweep 降频兜底
-        args=(bar_repo, "ashare", _ash_syms),
+        args=(bar_repo, "ashare", _sweep_syms),
         id="ashare:sweep_derived",
         max_instances=1, coalesce=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(seconds=10),
+    )
+
+    # === 启动 reconcile: CORE ∪ watchlist 缺口回补 (非阻塞) ===
+    from apps.collector.startup_reconcile import run_startup_reconcile
+    _reconcile_task = asyncio.create_task(
+        run_startup_reconcile("ashare", bar_repo, kline, _sweep_syms),
+        name="ashare.startup_reconcile",
     )
 
     # === 分时数据 90 天 purge (每日 02:30 UTC) ===
@@ -282,6 +285,11 @@ async def lifespan(app: FastAPI):
         _refill_task.cancel()
         try:
             await _refill_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        _reconcile_task.cancel()
+        try:
+            await _reconcile_task
         except (asyncio.CancelledError, Exception):
             pass
         sched.shutdown(wait=False)
