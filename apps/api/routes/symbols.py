@@ -293,12 +293,23 @@ async def intraday_line(
     symbol: str,
     date: str | None = Query(None, description="ISO 日期, 空=当日"),
     client=Depends(get_collector_http_client),
+    redis_cache=Depends(get_redis_cache),
 ):
     """分时图当日/历史点。转发 collector 内嵌只读接口(api 不碰 DuckDB)。"""
     market = infer_market(symbol)
+
+    # realtime: 美股查 state:us:realtime_active(LRU-30 内才有实时分时); 非美股恒 True
+    realtime = True
+    if market == "us":
+        try:
+            realtime = bool(await redis_cache._r.sismember("state:us:realtime_active", symbol))  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            realtime = False
+
     base = collector_base_url(market) if market else None
     if base is None:
         return {"symbol": symbol, "points": [],
+                "realtime": realtime,
                 "meta": {"stale": True, "reason": "unknown_market"}}
     params = {"symbol": symbol}
     if date:
@@ -306,9 +317,12 @@ async def intraday_line(
     try:
         resp = await client.get(f"{base}/internal/intraday-line", params=params)
         resp.raise_for_status()
-        return resp.json()
+        body = resp.json()
+        body["realtime"] = realtime
+        return body
     except Exception:  # noqa: BLE001
         return {"symbol": symbol, "points": [],
+                "realtime": realtime,
                 "meta": {"stale": True, "reason": "collector_unreachable"}}
 
 
