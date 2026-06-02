@@ -46,7 +46,7 @@ export function IntradayLineChart({ symbol, height = 380, enabled = true }: Intr
   const prevCloseSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
   const didFitRef = useRef(false)
 
-  const { points, stale, prevClose } = useIntradayLine(symbol, enabled)
+  const { points, stale, prevClose, realtime } = useIntradayLine(symbol, enabled)
 
   // Effect 1: 创建 chart + series。height 变化时重建。
   useEffect(() => {
@@ -167,6 +167,9 @@ export function IntradayLineChart({ symbol, height = 380, enabled = true }: Intr
     <div className="w-full">
       {stale && (
         <div className="text-xs text-neutral-500 mb-1">数据可能陈旧</div>
+      )}
+      {inferMarket(symbol) === 'us' && !realtime && (
+        <div className="text-xs text-amber-400 mb-1">超出实时名额,分时暂不实时更新(K 线正常)</div>
       )}
       <div ref={ref} className="w-full" />
       {inferMarket(symbol) === 'us' && (

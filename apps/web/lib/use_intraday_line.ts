@@ -21,6 +21,7 @@ interface IntradayLineResponse {
   symbol: string
   points: IntradayPoint[]
   prev_close?: number | null
+  realtime?: boolean
   meta: {
     stale: boolean
     reason?: string
@@ -45,6 +46,7 @@ export interface IntradayLineResult {
   points: IntradayPoint[]
   stale: boolean
   prevClose: number | null
+  realtime: boolean
 }
 
 export function useIntradayLine(symbol: string, enabled: boolean): IntradayLineResult {
@@ -130,9 +132,11 @@ export function useIntradayLine(symbol: string, enabled: boolean): IntradayLineR
   const stale = restData?.meta?.stale ?? false
   // prev_close 仅从 REST 首屏取,SSE point 事件不带此字段
   const prevClose = restData?.prev_close ?? null
+  // realtime: 美股 LRU-30 内有实时分时时为 true,SSE 不带此字段保持首屏值
+  const realtime = restData?.realtime ?? true
 
   // REST 基线 + SSE 增量合并,SSE 在 ts 冲突时获胜
   const points = mergePoints(restPoints, ssePoints)
 
-  return { points, stale, prevClose }
+  return { points, stale, prevClose, realtime }
 }
