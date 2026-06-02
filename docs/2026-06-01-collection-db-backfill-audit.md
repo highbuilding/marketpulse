@@ -207,10 +207,11 @@ SSE 只覆盖 **K 线 + 分时**(价格序列);其余面板**无 push 通道**,�
 
 | # | 问题 | 严重度 | 状态 | 涉及 |
 |---|---|---|---|---|
-| B1 | 美股收线采集依赖 DB watchlist,无 baseline | 🔴高 | 待修 | us/bar_poller、scheduler |
-| B2 | 前端默认列表(硬编码)与后端采集集合(DB watchlist)脱节 | 🔴高 | 待修 | page.tsx vs watchlist |
-| B3 | 派生周期"中段缺口"不重聚合 | 🔴高 | 待修 | aggregate_derived._decide_window |
-| B-startup | A股/美股无冷启动 backfill + 无 kill 后启动 reconcile | 🔴高 | 待修 | ashare/us main lifespan |
+| B1 | 美股收线采集依赖 DB watchlist,无 baseline | 🔴高 | ✅ 已修(CORE_SYMBOLS + UsBarPoller baseline + cron 并入 CORE)| us/bar_poller、signal_jobs |
+| B2 | 前端默认列表(硬编码)与后端采集集合(DB watchlist)脱节 | 🔴高 | ✅ 已修(后端 CORE 覆盖前端默认, 决策 a 纯后端对齐)| core_symbols、signal_jobs |
+| B3 | 派生周期"中段缺口"不重聚合 | 🔴高 | 🟡 部分缓解(reconcile 全量重聚合;sweep 仍有盲区)| aggregate_derived._decide_window |
+| B-startup | A股/美股无冷启动 backfill + 无 kill 后启动 reconcile | 🔴高 | ✅ 已修(startup_reconcile gap检测, 美股实测 filled=14 冷启/0 warm)| startup_reconcile + 两 main |
+| B-sina | **sina 数据源不稳定/封 IP**(`stock_zh_a_minute` 返回 banned/空 → IndexError → 熔断反复开;非本次引入,环境/雷区1)| 🔴高 | ⏸ 新发现,待修(超 P0)| sina 通道,需代理池 / em·ths 兜底 |
 | B4 | 美股 1m 孤儿 2431 行(泄漏源已堵)| 🟡中 | ✅ 已修 `a30bc92`(守卫+清存量 2431→0)| bars_us、insert_bars |
 | B5 | 15m/30m 双源覆盖竞态(实为三市场,经 sweep)| 🟡中 | ✅ 已修 `7115f99`(事件驱动+sweep 两处去 15m/30m 聚合,改直取单源)| ashare bar_poller + aggregate_derived |
 | B6 | crypto gap 检测只看 7 天 | 🟡中 | ⏸ 记录待后修(zhonghuai 决定)| crypto/backfill.py:62 |
@@ -224,6 +225,8 @@ SSE 只覆盖 **K 线 + 分时**(价格序列);其余面板**无 push 通道**,�
 ---
 
 ## 8. 修复方案(按优先级,文件级可操作)
+
+> **P0 落地状态(2026-06-02)**:B1/B2/B7/B-startup 已实施(`core/domain/core_symbols.py` + signal_jobs 并入 CORE + UsBarPoller baseline + `startup_reconcile.py` gap检测 + 两 main 接线 + sweep 改 CORE∪watchlist)。**美股侧实测通过**:reconcile 冷启动 filled=14/14、warm restart filled=0(gap检测正确跳过零 burst)。**A股侧逻辑同样就绪,但当前被 sina 环境性封 IP(B-sina)阻塞**——sina 反复返回 banned 响应使熔断器开,live poller 的 `stock_zh_a_minute` 全失败(与 reconcile 无关,reconcile 用 daily 且熔断开时快速失败不加载)。sina 恢复后 A股自动跑通。**B-sina 是独立的数据源稳定性问题(雷区 1),超出 P0,建议另立:接 em/ths 兜底或代理池。**
 
 ### P0 — B1/B2/B7/B-startup(数据完整性,互相关联,一并解决)
 
