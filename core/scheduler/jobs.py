@@ -58,6 +58,9 @@ async def tick_snapshot_once(
 
     adapter = registry.get(market)
     base = set(registry.universe(market)) | set(registry.index_symbols(market))
+    # 核心标的(CORE)无条件带上 — 首页默认列表的 quote 不依赖是否加入 watchlist(审计 B1/B2)
+    from core.domain.core_symbols import core_symbols
+    base |= set(core_symbols(market))
     # 关注列表里属于本 market 的标的也带上, 让用户加的任意 symbol 都能拿到 quote
     try:
         wl_symbols = await watchlist.dynamic_universe()
