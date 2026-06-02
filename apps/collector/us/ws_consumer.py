@@ -60,23 +60,27 @@ def _subscription_deltas(desired: set[str], subscribed: set[str]) -> tuple[set[s
 
 
 async def _desired_trade_symbols(redis, cap: int = 30) -> set[str]:
-    """读订阅登记表 state:subscribe:us:* 收集'正在看'的标的, 上限 cap (免费 IEX trades 限 ~30)。"""
-    syms: set[str] = set()
+    """LRU: 取 state:us:viewed(最近访问 ZSET)top-cap 订阅 trades。
+
+    免费 IEX trades 限 ~30。裁掉 >10min 未看的陈旧项;维护 state:us:realtime_active
+    供前端判断某标的是否有实时分时。
+    """
+    import time
     try:
-        cursor = 0
-        while True:
-            cursor, found = await redis._r.scan(  # noqa: SLF001
-                cursor, match="state:subscribe:us:*", count=200)
-            for k in found:
-                kk = k.decode() if isinstance(k, bytes) else k
-                parts = kk.split(":")
-                if len(parts) >= 4:
-                    syms.add(parts[3])
-            if cursor == 0:
-                break
+        await redis._r.zremrangebyscore(  # noqa: SLF001
+            "state:us:viewed", "-inf", time.time() - 600)
+        members = await redis._r.zrevrange("state:us:viewed", 0, cap - 1)  # noqa: SLF001
+        syms = {(m.decode() if isinstance(m, bytes) else m) for m in members}
     except Exception as e:  # noqa: BLE001
-        log.warning("ws_us.desired_scan_failed", error=str(e))
-    return set(sorted(syms)[:cap])
+        log.warning("ws_us.lru_scan_failed", error=str(e))
+        return set()
+    try:
+        await redis._r.delete("state:us:realtime_active")  # noqa: SLF001
+        if syms:
+            await redis._r.sadd("state:us:realtime_active", *syms)  # noqa: SLF001
+    except Exception as e:  # noqa: BLE001
+        log.warning("ws_us.realtime_active_failed", error=str(e))
+    return syms
 
 
 # ---------------------------------------------------------------------------

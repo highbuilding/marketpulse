@@ -11,10 +11,13 @@ def test_subscription_deltas():
 
 @pytest.mark.asyncio
 async def test_desired_trade_symbols_scans_and_caps():
+    """LRU ZSET: zrevrange 返回超过 cap 时截断到 cap。"""
     redis = MagicMock(); redis._r = MagicMock()
-    # 模拟 scan 一次返回所有 key, cursor 归 0
-    keys = [f"state:subscribe:us:SYM{i}:5m".encode() for i in range(40)]
-    redis._r.scan = AsyncMock(return_value=(0, keys))
+    redis._r.zremrangebyscore = AsyncMock()
+    redis._r.delete = AsyncMock()
+    members = [f"SYM{i}".encode() for i in range(40)]
+    redis._r.zrevrange = AsyncMock(return_value=members[:30])  # Redis 侧已截断
+    redis._r.sadd = AsyncMock()
     got = await _desired_trade_symbols(redis, cap=30)
     assert len(got) == 30                       # 上限 30
     assert all(s.startswith("SYM") for s in got)
@@ -22,7 +25,11 @@ async def test_desired_trade_symbols_scans_and_caps():
 
 @pytest.mark.asyncio
 async def test_desired_trade_symbols_ignores_other_markets():
+    """LRU ZSET: 直接从 ZSET 取 symbol 字符串, 不再 scan key 解析 market。"""
     redis = MagicMock(); redis._r = MagicMock()
-    redis._r.scan = AsyncMock(return_value=(0, [b"state:subscribe:us:AAPL:5m"]))
+    redis._r.zremrangebyscore = AsyncMock()
+    redis._r.delete = AsyncMock()
+    redis._r.zrevrange = AsyncMock(return_value=[b"AAPL"])
+    redis._r.sadd = AsyncMock()
     got = await _desired_trade_symbols(redis, cap=30)
     assert got == {"AAPL"}
