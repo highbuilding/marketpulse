@@ -10,10 +10,12 @@ from apps.api.deps import (
     get_chip_service, get_collector_http_client, get_fund_flow_service,
     get_kline_service, get_redis_cache, get_registry,
     get_symbol_directory_service, get_volume_indicator_service, collector_base_url,
+    get_watchlist_service,
 )
 from core.adapters.registry import AdapterRegistry
 from core.cache import keys
 from core.domain.intervals import KLINE_INTERVALS
+from core.domain.core_symbols import core_symbols
 from core.domain.markets import infer_market
 from core.services.fund_flow_service import FundFlowService
 from core.services.chip_service import ChipService
@@ -317,6 +319,7 @@ async def bars(
     days: int = Query(365, ge=1, le=3650),
     svc: KLineService = Depends(get_kline_service),
     redis_cache=Depends(get_redis_cache),
+    watchlist=Depends(get_watchlist_service),
 ) -> BarsResponse:
     if interval not in KLINE_INTERVALS:
         raise HTTPException(400, f"invalid interval: {interval}")
@@ -330,7 +333,8 @@ async def bars(
     if not bars_list:
         # 触发 collector 后台 refill (不阻塞)
         try:
-            await _publish_refill_request(redis_cache, symbol, interval, days)
+            await _publish_refill_request(redis_cache, symbol, interval, days,
+                                          watchlist=watchlist)
         except Exception:  # noqa: BLE001
             pass
         return BarsResponse(
@@ -352,19 +356,34 @@ async def bars(
     )
 
 
-async def _publish_refill_request(redis_cache, symbol: str, interval: str, days: int) -> None:
-    """发 bus:bars.refill_request,collector refill_consumer 收到后拉数据写库 + 写 cache。"""
+async def _publish_refill_request(redis_cache, symbol: str, interval: str, days: int,
+                                  *, watchlist=None) -> None:
+    """发 bus:bars.refill_request。白名单(CORE∪watchlist)+ inflight 去重。"""
     import json
     from core.cache import keys as ck
-    payload = {
-        "market": infer_market(symbol) or "unknown",
-        "symbol": symbol, "interval": interval, "days": days,
-    }
-    await redis_cache._r.xadd(
-        ck.BUS_BARS_REFILL_REQUEST,
-        {"data": json.dumps(payload)},
-        maxlen=100, approximate=True,
-    )
+    market = infer_market(symbol) or "unknown"
+    # ① 白名单检查:只允许 CORE symbols ∪ watchlist.dynamic_universe()
+    allowed = set(core_symbols(market))
+    if watchlist is not None:
+        try:
+            allowed |= set(await watchlist.dynamic_universe())
+        except Exception:  # noqa: BLE001
+            pass
+    if symbol not in allowed:
+        return
+    # ② inflight 去重:同一 (market, symbol, interval) 60s 内只发一次
+    try:
+        ok = await redis_cache._r.set(  # noqa: SLF001
+            ck.state_inflight(f"refill:{market}:{symbol}:{interval}"),
+            b"1", nx=True, ex=60)
+        if not ok:
+            return
+    except Exception:  # noqa: BLE001
+        pass
+    payload = {"market": market, "symbol": symbol, "interval": interval, "days": days}
+    await redis_cache._r.xadd(  # noqa: SLF001
+        ck.BUS_BARS_REFILL_REQUEST, {"data": json.dumps(payload)},
+        maxlen=100, approximate=True)
 
 
 @router.get("/{symbol}/chip_summary", response_model=ChipSummaryResponse)
@@ -408,6 +427,7 @@ async def volume_indicators(
     kline: KLineService = Depends(get_kline_service),
     svc: VolumeIndicatorService = Depends(get_volume_indicator_service),
     redis_cache=Depends(get_redis_cache),
+    watchlist=Depends(get_watchlist_service),
 ) -> VolumeIndicatorsResponse:
     if interval not in {"1d", "5m", "15m", "30m", "60m"}:
         raise HTTPException(400, "interval must be one of ['1d', '5m', '15m', '30m', '60m']")
@@ -420,7 +440,8 @@ async def volume_indicators(
     )
     if not bars:
         try:
-            await _publish_refill_request(redis_cache, symbol, interval, days)
+            await _publish_refill_request(redis_cache, symbol, interval, days,
+                                          watchlist=watchlist)
         except Exception:  # noqa: BLE001
             pass
         return VolumeIndicatorsResponse(symbol=symbol, interval=interval, rows=[])
