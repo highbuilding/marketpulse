@@ -10,7 +10,7 @@ import json
 from datetime import datetime, timezone
 
 import structlog
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from apps.api.deps import get_redis_cache
@@ -26,77 +26,37 @@ def _sse_event(event: str, data: dict) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
 
 
-async def _gen(symbol: str, redis_cache):
+async def _gen(symbol: str, hub, redis_cache):
     market = infer_market(symbol)
-    yield _sse_event("connected", {"symbol": symbol,
-                                   "server_ts": datetime.now(timezone.utc).isoformat()})
-
-    # init: 推当前分时点快照
+    sub = hub.register([symbol])
     try:
-        cur = await redis_cache.get_msgpack(keys.cache_intraday_current(market, symbol))
-    except Exception:  # noqa: BLE001
-        cur = None
-    if cur:
-        yield _sse_event("init", {"point": cur, "symbol": symbol})
-
-    # xread 游标: 先用 $ 取当前 stream 位置 (非阻塞), 再进阻塞循环
-    # 与 sse_bars 保持一致, 避免漏消息
-    try:
-        cursor_entries = await redis_cache._r.xread(  # noqa: SLF001
-            streams={keys.BUS_INTRADAY_UPDATED: "$"},
-            count=1, block=0,
-        )
-    except Exception:  # noqa: BLE001
-        cursor_entries = None
-
-    last_id = "$"
-    if cursor_entries:
-        for _stream, msgs in cursor_entries:
-            if msgs:
-                last_id = msgs[-1][0]
-
-    last_ping = datetime.now(timezone.utc)
-    while True:
+        yield _sse_event("connected", {"symbol": symbol,
+                                       "server_ts": datetime.now(timezone.utc).isoformat()})
+        # init: 推当前分时点快照
         try:
-            entries = await redis_cache._r.xread(  # noqa: SLF001
-                streams={keys.BUS_INTRADAY_UPDATED: last_id},
-                count=20, block=PING_INTERVAL_S * 1000,
-            )
-        except asyncio.CancelledError:
-            return
-        except Exception as e:  # noqa: BLE001
-            log.warning("sse_intraday.read_failed", error=str(e))
-            await asyncio.sleep(1)
-            continue
+            cur = await redis_cache.get_msgpack(keys.cache_intraday_current(market, symbol))
+        except Exception:  # noqa: BLE001
+            cur = None
+        if cur:
+            yield _sse_event("init", {"point": cur, "symbol": symbol})
 
-        now = datetime.now(timezone.utc)
-        if entries:
-            for _stream, msgs in entries:
-                for msg_id, fields in msgs:
-                    last_id = msg_id
-                    try:
-                        raw = fields.get(b"data") or fields.get("data")
-                        if raw is None:
-                            continue
-                        if isinstance(raw, bytes):
-                            raw = raw.decode("utf-8", "replace")
-                        payload = json.loads(raw)
-                        if payload.get("symbol") == symbol:
-                            yield _sse_event("point", payload)
-                            last_ping = now
-                    except asyncio.CancelledError:
-                        return
-                    except Exception as e:  # noqa: BLE001
-                        log.warning("sse_intraday.parse_failed", error=str(e))
-
-        if (now - last_ping).total_seconds() >= PING_INTERVAL_S:
-            yield _sse_event("ping", {"server_ts": now.isoformat()})
-            last_ping = now
+        while True:
+            try:
+                payload = await asyncio.wait_for(sub.get(), timeout=PING_INTERVAL_S)
+            except asyncio.TimeoutError:
+                yield _sse_event("ping", {"server_ts": datetime.now(timezone.utc).isoformat()})
+                continue
+            except asyncio.CancelledError:
+                return
+            yield _sse_event("point", payload)
+    finally:
+        hub.unregister([symbol], sub)
 
 
 @router.get("/intraday/{symbol}")
-async def sse_intraday(symbol: str, redis_cache=Depends(get_redis_cache)):
+async def sse_intraday(request: Request, symbol: str, redis_cache=Depends(get_redis_cache)):
+    hub = request.app.state.intraday_hub
     return StreamingResponse(
-        _gen(symbol, redis_cache), media_type="text/event-stream",
+        _gen(symbol, hub, redis_cache), media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive",
                  "X-Accel-Buffering": "no"})
