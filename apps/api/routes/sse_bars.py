@@ -28,6 +28,7 @@ log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api/sse", tags=["sse"])
 
 PING_INTERVAL_S = 30
+_REGISTER_REFRESH_S = 60   # 订阅登记表续期周期(< TTL 120s, 防活跃标的过期)
 
 
 def _sse_event(event: str, data: dict) -> bytes:
@@ -59,6 +60,7 @@ async def _stream_gen(symbols: set[str], interval: str, hub, redis_cache):
                                        "interval": interval, "server_ts": server_ts})
         # 写订阅登记表, 激活 collector 进行中态 ticker / 分时 writer
         await _register_subscriptions(symbols, interval, redis_cache)
+        last_reg = datetime.now(timezone.utc)
         for sym in symbols:
             try:
                 cur = await redis_cache.get_msgpack(
@@ -70,13 +72,21 @@ async def _stream_gen(symbols: set[str], interval: str, hub, redis_cache):
         while True:
             try:
                 payload = await asyncio.wait_for(sub.get(), timeout=PING_INTERVAL_S)
+                got_msg = True
             except asyncio.TimeoutError:
-                # 超时: 发 ping + 续期订阅登记表 (TTL 120s, 每 30s 续一次, 不会过期)
-                await _register_subscriptions(symbols, interval, redis_cache)
-                yield _sse_event("ping", {"server_ts": datetime.now(timezone.utc).isoformat()})
-                continue
+                got_msg = False
             except asyncio.CancelledError:
                 return
+            now = datetime.now(timezone.utc)
+            # 续期订阅登记表: 每 60s 一次, 不论有无消息(订阅 TTL 120s)。
+            # 关键: 活跃推送的标的消息不断、永不超时, 必须在消息路径也续期, 否则
+            # 2 分钟后 state:subscribe 过期 → collector 停掉该标的实时(回归)。
+            if (now - last_reg).total_seconds() >= _REGISTER_REFRESH_S:
+                await _register_subscriptions(symbols, interval, redis_cache)
+                last_reg = now
+            if not got_msg:
+                yield _sse_event("ping", {"server_ts": now.isoformat()})
+                continue
             event = "bar" if payload.get("final") else "tick"
             yield _sse_event(event, payload)
     finally:
