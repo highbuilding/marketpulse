@@ -70,6 +70,12 @@ def cache_intraday_current(market: str, symbol: str) -> str:
     return f"cache:intraday:{market}:{symbol}:current"
 
 
+def cache_barspage(market: str, symbol: str, interval: str, before: str | None, limit: int) -> str:
+    """历史分页页缓存。游标页(before 非空, 收线后不可变)长 TTL; 最新页 latest 短 TTL。"""
+    cursor = before if before else "latest"
+    return f"cache:barspage:{market}:{symbol}:{interval}:{cursor}:{limit}"
+
+
 def cache_fundflow(symbol: str, *, days: int) -> str:
     return f"cache:fundflow:{symbol}:{days}d"
 

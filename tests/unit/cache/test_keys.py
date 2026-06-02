@@ -104,3 +104,17 @@ def test_cache_intraday_current_key():
     k = keys.cache_intraday_current("ashare", "600519.SH")
     assert k == "cache:intraday:ashare:600519.SH:current"
     keys.validate(k)  # 不抛
+
+
+def test_cache_barspage_key():
+    from core.cache import keys
+    k = keys.cache_barspage("us", "AAPL", "5m", "2026-06-01T00:00:00", 500)
+    assert k == "cache:barspage:us:AAPL:5m:2026-06-01T00:00:00:500"
+    keys.validate(k)
+
+
+def test_cache_barspage_latest_uses_marker():
+    from core.cache import keys
+    k = keys.cache_barspage("us", "AAPL", "5m", None, 500)
+    assert k.endswith(":latest:500")
+    keys.validate(k)
