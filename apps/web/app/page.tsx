@@ -6,6 +6,7 @@ import Link from 'next/link'
 import { useMarket } from '@/lib/market-context'
 import { listCDSignals } from '@/lib/cd_signals_api'
 import { fetchSymbolProfile } from '@/lib/symbol_api'
+import { fetchHealth } from '@/lib/api'
 import { listWatchlists, listWatchlistSymbols } from '@/lib/watchlist_api'
 import { isMarketOpenNow, inferMarket, type Market } from '@/lib/markets'
 import { useBarsHistory, mergeBarsAsc } from '@/lib/use_bars_history'
@@ -163,8 +164,9 @@ export default function HomePage() {
     return merged
   }, [wlRest, streamPrices, watchlist])
 
-  // 价格变动 → 对应行闪动 (涨绿跌红)
+  // 价格变动 → 对应行闪动 (涨绿跌红)。数据源离线时不闪(避免假装实时)。
   useEffect(() => {
+    if (offline) return
     for (const sym of watchlist) {
       const bars = (wlBars ?? {})[sym] ?? []
       if (bars.length === 0) continue
@@ -206,6 +208,12 @@ export default function HomePage() {
     () => listCDSignals({ market, limit: 20 }), { refreshInterval: 60_000 })
   const signals = (signalsResp?.signals ?? []).slice(0, 4)
 
+  // 数据源健康: 离线时价格区标灰 + 关闪烁(crypto→binance, 其余同名)
+  const { data: health } = useSWR('health', fetchHealth, { refreshInterval: 30_000 })
+  const adapterKey = market === 'crypto' ? 'binance' : market
+  const adapterState = health?.adapters?.[adapterKey as Market]?.state
+  const offline = adapterState === 'down' || adapterState === 'degraded'
+
   return (
     <div style={{ padding: 20 }}>
       {/* Index Cards */}
@@ -242,9 +250,10 @@ export default function HomePage() {
         <div className="panel">
           <div className="panel-header">
             ⭐ 自选 · <MarketStatus market={market} />
+            {offline && <span style={{ fontSize: 11, color: 'var(--red)', marginLeft: 8 }}>● 数据源离线·价格可能过期</span>}
             <Link href="/watchlist" style={{ fontSize: 12, color: 'var(--accent)' }}>管理 →</Link>
           </div>
-          <table className="data-table">
+          <table className="data-table" style={{ opacity: offline ? 0.5 : 1, transition: 'opacity 0.3s' }}>
             <thead><tr><th>名称</th><th>最新价</th><th>涨跌</th></tr></thead>
             <tbody>
               {watchlist.map(sym => {
@@ -277,6 +286,7 @@ export default function HomePage() {
           <div className="panel-header" style={{ borderBottom: 'none' }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
               <span style={{ fontSize: 16, fontWeight: 700, fontFamily: 'monospace' }}>{selected}</span>
+              {offline && <span style={{ fontSize: 11, color: 'var(--red)' }}>● 数据源离线·价格可能过期</span>}
               <Link href={`/symbol/${encodeURIComponent(selected)}`}
                 style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none', fontWeight: 600 }}>详情 →</Link>
             </div>
@@ -287,7 +297,7 @@ export default function HomePage() {
                 {iv === '60m' ? '1h' : iv}</button>
             ))}
           </div>
-          <div style={{ margin: '0 4px 8px' }}>
+          <div style={{ margin: '0 4px 8px', opacity: offline ? 0.5 : 1, transition: 'opacity 0.3s' }}>
             {displayBars.length > 0 ? (
               <KLineChart bars={displayBars} interval={chartIv} market={market as Market} height={280}
                 onLoadMore={hist.loadMore} hasMore={hist.hasMore} loadingMore={hist.loadingMore} />
