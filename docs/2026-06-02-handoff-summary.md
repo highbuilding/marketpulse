@@ -57,7 +57,35 @@
 
 ---
 
-## 四、文档地图
+## 四、完整改动清单(看"全部改动点")
+
+> 本文档(§一)是按模块的高层总结。**要逐处看,用 git** —— 本 epic 相对上一基线(`origin/master` = `779cab0`)共 **84 commits、84 文件、+3732/-368**。
+
+**看全量的命令**:
+```bash
+git log --oneline origin/master..HEAD              # 全部 84 个 commit(每个含改动点描述)
+git diff --stat origin/master..HEAD                # 文件级统计
+git diff origin/master..HEAD -- <某文件>           # 看具体某文件的全部改动
+```
+每个特性的"逐文件 + 逐步骤"在对应 plan 的「文件结构 / Task」里(`docs/superpowers/plans/`)。
+
+### 新增模块(非测试)
+- **core**:`core/domain/core_symbols.py`(CORE 单一事实源)、`core/domain/bucket_state.py`(共享桶纯函数)、`core/persistence/intraday_repo.py`(分时独立库)
+- **collector**:`apps/collector/startup_reconcile.py`(启动回填);A股 `ashare/quote_bar_ticker.py`、`ashare/intraday_line_writer.py`;美股 `us/trade_hub.py`、`us/bar_ticker.py`、`us/bar_poller.py`、`us/intraday_line_writer.py`
+- **api**:`apps/api/auth.py`(鉴权)、`apps/api/sse_hub.py`(SSE 单读多分发)、`apps/api/routes/sse_intraday.py`(分时 SSE)
+- **前端**:`apps/web/app/login/page.tsx`、`apps/web/components/IntradayLineChart.tsx`、`apps/web/lib/use_intraday_line.ts`、`apps/web/lib/api_fetch.ts`
+- **部署**:`deploy/nginx.conf`、`deploy/README.md`
+- **测试**:~38 个新单测(`tests/unit/**`,覆盖以上各模块)
+
+### 改动的关键文件(非新增)
+- **api**:`main.py`(挂 auth 中间件 + SSE hub lifespan)、`routes/sse_bars.py`(改 hub + 订阅续期 + viewed ZADD)、`routes/symbols.py`(refill 防护 + 历史读缓存 + 分时 realtime flag)
+- **collector**:`ashare/main.py`、`us/main.py`(接线 ticker/writer/poller/reconcile/purge)、`ashare/bar_poller.py`(砍1m/收线/B5)、`us/ws_consumer.py`(trades + LRU-30)、`jobs/aggregate_derived.py`(事件驱动 + B5)、`base.py`(分时只读路由 + 昨收)
+- **core**:`scheduler/jobs.py`(tick_snapshot 并 CORE + 砍伪 bar)、`scheduler/signal_jobs.py`(cron 并 CORE)、`scheduler/scheduler.py`、`cache/keys.py`(分时/页缓存 key)、`cache/redis_client.py`(池上限)、`persistence/duckdb_repo.py`(1m 守卫)、`domain/{market_sessions,intervals,models}.py`、`adapters/ashare.py`(amount)
+- **前端**:`app/page.tsx`(指数卡实时 + 自选 SSE)、`app/symbol/[code]/page.tsx`(分时/K线切换 + 非RTH默认)、`lib/{markets,intervals}.ts`
+
+---
+
+## 五、文档地图
 
 - 采集/DB/回填审计:`docs/2026-06-01-collection-db-backfill-audit.md`
 - 多用户 VPS 评审:`docs/2026-06-02-multiuser-vps-scalability-review.md`
