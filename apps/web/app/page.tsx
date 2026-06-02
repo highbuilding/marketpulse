@@ -6,7 +6,8 @@ import Link from 'next/link'
 import { useMarket } from '@/lib/market-context'
 import { listCDSignals } from '@/lib/cd_signals_api'
 import { fetchSymbolProfile } from '@/lib/symbol_api'
-import { isMarketOpenNow, type Market } from '@/lib/markets'
+import { listWatchlists, listWatchlistSymbols } from '@/lib/watchlist_api'
+import { isMarketOpenNow, inferMarket, type Market } from '@/lib/markets'
 import { useBarsHistory, mergeBarsAsc } from '@/lib/use_bars_history'
 import { useKlineStream } from '@/lib/use_kline_stream'
 import { KLineChart } from '@/components/KLineChart'
@@ -92,7 +93,23 @@ function SymbolName({ symbol }: { symbol: string }) {
 export default function HomePage() {
   const { market } = useMarket()
   const indices = INDEX_CONFIG[market] || INDEX_CONFIG.ashare
-  const watchlist = DEFAULT_WATCHLIST[market] || DEFAULT_WATCHLIST.ashare
+
+  // 读真实自选(与 /watchlist 同源):取第一个清单, 按当前市场过滤;
+  // 未取到 / 该市场无自选时回落到 DEFAULT_WATCHLIST, 保证首屏不空。
+  const { data: realWatchlist } = useSWR('overview:watchlist', async () => {
+    const { watchlists } = await listWatchlists()
+    const first = watchlists.find((w) => !w.is_archived) ?? watchlists[0]
+    if (!first) return null
+    const { symbols } = await listWatchlistSymbols(first.id)
+    return symbols
+  }, { revalidateOnFocus: false })
+
+  const watchlist = useMemo(() => {
+    const fallback = DEFAULT_WATCHLIST[market] || DEFAULT_WATCHLIST.ashare
+    if (!realWatchlist) return fallback
+    const forMarket = realWatchlist.filter((s) => inferMarket(s) === market)
+    return forMarket.length ? forMarket : fallback
+  }, [realWatchlist, market])
 
   // 行级 refs + 历史价: 价格变动 → DOM 闪动 (涨绿跌红)
   const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({})
