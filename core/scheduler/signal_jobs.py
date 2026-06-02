@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import structlog
 
+from core.domain.core_symbols import core_symbols
 from core.domain.intervals import BARS_PER_DAY, LOOKBACK_BARS
 from core.domain.markets import infer_market
 from core.services.kline_service import KLineService
@@ -27,7 +28,9 @@ async def scan_cd_job(
         if not is_trading_day(market_filter):
             log.debug("cd.scan_skip_non_trading_day", market=market_filter, interval=interval)
             return
-    symbols = await watchlist.dynamic_universe()
+    wl_syms = await watchlist.dynamic_universe()
+    core = core_symbols(market_filter) if market_filter else []
+    symbols = sorted(set(wl_syms) | set(core))
     if not symbols:
         log.debug("cd.scan_skipped_empty_watchlist", interval=interval,
                   market_filter=market_filter)
@@ -58,8 +61,9 @@ async def fetch_intraday_job(
     if not is_trading_day(market_filter):
         log.debug("fetch.skip_non_trading_day", market=market_filter, interval=interval)
         return
-    symbols = await watchlist.dynamic_universe()
-    symbols = [s for s in symbols if infer_market(s) == market_filter]
+    wl_syms = await watchlist.dynamic_universe()
+    core = core_symbols(market_filter)
+    symbols = [s for s in sorted(set(wl_syms) | set(core)) if infer_market(s) == market_filter]
     if not symbols:
         log.debug("fetch.skip_empty", interval=interval, market_filter=market_filter)
         return

@@ -12,9 +12,11 @@ async def test_scan_cd_job_invokes_scan_many_with_universe():
     svc = MagicMock()
     svc.scan_many = AsyncMock(return_value=3)
     await scan_cd_job(svc, wl, None, interval="1d")
-    svc.scan_many.assert_awaited_once_with(
-        ["600519.SH", "300750.SZ"], "1d", market_filter=None,
-    )
+    # 并入 core_symbols 后列表更大,只验证 watchlist 标的都在其中
+    passed = set(svc.scan_many.await_args[0][0])
+    assert {"600519.SH", "300750.SZ"}.issubset(passed)
+    assert svc.scan_many.await_args[0][1] == "1d"
+    assert svc.scan_many.await_args[1]["market_filter"] is None
 
 
 @pytest.mark.asyncio
@@ -29,15 +31,17 @@ async def test_scan_cd_job_skips_when_watchlist_empty():
 
 @pytest.mark.asyncio
 async def test_scan_cd_job_passes_market_filter():
-    """显式传入的 market_filter 必须透传给 scan_many。"""
+    """显式传入的 market_filter 必须透传给 scan_many,且 watchlist 标的仍在集合内。"""
     wl = MagicMock()
     wl.dynamic_universe = AsyncMock(return_value=["AAPL", "600519.SH"])
     svc = MagicMock()
     svc.scan_many = AsyncMock(return_value=0)
     await scan_cd_job(svc, wl, None, interval="1d", market_filter="ashare")
-    svc.scan_many.assert_awaited_once_with(
-        ["AAPL", "600519.SH"], "1d", market_filter="ashare",
-    )
+    # 并入 core_symbols 后列表更大,验证 market_filter 透传 + watchlist 标的仍在
+    passed = set(svc.scan_many.await_args[0][0])
+    assert {"AAPL", "600519.SH"}.issubset(passed)
+    assert svc.scan_many.await_args[0][1] == "1d"
+    assert svc.scan_many.await_args[1]["market_filter"] == "ashare"
 
 
 @pytest.mark.asyncio
