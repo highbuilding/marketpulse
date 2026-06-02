@@ -47,8 +47,26 @@ async def lifespan(app: FastAPI):
     state_repo = get_state_repo()
     await state_repo.init()
 
+    # SSE hub: 每 worker 一个读流任务, 解析一次按 symbol 分发(替代每连接各自 xread)
+    import asyncio
+    from apps.api.sse_hub import StreamHub, bars_key, intraday_key
+    from core.cache import keys as _keys
+    _rc = get_redis_cache()
+    app.state.bars_hub = StreamHub(_rc, _keys.BUS_BARS_UPDATED, bars_key)
+    app.state.intraday_hub = StreamHub(_rc, _keys.BUS_INTRADAY_UPDATED, intraday_key)
+    _hub_tasks = [
+        asyncio.create_task(app.state.bars_hub.run(), name="sse_bars_hub"),
+        asyncio.create_task(app.state.intraday_hub.run(), name="sse_intraday_hub"),
+    ]
+    log.info("sse_hubs.started")
+
     log.info("api.started")
     yield
+    app.state.bars_hub.stop()
+    app.state.intraday_hub.stop()
+    for _t in _hub_tasks:
+        _t.cancel()
+    await asyncio.gather(*_hub_tasks, return_exceptions=True)
     log.info("api.stopped")
 
 
