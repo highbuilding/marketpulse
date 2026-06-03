@@ -93,7 +93,7 @@ class SignalRepo:
             args.extend(symbols)
         if only_unacknowledged:
             sql.append("AND acknowledged = 0")
-        sql.append("ORDER BY detected_at DESC LIMIT ?")
+        sql.append("ORDER BY bar_ts DESC LIMIT ?")
         args.append(limit)
         async with self._connect() as db:
             cur = await db.execute(" ".join(sql), args)

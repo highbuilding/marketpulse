@@ -21,9 +21,14 @@ import type { BarDTO, Interval } from '@/lib/types'
 
 // ── helpers ──
 function pctChange(bars: BarDTO[]) {
-  if (bars.length < 2) return null
-  const a = bars[bars.length - 1].close, b = bars[bars.length - 2].close
-  return { close: a, pct: b ? ((a - b) / b) * 100 : 0, high: bars[bars.length - 1].high, low: bars[bars.length - 1].low, vol: bars[bars.length - 1].volume ?? 0, open: bars[bars.length - 1].open }
+  if (bars.length === 0) return null
+  const last = bars[bars.length - 1]
+  // 单根: 先显示最新价, 涨跌暂为 null(首屏 SSE 单根先到、REST 2 根未到时不再整列显 —)
+  if (bars.length < 2) {
+    return { close: last.close, pct: null as number | null, high: last.high, low: last.low, vol: last.volume ?? 0, open: last.open }
+  }
+  const a = last.close, b = bars[bars.length - 2].close
+  return { close: a, pct: b ? ((a - b) / b) * 100 : 0, high: last.high, low: last.low, vol: last.volume ?? 0, open: last.open }
 }
 
 function MarketStatus({ market }: { market: string }) {
@@ -281,10 +286,10 @@ export default function HomePage() {
                     <td style={{ fontFamily: 'monospace' }}>{pc?.close.toFixed(2) ?? '—'}</td>
                     <td>
                       <span style={{ fontSize: 11, padding: '3px 6px', borderRadius: 4,
-                        ...(pc == null ? {} : up ? { background: 'rgba(52,211,153,0.12)', color: 'var(--green)' }
+                        ...(pc == null || pc.pct == null ? {} : pc.pct > 0 ? { background: 'rgba(52,211,153,0.12)', color: 'var(--green)' }
                           : pc.pct < 0 ? { background: 'rgba(248,113,113,0.12)', color: 'var(--red)' }
                           : { color: 'var(--text2)' })
-                      }}>{pc != null ? `${pc.pct > 0 ? '+' : ''}${pc.pct.toFixed(2)}%` : '—'}</span>
+                      }}>{pc != null && pc.pct != null ? `${pc.pct > 0 ? '+' : ''}${pc.pct.toFixed(2)}%` : '—'}</span>
                     </td>
                   </tr>
                 )
