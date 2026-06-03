@@ -209,7 +209,10 @@ export default function HomePage() {
   // 信号
   const { data: signalsResp } = useSWR(`signals:${market}`,
     () => listCDSignals({ market, limit: 20 }), { refreshInterval: 60_000 })
-  const signals = (signalsResp?.signals ?? []).slice(0, 4)
+  const signals = (signalsResp?.signals ?? [])
+    .slice()
+    .sort((a: any, b: any) => b.bar_ts.localeCompare(a.bar_ts))
+    .slice(0, 4)
 
   // 数据源健康: 离线时价格区标灰 + 关闪烁(crypto→binance, 其余同名)
   const { data: health } = useSWR('health', fetchHealth, { refreshInterval: 30_000 })

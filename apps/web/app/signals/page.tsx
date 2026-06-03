@@ -22,6 +22,7 @@ export default function SignalsPage() {
   const [market, setMarket] = useState<MarketFilter>('all')
   const [dirs, setDirs] = useState<Array<'buy' | 'sell'>>(['buy', 'sell'])
   const [interval, setIntervalSel] = useState('全部')
+  const [symbolSel, setSymbolSel] = useState('全部')
 
   const { data, isLoading, error } = useSWR(
     ['cd-signals:page', market, interval],
@@ -37,10 +38,15 @@ export default function SignalsPage() {
   const toggleDir = (d: 'buy' | 'sell') =>
     setDirs((cur) => (cur.includes(d) ? cur.filter((x) => x !== d) : [...cur, d]))
 
-  // 市场/周期已下推到服务端筛选;前端只按买卖方向过滤,并推断 market 用于展示
+  // 当前结果里出现的标的(去重, 供"按标的"下拉)
+  const symbolOpts = Array.from(new Set(all.map((s) => s.symbol))).sort()
+
+  // 市场/周期下推服务端;前端按买卖方向 + 标的过滤, 推断 market, 并按 bar_ts 降序(最近在前)
   const rows = all
     .map((s) => ({ ...s, market: inferMarket(s.symbol) }))
     .filter((s) => dirs.includes(s.signal_type))
+    .filter((s) => symbolSel === '全部' || s.symbol === symbolSel)
+    .sort((a, b) => b.bar_ts.localeCompare(a.bar_ts))
 
   // 批量查 symbol→中文名(代码旁展示更直观)
   const symbols = Array.from(new Set(rows.map((s) => s.symbol)))
@@ -72,7 +78,13 @@ export default function SignalsPage() {
         <span style={{ width: 1, height: 18, background: 'var(--border)' }} />
         <span style={chip(dirs.includes('buy'))} onClick={() => toggleDir('buy')}>买入</span>
         <span style={chip(dirs.includes('sell'))} onClick={() => toggleDir('sell')}>卖出</span>
-        <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text2)' }}>周期：</span>
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text2)' }}>标的：</span>
+        <select value={symbolSel} onChange={(e) => setSymbolSel(e.target.value)}
+          style={{ background: 'var(--bg3)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 5, padding: '3px 8px', fontSize: 12, maxWidth: 130 }}>
+          <option value="全部">全部标的</option>
+          {symbolOpts.map((sym) => <option key={sym} value={sym}>{sym}</option>)}
+        </select>
+        <span style={{ fontSize: 12, color: 'var(--text2)' }}>周期：</span>
         <select value={interval} onChange={(e) => setIntervalSel(e.target.value)}
           style={{ background: 'var(--bg3)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 5, padding: '3px 8px', fontSize: 12 }}>
           {INTERVAL_OPTS.map((iv) => <option key={iv} value={iv}>{iv}</option>)}
