@@ -107,6 +107,9 @@ export default function SignalsPage() {
             )}
             <span style={{ color: 'var(--text3)', fontSize: 12 }}>{s.interval}</span>
             <span style={{ color: 'var(--text2)', fontSize: 12 }}>{s.signal_type === 'buy' ? '底背离' : '顶背离'}</span>
+            {s.price != null && (
+              <span className="font-mono" style={{ color: 'var(--text2)', fontSize: 12 }}>触发价 {s.price}</span>
+            )}
             <span className="font-mono" style={{ marginLeft: 'auto', color: 'var(--text3)', fontSize: 12 }}>
               {fmtSignalTs(s.bar_ts, s.interval as AnySignalInterval, s.market)}
             </span>
