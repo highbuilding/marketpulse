@@ -7,6 +7,8 @@ import { useRouter } from 'next/navigation'
 import { useMarket } from '@/lib/market-context'
 import { fmtSignalTs } from '@/lib/signal_time'
 import { listCDSignals } from '@/lib/cd_signals_api'
+import { useSignalStream } from '@/lib/use_signal_stream'
+import { tradingDateKey, todayKey } from '@/lib/markets'
 import { fetchSymbolProfile } from '@/lib/symbol_api'
 import { fetchHealth } from '@/lib/api'
 import { listWatchlists, listWatchlistSymbols } from '@/lib/watchlist_api'
@@ -201,13 +203,22 @@ export default function HomePage() {
   const streamBars = useKlineStream(selected, chartIv, true)
   const displayBars = useMemo(() => mergeBarsAsc(hist.bars, streamBars), [hist.bars, streamBars])
 
-  // 信号
+  // 信号: 首屏查当天(市场交易日)+ SSE 实时追加, merge 去重, bar_ts 降序
   const { data: signalsResp } = useSWR(`signals:${market}`,
-    () => listCDSignals({ market, limit: 20 }), { refreshInterval: 60_000 })
-  const signals = (signalsResp?.signals ?? [])
-    .slice()
-    .sort((a: any, b: any) => b.bar_ts.localeCompare(a.bar_ts))
-    .slice(0, 4)
+    () => listCDSignals({ market, limit: 50 }), { refreshInterval: 60_000 })
+  const liveSignals = useSignalStream()
+  const signals = useMemo(() => {
+    const today = todayKey(market as Market)
+    const merged = new Map<string, any>()
+    for (const s of [...(signalsResp?.signals ?? []), ...liveSignals]) {
+      if (inferMarket(s.symbol) !== market) continue
+      if (tradingDateKey(s.bar_ts, market as Market) !== today) continue
+      merged.set(`${s.symbol}:${s.interval}:${s.bar_ts}:${s.signal_type}`, s)
+    }
+    return Array.from(merged.values())
+      .sort((a, b) => b.bar_ts.localeCompare(a.bar_ts))
+      .slice(0, 4)
+  }, [signalsResp, liveSignals, market])
 
   // 数据源健康: 离线时价格区标灰 + 关闪烁(crypto→binance, 其余同名)
   const { data: health } = useSWR('health', fetchHealth, { refreshInterval: 30_000 })
