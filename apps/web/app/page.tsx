@@ -52,13 +52,6 @@ const INDEX_CONFIG: Record<string, { symbol: string; name: string }[]> = {
   hk: [{ symbol: 'HSI.HK', name: '恒生指数' }, { symbol: 'HSTECH.HK', name: '恒生科技' }],
 }
 
-const DEFAULT_WATCHLIST: Record<string, string[]> = {
-  ashare: ['600519.SH', '300750.SZ', '002594.SZ', '603259.SH', '688981.SH', '002371.SZ', '300059.SZ'],
-  us: ['AAPL', 'NVDA', 'MSFT', 'TSLA', 'AMZN', 'META', 'AMD'],
-  crypto: ['BTC-USDT', 'ETH-USDT', 'SOL-USDT', 'XRP-USDT', 'TRX-USDT'],
-  hk: ['00700.HK', '09988.HK', '03690.HK'],
-}
-
 // batch SSE: 1 连接推送 N 标的实时价
 function useBatchStream(symbols: string[], interval: string) {
   const [prices, setPrices] = useState<Record<string, BarDTO[]>>({})
@@ -111,11 +104,10 @@ export default function HomePage() {
     return symbols
   }, { revalidateOnFocus: false })
 
+  // 与自选页完全同源: 真实自选按当前市场过滤; 为空就显示空(不再用假数据兜底)。
   const watchlist = useMemo(() => {
-    const fallback = DEFAULT_WATCHLIST[market] || DEFAULT_WATCHLIST.ashare
-    if (!realWatchlist) return fallback
-    const forMarket = realWatchlist.filter((s) => inferMarket(s) === market)
-    return forMarket.length ? forMarket : fallback
+    if (!realWatchlist) return []
+    return realWatchlist.filter((s) => inferMarket(s) === market)
   }, [realWatchlist, market])
 
   // 行级 refs + 历史价: 价格变动 → DOM 闪动 (涨绿跌红)
