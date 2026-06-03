@@ -60,6 +60,18 @@ class SignalRepo:
             await db.commit()
             return cur.rowcount
 
+    async def existing_bar_ts(self, symbol: str, interval: str) -> set[str]:
+        """该 (symbol, interval, CD) 已存信号的 bar_ts 集合(ISO 字符串)。
+        用于发 bus:signal.new 前 diff 出真新增, 避免重发已存信号。"""
+        async with self._connect() as db:
+            cur = await db.execute(
+                "SELECT bar_ts FROM indicator_signals "
+                "WHERE symbol=? AND interval=? AND indicator='CD'",
+                (symbol, interval),
+            )
+            rows = await cur.fetchall()
+        return {r[0] for r in rows}
+
     async def list_recent(
         self, *,
         since: datetime | None = None,

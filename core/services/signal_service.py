@@ -1,10 +1,12 @@
 """指标信号扫描服务: 拉 bar -> 算 CD -> 入库(UNIQUE 幂等)。"""
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import structlog
 
+from core.cache import keys
 from core.domain.intervals import BARS_PER_DAY, LOOKBACK_BARS
 from core.domain.markets import infer_market
 from core.domain.models import IndicatorSignal
@@ -16,9 +18,10 @@ log = structlog.get_logger(__name__)
 
 
 class SignalScanService:
-    def __init__(self, kline: KLineService, repo: SignalRepo) -> None:
+    def __init__(self, kline: KLineService, repo: SignalRepo, *, redis=None) -> None:
         self.kline = kline
         self.repo = repo
+        self.redis = redis  # raw redis(AsyncRedis); 非空时新信号发 bus:signal.new
 
     async def scan_symbol_readonly(self, symbol: str, interval: Interval) -> int:
         """事件驱动: 只读已存 bar 算信号, 不 fetch/aggregate/persist。
@@ -41,6 +44,13 @@ class SignalScanService:
             return 0
         cd_signals = compute_cd_signals(bars)
         detected_at = datetime.now(timezone.utc)
+        # 发布前 diff: 已存 bar_ts 集合, 取差集 = 本次真新增(用于发 bus, upsert 仍幂等全量)
+        existing: set[str] = set()
+        if self.redis is not None and hasattr(self.repo, "existing_bar_ts"):
+            try:
+                existing = await self.repo.existing_bar_ts(symbol, interval)
+            except Exception:  # noqa: BLE001
+                existing = set()
         records = [
             IndicatorSignal(
                 symbol=symbol, interval=interval, indicator="CD",
@@ -53,6 +63,26 @@ class SignalScanService:
         if n > 0:
             log.info("signal.scan_readonly_new", symbol=symbol,
                      interval=interval, new=n)
+        # fire-and-forget: 对真新增信号发 bus:signal.new(前端 SSE 消费)
+        if self.redis is not None:
+            fresh = [s for s in cd_signals if s.bar_ts.isoformat() not in existing]
+            for s in fresh:
+                payload = {
+                    "market": market, "symbol": symbol, "interval": interval,
+                    "signal_type": s.signal_type, "bar_ts": s.bar_ts.isoformat(),
+                    "price": float(s.price) if s.price is not None else None,
+                    "detected_at": detected_at.isoformat(),
+                }
+                try:
+                    await self.redis.xadd(
+                        keys.BUS_SIGNAL_NEW,
+                        {"data": json.dumps(payload).encode()},
+                        maxlen=10000, approximate=True,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    log.warning("signal.publish_failed", symbol=symbol,
+                                interval=interval, error=str(e))
+        return n
         return n
 
     async def scan_symbol(self, symbol: str, interval: Interval) -> int:
