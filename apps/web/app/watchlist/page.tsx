@@ -11,6 +11,7 @@ import {
 } from '@/lib/watchlist_api'
 import { fetchSymbolProfile, fetchSymbolQuote } from '@/lib/symbol_api'
 import { inferMarket, type Market } from '@/lib/markets'
+import { useMarket } from '@/lib/market-context'
 
 function fmtVolume(v: number | null | undefined): string {
   if (v == null) return '—'
@@ -53,10 +54,11 @@ const MARKET_TABS: { key: Market; label: string; placeholder: string }[] = [
 ]
 
 export default function WatchlistPage() {
+  const { market } = useMarket()
   const { data: lists } = useSWR('wls', listWatchlists)
   const [activeId, setActiveId] = useState<number | null>(null)
   const currentId = activeId ?? lists?.watchlists[0]?.id ?? null
-  const [marketTab, setMarketTab] = useState<Market>('ashare')
+  const marketTab = market
 
   const { data: items } = useSWR(
     currentId ? `wl:${currentId}` : null,
@@ -100,16 +102,7 @@ export default function WatchlistPage() {
         ))}
       </div>
 
-      {/* Market tabs */}
-      <div style={{ display: 'flex', gap: 2, marginBottom: 16 }}>
-        {MARKET_TABS.map((t) => (
-          <button key={t.key} className={`mkt-tab ${marketTab === t.key ? 'active' : ''}`} onClick={() => setMarketTab(t.key)}>
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Search */}
+      {/* Search(市场跟随全局, 此处不重复切换) */}
       <div style={{ marginBottom: 16 }}>
         <SymbolSearch key={marketTab} market={marketTab} placeholder={tabMeta.placeholder} onSelect={(hit: any) => onAdd(hit.symbol)} />
       </div>

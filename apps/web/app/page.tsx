@@ -321,7 +321,7 @@ export default function HomePage() {
         <div className="panel">
           <div className="panel-header">
             🎯 最近信号 · {market === 'ashare' ? 'A股' : market === 'us' ? '美股' : market === 'crypto' ? 'Crypto' : market}
-            <Link href={`/notifications?market=${market}`} style={{ fontSize: 12, color: 'var(--accent)' }}>全部 →</Link>
+            <Link href="/signals" style={{ fontSize: 12, color: 'var(--accent)' }}>全部 →</Link>
           </div>
           <div>
             {signals.length === 0 && <div style={{ padding: 30, textAlign: 'center', color: 'var(--text3)' }}>暂无信号</div>}

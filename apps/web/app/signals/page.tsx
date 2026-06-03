@@ -4,22 +4,16 @@ import { useRouter } from 'next/navigation'
 import useSWR from 'swr'
 import { listCDSignals } from '@/lib/cd_signals_api'
 import { fetchSymbolProfiles } from '@/lib/symbol_api'
-import { inferMarket, type Market } from '@/lib/markets'
+import { inferMarket } from '@/lib/markets'
+import { useMarket, MARKET_LABELS } from '@/lib/market-context'
 import { fmtSignalTs } from '@/lib/signal_time'
 import type { CDSignalDTO, AnySignalInterval } from '@/lib/types'
 
-type MarketFilter = 'all' | Market
-const MARKET_CHIPS: { id: MarketFilter; label: string }[] = [
-  { id: 'all', label: '全部市场' },
-  { id: 'ashare', label: 'A股' },
-  { id: 'us', label: '美股' },
-  { id: 'crypto', label: 'Crypto' },
-]
 const INTERVAL_OPTS = ['全部', '1d', '4h', '60m', '30m', '15m']
 
 export default function SignalsPage() {
   const router = useRouter()
-  const [market, setMarket] = useState<MarketFilter>('all')
+  const { market } = useMarket()
   const [dirs, setDirs] = useState<Array<'buy' | 'sell'>>(['buy', 'sell'])
   const [interval, setIntervalSel] = useState('全部')
   const [symbolSel, setSymbolSel] = useState('全部')
@@ -27,7 +21,7 @@ export default function SignalsPage() {
   const { data, isLoading, error } = useSWR(
     ['cd-signals:page', market, interval],
     () => listCDSignals({
-      market: market === 'all' ? undefined : market,
+      market,
       intervals: interval === '全部' ? undefined : [interval],
       limit: 200,
     }),
@@ -70,11 +64,9 @@ export default function SignalsPage() {
         基于富途 CD 指标的多周期顶底背离扫描,按检测时间倒序。点任意一行查看该标的详情。
       </p>
 
-      {/* 筛选条 */}
+      {/* 筛选条(市场跟随全局, 此处不重复切换) */}
       <div className="panel" style={{ padding: '12px 14px', marginBottom: 14, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-        {MARKET_CHIPS.map((m) => (
-          <span key={m.id} style={chip(market === m.id)} onClick={() => setMarket(m.id)}>{m.label}</span>
-        ))}
+        <span style={{ fontSize: 13, fontWeight: 600 }}>{MARKET_LABELS[market].flag} {MARKET_LABELS[market].name}</span>
         <span style={{ width: 1, height: 18, background: 'var(--border)' }} />
         <span style={chip(dirs.includes('buy'))} onClick={() => toggleDir('buy')}>买入</span>
         <span style={chip(dirs.includes('sell'))} onClick={() => toggleDir('sell')}>卖出</span>
