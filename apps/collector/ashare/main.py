@@ -259,6 +259,23 @@ async def lifespan(app: FastAPI):
         _purge_intraday, CronTrigger(hour=2, minute=30),
         id="ashare:intraday_purge", max_instances=1, coalesce=True,
     )
+
+    # CD 信号摘要邮件: 30min 攒批(复用 NotificationService.maybe_send_summary)。
+    # 挂 ashare collector(常驻)+ _leader_gated 单发, 三市场各发一次。
+    from core.scheduler.scheduler import _leader_gated as _lg
+    _notify_svc = get_notification_service()
+
+    async def _signal_digest():
+        for _mkt in ("ashare", "us", "crypto"):
+            try:
+                await _notify_svc.maybe_send_summary(_mkt)
+            except Exception as e:  # noqa: BLE001
+                log.warning("signal_digest.failed", market=_mkt, error=str(e))
+
+    sched.add_job(
+        _lg(_signal_digest), CronTrigger(minute="*/30"),
+        id="signal:digest", max_instances=1, coalesce=True,
+    )
     log.info("bar_poller.bootstrapped")
 
     log.info("collector_ashare.started", markets=registry.markets())
