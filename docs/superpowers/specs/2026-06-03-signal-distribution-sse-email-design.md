@@ -66,6 +66,16 @@ api 进程订阅 bus → 转发浏览器       查 SQLite indicator_signals 近 
 - **去重防重发**:复用 `notification_audit`(snapshot_hash = 排序后信号集 sha256),同一批不重复发
 - 复用 `NotificationService` / `EmailChannel`,不重写发送链路
 
+### 2.5 完整性兜底:低频补扫 cron(SignalSweepWorker)
+事件驱动保实时,但有两个漏扫缝隙:① `bus:bars.updated` 事件被 Redis Stream `maxlen=10000` 挤出,或 collector 发事件失败(只 log);② A股/美股 60m/4h 依赖 5m 收线触发 `aggregate_and_publish`,该步失败则不发 final 事件。纯事件驱动一旦丢事件就静默漏信号(cron 已移除,无补偿)。
+
+- 每 30 分钟 cron(与邮件攒批同频),挂 ashare collector + `_leader_gated` 单发
+- 对 CORE∪watchlist 全标的全信号周期(15m/30m/60m/4h/1d)逐个跑 `scan_symbol_readonly(symbol, interval)`
+- **同一只读路径**:补扫只读已存 bar、upsert 幂等——漏的捞回,已有的不重复产信号,**不引入偏移**(偏移源是 `fetch_fresh_bars` 聚合,补扫不碰)
+- 分工:实时性靠事件驱动(bar 收线即扫),完整性靠补扫 cron(漏的下次捞回)
+- 补扫新增的信号同样发 `bus:signal.new`(前端/邮件下游一致)
+
+
 ---
 
 ## 3. 错误处理与边界
@@ -85,7 +95,8 @@ api 进程订阅 bus → 转发浏览器       查 SQLite indicator_signals 近 
 3. api 加 `/api/sse/signals` 端点(复用 StreamHub)
 4. 前端概览"最近信号" + /signals 加 EventSource + 当天交易日过滤
 5. SignalDigestWorker(30min cron)+ 挂 ashare collector + leader_gate
-6. 验证:发一条 bus:signal.new → 前端实时显示;手动触发 digest → 邮件渲染(SMTP 未配则验证 disabled 降级)
+6. SignalSweepWorker(30min 补扫 cron)+ 挂 ashare collector + leader_gate(§2.5 完整性兜底)
+7. 验证:发一条 bus:signal.new → 前端实时显示;手动触发 digest → 邮件渲染(SMTP 未配则验证 disabled 降级);停 consumer 造一个漏事件 → 补扫 cron 捞回
 
 ---
 
@@ -103,6 +114,7 @@ api 进程订阅 bus → 转发浏览器       查 SQLite indicator_signals 近 
 **新增**:
 - `apps/api/routes/sse_signals.py`:`/api/sse/signals` SSE 端点
 - `apps/collector/jobs/signal_digest_worker.py`:30min 攒批邮件
+- `apps/collector/jobs/signal_sweep_worker.py`:30min 补扫 cron(完整性兜底, §2.5)
 - `apps/web/lib/use_signal_stream.ts`:前端 EventSource hook
 - 测试:`tests/unit/services/test_upsert_returns_new.py`、`tests/unit/collector/test_signal_digest.py`
 
