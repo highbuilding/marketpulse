@@ -122,7 +122,6 @@ export function KLineChart({
   loadMoreRef.current = onLoadMore
   hasMoreRef.current = hasMore
   loadingMoreRef.current = loadingMore
-  const stats = useMemo(() => computeStats(bars), [bars])
   const intraday = INTRADAY.has(interval)
   // 悬停某根 K 线时显示该根 OHLCV(crosshair move 跟随)
   const [hoverBar, setHoverBar] = useState<BarDTO | null>(null)
@@ -334,35 +333,19 @@ export function KLineChart({
   }, [livePrice, chipLevels, intraday])
 
   return (
-    <div className="w-full">
-      {hoverBar ? (
-        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 mb-2 text-xs font-mono">
-          <span className="text-neutral-400">{makeChartCrosshairFormatter(market)(toBarTime(hoverBar.ts, interval, market))}</span>
-          <span className="text-neutral-500">开<span className="ml-1 text-neutral-200">{fmtPrice(hoverBar.open)}</span></span>
-          <span className="text-neutral-500">高<span className="ml-1 text-red-400">{fmtPrice(hoverBar.high)}</span></span>
-          <span className="text-neutral-500">低<span className="ml-1 text-green-400">{fmtPrice(hoverBar.low)}</span></span>
-          <span className="text-neutral-500">收<span className={`ml-1 ${hoverBar.close >= hoverBar.open ? 'text-red-400' : 'text-green-400'}`}>{fmtPrice(hoverBar.close)}</span></span>
-          <span className="text-neutral-500">涨跌<span className={`ml-1 ${hoverBar.close >= hoverBar.open ? 'text-red-400' : 'text-green-400'}`}>{hoverBar.open ? `${hoverBar.close >= hoverBar.open ? '+' : ''}${(((hoverBar.close - hoverBar.open) / hoverBar.open) * 100).toFixed(2)}%` : '—'}</span></span>
-          <span className="text-neutral-500">量<span className="ml-1 text-neutral-300">{fmtVolume(hoverBar.volume)}</span></span>
-        </div>
-      ) : stats && (
-        <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 mb-2 text-sm">
-          <div className="flex items-baseline gap-2">
-            <span className="text-neutral-500">最新</span>
-            <span className="font-mono text-lg text-neutral-100">{fmtPrice(stats.last)}</span>
-          </div>
-          <div className={`flex items-baseline gap-2 font-mono ${stats.diff >= 0 ? 'text-red-400' : 'text-green-400'}`}>
-            <span>{stats.diff >= 0 ? '+' : ''}{fmtPrice(stats.diff)}</span>
-            <span>{stats.pct >= 0 ? '+' : ''}{stats.pct.toFixed(2)}%</span>
-          </div>
-          <div className="text-xs text-neutral-500">
-            <span>区间高 <span className="font-mono text-neutral-300">{fmtPrice(stats.high)}</span></span>
-            <span className="ml-3">区间低 <span className="font-mono text-neutral-300">{fmtPrice(stats.low)}</span></span>
-            <span className="ml-3">成交 <span className="font-mono text-neutral-300">{fmtVolume(stats.vol)}</span></span>
-          </div>
+    <div className="w-full relative">
+      <div ref={ref} className="w-full" />
+      {hoverBar && (
+        <div className="absolute top-2 right-2 z-10 pointer-events-none rounded-md border border-neutral-700 bg-neutral-900/90 px-3 py-2 text-xs font-mono leading-relaxed shadow-lg">
+          <div className="text-neutral-400 mb-1">{makeChartCrosshairFormatter(market)(toBarTime(hoverBar.ts, interval, market))}</div>
+          <div className="flex justify-between gap-4"><span className="text-neutral-500">开</span><span className="text-neutral-200">{fmtPrice(hoverBar.open)}</span></div>
+          <div className="flex justify-between gap-4"><span className="text-neutral-500">高</span><span className="text-red-400">{fmtPrice(hoverBar.high)}</span></div>
+          <div className="flex justify-between gap-4"><span className="text-neutral-500">低</span><span className="text-green-400">{fmtPrice(hoverBar.low)}</span></div>
+          <div className="flex justify-between gap-4"><span className="text-neutral-500">收</span><span className={hoverBar.close >= hoverBar.open ? 'text-red-400' : 'text-green-400'}>{fmtPrice(hoverBar.close)}</span></div>
+          <div className="flex justify-between gap-4"><span className="text-neutral-500">涨跌</span><span className={hoverBar.close >= hoverBar.open ? 'text-red-400' : 'text-green-400'}>{hoverBar.open ? `${hoverBar.close >= hoverBar.open ? '+' : ''}${(((hoverBar.close - hoverBar.open) / hoverBar.open) * 100).toFixed(2)}%` : '—'}</span></div>
+          <div className="flex justify-between gap-4"><span className="text-neutral-500">量</span><span className="text-neutral-300">{fmtVolume(hoverBar.volume)}</span></div>
         </div>
       )}
-      <div ref={ref} className="w-full" />
     </div>
   )
 }
