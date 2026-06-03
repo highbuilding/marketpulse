@@ -101,8 +101,8 @@ export default function WatchlistPage() {
         </div>
       )}
 
-      {/* 搜索添加(scope 跟随当前市场) */}
-      <div className="panel" style={{ padding: '12px 14px', marginBottom: 14 }}>
+      {/* 搜索添加(scope 跟随当前市场)。不套 panel: panel 的 overflow:hidden 会裁掉下拉 */}
+      <div style={{ position: 'relative', zIndex: 20, marginBottom: 14 }}>
         <SymbolSearch key={market} market={market}
           placeholder={`搜索${label.name}代码或名称添加自选`}
           onSelect={(hit: any) => onAdd(hit.symbol)} />
