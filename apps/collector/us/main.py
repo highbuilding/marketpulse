@@ -153,6 +153,7 @@ async def lifespan(app: FastAPI):
     # 不再用 attach_us_signal_jobs cron(那条走 fetch_fresh_bars 现聚合, 有 close/open 偏移)。
     from apps.collector.jobs.signal_scan_consumer import run_signal_scan_consumer
     from core.services.signal_service import SignalScanService
+    from apps.api.deps import get_signal_repo
     _scan_svc = SignalScanService(get_kline_service(), get_signal_repo(), redis=_redis_for_mw)
     scan_consumer_task = asyncio.create_task(
         run_signal_scan_consumer(
