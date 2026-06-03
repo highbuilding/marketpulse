@@ -20,6 +20,41 @@ class SignalScanService:
         self.kline = kline
         self.repo = repo
 
+    async def scan_symbol_readonly(self, symbol: str, interval: Interval) -> int:
+        """事件驱动: 只读已存 bar 算信号, 不 fetch/aggregate/persist。
+
+        与 scan_symbol 区别: 直接读 repo.fetch_history(绕开 get_bars 的
+        _INTRADAY_AGG 现聚合分支), bar 口径完全信任上游采集(crypto=open,
+        A股/美股=close)。根除 60m/4h close/open 偏移 + 双写覆盖。
+        """
+        if getattr(self.kline, "repo", None) is None:
+            return 0
+        market = infer_market(symbol)
+        end = datetime.now(timezone.utc)
+        lookback = LOOKBACK_BARS.get(interval, 200)
+        days = max(lookback // BARS_PER_DAY.get(interval, 1) * 2, 30)
+        start = end - timedelta(days=days)
+        bars = self.kline.repo.fetch_history(
+            market, symbol, start, end, interval=interval,
+        )
+        if not bars:
+            return 0
+        cd_signals = compute_cd_signals(bars)
+        detected_at = datetime.now(timezone.utc)
+        records = [
+            IndicatorSignal(
+                symbol=symbol, interval=interval, indicator="CD",
+                signal_type=s.signal_type, bar_ts=s.bar_ts,
+                detected_at=detected_at, price=s.price, d_value=s.d_value,
+            )
+            for s in cd_signals
+        ]
+        n = await self.repo.upsert_many(records)
+        if n > 0:
+            log.info("signal.scan_readonly_new", symbol=symbol,
+                     interval=interval, new=n)
+        return n
+
     async def scan_symbol(self, symbol: str, interval: Interval) -> int:
         """对单个 symbol/interval 扫一次 CD 信号, 入库, 返回新增条数。"""
         bars = await self._fetch_bars(symbol, interval)
