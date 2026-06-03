@@ -149,11 +149,16 @@ async def lifespan(app: FastAPI):
         registry, cache, bar_repo, get_watchlist_service(),
         redis_cache=redis_cache, redis_bars=redis_bars,
     )
-    attach_us_signal_jobs(
-        sched, signal_scan=get_signal_scan_service(),
-        watchlist=get_watchlist_service(),
-        notify_service=get_notification_service(),
-        kline=kline,
+    # CD 信号扫描: 事件驱动(订阅 bus:bars.updated, 只读已存 bar)。
+    # 不再用 attach_us_signal_jobs cron(那条走 fetch_fresh_bars 现聚合, 有 close/open 偏移)。
+    from apps.collector.jobs.signal_scan_consumer import run_signal_scan_consumer
+    _scan_svc = get_signal_scan_service()
+    scan_consumer_task = asyncio.create_task(
+        run_signal_scan_consumer(
+            _redis_for_mw, consumer_id=f"scan-us-{os.getpid()}",
+            scan_fn=_scan_svc.scan_symbol_readonly, market="us",
+        ),
+        name="us.signal_scan_consumer",
     )
     attach_us_index_minute_job(sched, cache=redis_cache, baseline_repo=baseline_repo)
     sched.start()

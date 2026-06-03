@@ -90,14 +90,17 @@ async def lifespan(app: FastAPI):
         coalesce=True,
     )
 
-    # CD 信号扫描 (24×7)
-    from apps.api.deps import get_signal_scan_service, get_watchlist_service, get_notification_service
-    from core.scheduler.scheduler import attach_crypto_signal_jobs
-    attach_crypto_signal_jobs(
-        sched,
-        signal_scan=get_signal_scan_service(),
-        watchlist=get_watchlist_service(),
-        notify_service=get_notification_service(),
+    # CD 信号扫描: 事件驱动(订阅 bus:bars.updated, 只读已存 bar)。
+    # 不再用 attach_crypto_signal_jobs cron(那条走 fetch_fresh_bars 现聚合, 有 close/open 偏移)。
+    from apps.api.deps import get_signal_scan_service
+    from apps.collector.jobs.signal_scan_consumer import run_signal_scan_consumer
+    _scan_svc = get_signal_scan_service()
+    scan_consumer_task = asyncio.create_task(
+        run_signal_scan_consumer(
+            redis_cache._r, consumer_id=f"scan-crypto-{os.getpid()}",  # noqa: SLF001
+            scan_fn=_scan_svc.scan_symbol_readonly, market="crypto",
+        ),
+        name="crypto.signal_scan_consumer",
     )
 
     sched.start()
@@ -115,7 +118,8 @@ async def lifespan(app: FastAPI):
         sched.shutdown(wait=False)
         ws_task.cancel()
         backfill_task.cancel()
-        for t in (ws_task, backfill_task):
+        scan_consumer_task.cancel()
+        for t in (ws_task, backfill_task, scan_consumer_task):
             try:
                 await t
             except (asyncio.CancelledError, Exception):
