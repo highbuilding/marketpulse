@@ -10,6 +10,7 @@ import { listCDSignals } from '@/lib/cd_signals_api'
 import { fetchSymbolProfile } from '@/lib/symbol_api'
 import { fetchHealth } from '@/lib/api'
 import { listWatchlists, listWatchlistSymbols } from '@/lib/watchlist_api'
+import { useActiveWatchlistId } from '@/lib/use_active_watchlist'
 import { isMarketOpenNow, inferMarket, type Market } from '@/lib/markets'
 import { useBarsHistory, mergeBarsAsc } from '@/lib/use_bars_history'
 import { useKlineStream } from '@/lib/use_kline_stream'
@@ -98,13 +99,15 @@ export default function HomePage() {
   const router = useRouter()
   const indices = INDEX_CONFIG[market] || INDEX_CONFIG.ashare
 
-  // 读真实自选(与 /watchlist 同源):取第一个清单, 按当前市场过滤;
-  // 未取到 / 该市场无自选时回落到 DEFAULT_WATCHLIST, 保证首屏不空。
-  const { data: realWatchlist } = useSWR('overview:watchlist', async () => {
+  // 读真实自选(与 /watchlist 同源 + 共享同一清单选择):
+  // 用共享的 activeId(自选页切清单 → 这里跟随);未设时取第一个清单。
+  const [activeId] = useActiveWatchlistId()
+  const { data: realWatchlist } = useSWR(['overview:watchlist', activeId], async () => {
     const { watchlists } = await listWatchlists()
-    const first = watchlists.find((w) => !w.is_archived) ?? watchlists[0]
-    if (!first) return null
-    const { symbols } = await listWatchlistSymbols(first.id)
+    const chosen = (activeId != null && watchlists.find((w) => w.id === activeId))
+      || watchlists.find((w) => !w.is_archived) || watchlists[0]
+    if (!chosen) return null
+    const { symbols } = await listWatchlistSymbols(chosen.id)
     return symbols
   }, { revalidateOnFocus: false })
 

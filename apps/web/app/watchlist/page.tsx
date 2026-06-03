@@ -12,6 +12,7 @@ import {
 import { fetchSymbolProfile, fetchSymbolQuote } from '@/lib/symbol_api'
 import { inferMarket, type Market } from '@/lib/markets'
 import { useMarket } from '@/lib/market-context'
+import { useActiveWatchlistId } from '@/lib/use_active_watchlist'
 
 function fmtVolume(v: number | null | undefined): string {
   if (v == null) return '—'
@@ -56,7 +57,7 @@ const MARKET_TABS: { key: Market; label: string; placeholder: string }[] = [
 export default function WatchlistPage() {
   const { market } = useMarket()
   const { data: lists } = useSWR('wls', listWatchlists)
-  const [activeId, setActiveId] = useState<number | null>(null)
+  const [activeId, setActiveId] = useActiveWatchlistId()
   const currentId = activeId ?? lists?.watchlists[0]?.id ?? null
   const marketTab = market
 
