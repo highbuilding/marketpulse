@@ -92,9 +92,10 @@ async def lifespan(app: FastAPI):
 
     # CD 信号扫描: 事件驱动(订阅 bus:bars.updated, 只读已存 bar)。
     # 不再用 attach_crypto_signal_jobs cron(那条走 fetch_fresh_bars 现聚合, 有 close/open 偏移)。
-    from apps.api.deps import get_signal_scan_service
+    from apps.api.deps import get_signal_scan_service, get_kline_service, get_signal_repo
     from apps.collector.jobs.signal_scan_consumer import run_signal_scan_consumer
-    _scan_svc = get_signal_scan_service()
+    from core.services.signal_service import SignalScanService
+    _scan_svc = SignalScanService(get_kline_service(), get_signal_repo(), redis=redis_cache._r)  # noqa: SLF001
     scan_consumer_task = asyncio.create_task(
         run_signal_scan_consumer(
             redis_cache._r, consumer_id=f"scan-crypto-{os.getpid()}",  # noqa: SLF001
