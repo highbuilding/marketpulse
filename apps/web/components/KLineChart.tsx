@@ -4,7 +4,7 @@ import {
   createChart, IChartApi, CandlestickData, HistogramData, Time,
   ISeriesApi, SeriesMarker, IPriceLine, LineStyle,
 } from 'lightweight-charts'
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { marketTz, tzOffsetSeconds, type Market } from '@/lib/markets'
 import { makeChartCrosshairFormatter, makeChartTickFormatter } from '@/lib/chart_time'
@@ -124,6 +124,9 @@ export function KLineChart({
   loadingMoreRef.current = loadingMore
   const stats = useMemo(() => computeStats(bars), [bars])
   const intraday = INTRADAY.has(interval)
+  // 悬停某根 K 线时显示该根 OHLCV(crosshair move 跟随)
+  const [hoverBar, setHoverBar] = useState<BarDTO | null>(null)
+  const barByTimeRef = useRef<Map<number, BarDTO>>(new Map())
 
   // Effect 1: 创建 chart + series. 只在 height/interval/market 变 (interval 切换需要
   // 重建 timeScale 配置) 时重建. bars/signals/livePrice 等数据更新走下面的 effect 单独
@@ -176,9 +179,18 @@ export function KLineChart({
     }
     chart.timeScale().subscribeVisibleLogicalRangeChange(onRange)
 
+    // 悬停跟随: 鼠标移到哪根 → 显示该根 OHLCV(按 time 反查原始 bar)
+    const onCrosshair = (param: { time?: Time }) => {
+      if (param.time == null) { setHoverBar(null); return }
+      const b = barByTimeRef.current.get(param.time as number)
+      setHoverBar(b ?? null)
+    }
+    chart.subscribeCrosshairMove(onCrosshair)
+
     return () => {
       ro.disconnect()
       try { chart.timeScale().unsubscribeVisibleLogicalRangeChange(onRange) } catch { /* chart 已销毁 */ }
+      try { chart.unsubscribeCrosshairMove(onCrosshair) } catch { /* chart 已销毁 */ }
       for (const line of priceLineRefsRef.current) {
         try { candle.removePriceLine(line) } catch { /* chart 已销毁可忽略 */ }
       }
@@ -250,6 +262,10 @@ export function KLineChart({
     prevLenRef.current = len
     prevFirstTsRef.current = firstTs
     prevKeyRef.current = key
+    // 重建 time→bar 映射(crosshair 悬停反查那根 OHLCV)
+    const m = new Map<number, BarDTO>()
+    for (const b of bars) m.set(toBarTime(b.ts, interval, market) as number, b)
+    barByTimeRef.current = m
   }, [bars, interval, market])
 
   // Effect 3: signals 变化 → setMarkers
@@ -319,7 +335,17 @@ export function KLineChart({
 
   return (
     <div className="w-full">
-      {stats && (
+      {hoverBar ? (
+        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 mb-2 text-xs font-mono">
+          <span className="text-neutral-400">{makeChartCrosshairFormatter(market)(toBarTime(hoverBar.ts, interval, market))}</span>
+          <span className="text-neutral-500">开<span className="ml-1 text-neutral-200">{fmtPrice(hoverBar.open)}</span></span>
+          <span className="text-neutral-500">高<span className="ml-1 text-red-400">{fmtPrice(hoverBar.high)}</span></span>
+          <span className="text-neutral-500">低<span className="ml-1 text-green-400">{fmtPrice(hoverBar.low)}</span></span>
+          <span className="text-neutral-500">收<span className={`ml-1 ${hoverBar.close >= hoverBar.open ? 'text-red-400' : 'text-green-400'}`}>{fmtPrice(hoverBar.close)}</span></span>
+          <span className="text-neutral-500">涨跌<span className={`ml-1 ${hoverBar.close >= hoverBar.open ? 'text-red-400' : 'text-green-400'}`}>{hoverBar.open ? `${hoverBar.close >= hoverBar.open ? '+' : ''}${(((hoverBar.close - hoverBar.open) / hoverBar.open) * 100).toFixed(2)}%` : '—'}</span></span>
+          <span className="text-neutral-500">量<span className="ml-1 text-neutral-300">{fmtVolume(hoverBar.volume)}</span></span>
+        </div>
+      ) : stats && (
         <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 mb-2 text-sm">
           <div className="flex items-baseline gap-2">
             <span className="text-neutral-500">最新</span>
