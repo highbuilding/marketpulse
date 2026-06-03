@@ -3,7 +3,9 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
 import useSWR from 'swr'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { useMarket } from '@/lib/market-context'
+import { fmtSignalTs } from '@/lib/signal_time'
 import { listCDSignals } from '@/lib/cd_signals_api'
 import { fetchSymbolProfile } from '@/lib/symbol_api'
 import { fetchHealth } from '@/lib/api'
@@ -92,7 +94,8 @@ function SymbolName({ symbol }: { symbol: string }) {
 
 // ── Page ──
 export default function HomePage() {
-  const { market } = useMarket()
+  const { market, setMarket } = useMarket()
+  const router = useRouter()
   const indices = INDEX_CONFIG[market] || INDEX_CONFIG.ashare
 
   // 读真实自选(与 /watchlist 同源):取第一个清单, 按当前市场过滤;
@@ -320,12 +323,16 @@ export default function HomePage() {
           <div>
             {signals.length === 0 && <div style={{ padding: 30, textAlign: 'center', color: 'var(--text3)' }}>暂无信号</div>}
             {signals.map((s: any, i: number) => (
-              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 18px', borderBottom: '1px solid var(--border)' }}>
+              <div key={i} onClick={() => { setMarket(inferMarket(s.symbol)); router.push(`/symbol/${encodeURIComponent(s.symbol)}`) }}
+                style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 18px', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
                 <div className={`sig-badge ${s.signal_type === 'buy' ? 'buy' : 'sell'}`}>{s.signal_type === 'buy' ? '📈' : '📉'}</div>
                 <div style={{ flex: 1 }}>
-                  <Link href={`/symbol/${encodeURIComponent(s.symbol)}`} style={{ fontWeight: 600, color: 'inherit', textDecoration: 'none' }}>{s.symbol}</Link>
+                  <span style={{ fontWeight: 600 }}>{s.symbol}</span>
                   <div style={{ fontSize: 12, color: 'var(--text2)' }}>{s.signal_type === 'buy' ? '底背离买入' : '顶背离卖出'} · {s.interval}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text3)' }}>{s.bar_ts}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text3)' }}>
+                    {fmtSignalTs(s.bar_ts, s.interval, inferMarket(s.symbol))}
+                    {s.price != null && <span> · 触发价 <span className="font-mono">{s.price}</span></span>}
+                  </div>
                 </div>
               </div>
             ))}
