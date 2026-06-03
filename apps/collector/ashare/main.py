@@ -276,6 +276,27 @@ async def lifespan(app: FastAPI):
         _lg(_signal_digest), CronTrigger(minute="*/30"),
         id="signal:digest", max_instances=1, coalesce=True,
     )
+
+    # CD 信号补扫兜底: 30min 对全标的全信号周期跑 scan_symbol_readonly, 捞回漏事件。
+    # 完整性兜底(事件可能被 maxlen 挤出 / aggregate 失败); 同只读路径, 幂等不引偏移。
+    from apps.collector.jobs.signal_sweep_worker import sweep_symbols_for_market
+    from core.domain.core_symbols import core_symbols as _core_syms_fn
+    from core.domain.markets import infer_market as _infer_mkt
+
+    async def _signal_sweep():
+        for _mkt in ("ashare", "us", "crypto"):
+            try:
+                _wl = await get_watchlist_service().dynamic_universe()
+                _syms = sorted({s for s in (set(_wl) | set(_core_syms_fn(_mkt)))
+                                if _infer_mkt(s) == _mkt})
+                await sweep_symbols_for_market(_scan_svc, _syms, market=_mkt)
+            except Exception as e:  # noqa: BLE001
+                log.warning("signal_sweep.market_failed", market=_mkt, error=str(e))
+
+    sched.add_job(
+        _lg(_signal_sweep), CronTrigger(minute="*/30"),
+        id="signal:sweep", max_instances=1, coalesce=True,
+    )
     log.info("bar_poller.bootstrapped")
 
     log.info("collector_ashare.started", markets=registry.markets())
