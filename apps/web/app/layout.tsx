@@ -122,15 +122,7 @@ function TopBar() {
 
   return (
     <header className="topbar">
-      <div className="market-tabs">
-        {(Object.entries(MARKET_LABELS) as [MarketId, typeof MARKET_LABELS['ashare']][]).map(([id, info]) => (
-          <button key={id} className={`mkt-tab ${market === id ? 'active' : ''}`}
-            onClick={() => setMarket(id)}>
-            {info.flag} {info.name}
-            <span className="sub">{info.sub}</span>
-          </button>
-        ))}
-      </div>
+      <MarketSwitcher market={market} setMarket={setMarket} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
         <input type="text" placeholder="⌘K 搜索代码..."
           style={{ width: 180 }}
@@ -149,6 +141,45 @@ function TopBar() {
   )
 }
 
+function MarketSwitcher({ market, setMarket }: { market: MarketId; setMarket: (m: MarketId) => void }) {
+  const [open, setOpen] = useState(false)
+  const cur = MARKET_LABELS[market]
+  return (
+    <div style={{ position: 'relative' }}>
+      <button className="mkt-tab active" onClick={() => setOpen((o) => !o)}
+        style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span>{cur.flag} {cur.name}</span>
+        <span style={{ fontSize: 10, color: 'var(--text3)' }}>▾</span>
+      </button>
+      {open && (
+        <>
+          <div onClick={() => setOpen(false)}
+            style={{ position: 'fixed', inset: 0, zIndex: 10 }} />
+          <div style={{ position: 'absolute', top: '110%', left: 0, zIndex: 11,
+            background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 8,
+            padding: 4, minWidth: 160, boxShadow: '0 6px 24px rgba(0,0,0,0.3)' }}>
+            {(Object.entries(MARKET_LABELS) as [MarketId, typeof MARKET_LABELS['ashare']][]).map(([id, info]) => (
+              <button key={id} onClick={() => { setMarket(id); setOpen(false) }}
+                className={`sidebar-item ${market === id ? 'active' : ''}`}
+                style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', border: 'none', cursor: 'pointer' }}>
+                <span>{info.flag} {info.name}</span>
+                <span style={{ fontSize: 10, color: 'var(--text3)' }}>{info.sub}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// 按市场隔离内容: key=market 使切换市场时整棵子树重挂载,
+// 旧市场组件卸载 → 其 SSE EventSource 在 cleanup 里 close, 不再保留多市场长连接。
+function MarketScopedContent({ children }: { children: React.ReactNode }) {
+  const { market } = useMarket()
+  return <div key={market}>{children}</div>
+}
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="zh-CN" data-theme="dark">
@@ -158,7 +189,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <main className="flex-1 flex flex-col overflow-hidden">
             <TopBar />
             <div className="flex-1 overflow-y-auto">
-              {children}
+              <MarketScopedContent>{children}</MarketScopedContent>
             </div>
           </main>
         </MarketProvider>
