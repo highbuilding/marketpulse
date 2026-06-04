@@ -73,7 +73,8 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
   const streamBars = useKlineStream(symbol, interval, true)  // 所有市场+周期 SSE
 
   const displayBars: BarDTO[] = useMemo(() => {
-    return mergeBarsAsc(hist.bars, streamBars)
+    // 首屏历史(REST 500根)未到时不渲染 stream 单根, 消除切周期"先一根后一堆"闪烁
+    return hist.bars.length === 0 ? [] : mergeBarsAsc(hist.bars, streamBars)
   }, [hist.bars, streamBars])
 
   const { data: chipSummary, error: chipError, isLoading: chipLoading } = useSWR(
