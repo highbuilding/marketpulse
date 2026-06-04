@@ -67,7 +67,12 @@ export function useBarsHistory(
 
   // older 若仍属于上一个 symbol:interval (重置 effect 尚未跑), 视为空, 杜绝跨周期 ts 混入
   const safeOlder = olderKeyRef.current === key ? older : EMPTY
-  const headBars = head.data?.bars ?? EMPTY
+  // head.data 在切 key 后、新请求返回前会残留旧周期数据(SWR stale)。
+  // 守卫: olderKeyRef(随 key 同步重置)!= key 或正在加载新 key 时, headBars 视为空,
+  // 避免先渲染旧周期 bar 造成 K 线"先一堆旧的再换新"闪烁。
+  const headBars = (olderKeyRef.current === key && !head.isLoading && head.data?.bars)
+    ? head.data.bars
+    : EMPTY
   const bars = useMemo(() => mergeBarsAsc(safeOlder, headBars), [safeOlder, headBars])
 
   const loadMore = useCallback(() => {
