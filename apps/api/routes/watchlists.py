@@ -4,9 +4,9 @@ import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
-from apps.api.deps import get_signal_scan_service, get_watchlist_service
+from apps.api.deps import get_redis_cache, get_watchlist_service
 from core.domain.intervals import SIGNAL_INTERVALS
-from core.services.signal_service import SignalScanService
+from core.domain.markets import infer_market
 from core.services.watchlist_service import WatchlistService
 
 log = structlog.get_logger(__name__)
@@ -84,26 +84,29 @@ async def list_symbols(wl_id: int,
     return SymbolsResp(watchlist_id=wl_id, symbols=syms)
 
 
-async def _initial_scan(symbol: str, scan: SignalScanService) -> None:
-    """新加的 symbol 立刻在所有支持的周期上扫一次, 避免关注页要等到下一个 cron tick 才出信号。
-    每个周期独立 try/except, 单个失败不影响其他。"""
-    for iv in SIGNAL_INTERVALS:
+async def _refill_new_symbol(symbol: str, redis_cache, watchlist) -> None:
+    """新加自选: 发 refill 让对应市场 collector 立即拉该标的历史 bar。
+    api 进程无 DuckDB(雷区6), 不能自己拉/扫, 必须经 refill 交给 collector。
+    覆盖信号周期 + 5m(详情页默认)。fire-and-forget, 失败只 log。"""
+    from apps.api.routes.symbols import _publish_refill_request
+    days_map = {"5m": 30, "15m": 30, "30m": 60, "60m": 120, "4h": 365, "1d": 1825}
+    for iv in ("5m", *SIGNAL_INTERVALS):
         try:
-            n = await scan.scan_symbol(symbol, iv)
-            log.info("watchlist.initial_scan", symbol=symbol, interval=iv, new=n)
+            await _publish_refill_request(
+                redis_cache, symbol, iv, days_map.get(iv, 60), watchlist=watchlist)
         except Exception as e:  # noqa: BLE001
-            log.warning("watchlist.initial_scan_failed",
+            log.warning("watchlist.refill_failed",
                         symbol=symbol, interval=iv, error=str(e))
 
 
 @router.post("/{wl_id}/symbols", status_code=204)
 async def add_symbol(wl_id: int, body: AddSymbolBody,
-                      bg: BackgroundTasks,
-                      svc: WatchlistService = Depends(get_watchlist_service),
-                      scan: SignalScanService = Depends(get_signal_scan_service)) -> None:
+                     bg: BackgroundTasks,
+                     svc: WatchlistService = Depends(get_watchlist_service),
+                     redis_cache=Depends(get_redis_cache)) -> None:
     await svc.add_symbol(wl_id, body.symbol)
-    # 后台异步扫一次, 接口立即返回; 失败不影响 add 成功
-    bg.add_task(_initial_scan, body.symbol, scan)
+    # 后台发 refill, 让对应市场 collector 立即拉该标的历史 bar(api 无 DuckDB)。接口立即返回。
+    bg.add_task(_refill_new_symbol, body.symbol, redis_cache, svc)
 
 
 @router.delete("/{wl_id}/symbols/{symbol}", status_code=204)
