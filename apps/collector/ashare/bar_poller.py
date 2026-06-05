@@ -13,17 +13,13 @@ import asyncio
 import json
 import random
 from datetime import datetime, timezone
-from decimal import Decimal
-from zoneinfo import ZoneInfo
 
-import pandas as pd
 import structlog
 
 from core.cache import keys
 from core.cache.redis_client import RedisCache
 from core.domain.core_symbols import CORE_SYMBOLS
 from core.domain.market_calendar import is_trading_day
-from core.domain.models import Bar as BarModel
 from core.domain.runtime_env import tiered_int
 from core.persistence.duckdb_repo import BarRepo
 
@@ -60,9 +56,11 @@ class BarPoller:
         self,
         repo: BarRepo,
         redis_cache: RedisCache,
+        adapter,
     ) -> None:
         self._repo = repo
         self._redis = redis_cache
+        self._adapter = adapter
         self._tasks: dict[str, asyncio.Task] = {}  # key = "symbol:interval"
         self._stopped = False
 
@@ -74,53 +72,22 @@ class BarPoller:
     # ------------------------------------------------------------------
 
     async def _poll_one(self, symbol: str, interval: str) -> None:
-        """轮询单标的单周期. 拉全量 → upsert → 检测新 bar → pub."""
-        period = INTERVAL_TO_PERIOD.get(interval)
-        if period is None:
+        """轮询单标的单周期. 拉全量 → upsert → 检测新 bar → pub.
+
+        拉取+解析+防御(NaN 兜底 + 盘前凑数 bar 过滤)统一收口到
+        AshareAdapter.fetch_intraday(SSoT 规范 1, 雷区 stock_zh_a_minute 歧义)。
+        本方法只负责: 进行中根过滤 → 增量 → 入库 → 发 bus → 触发聚合。
+        """
+        freq = INTERVAL_TO_PERIOD.get(interval)
+        if freq is None:
             return
 
         try:
-            from core.integrations.akshare import ak_call
-
-            df = await ak_call(
-                "stock_zh_a_minute",
-                symbol=symbol, period=period, adjust="qfq",
-                caller=f"bar_poller:{symbol}:{interval}",
-            )
+            bars = await self._adapter.fetch_intraday(symbol, freq)
         except Exception as e:  # noqa: BLE001
             log.warning("bar_poller.fetch_failed",
                         symbol=symbol, interval=interval, error=str(e))
             return
-
-        if df is None or df.empty:
-            return
-
-        # 解析 bars
-        _CN_TZ = ZoneInfo("Asia/Shanghai")
-
-        bars = []
-        for _, row in df.iterrows():
-            if pd.isna(row.get("open")) or pd.isna(row.get("close")):
-                continue
-            try:
-                naive = datetime.fromisoformat(str(row["day"]).replace(" ", "T"))
-                ts = naive.replace(tzinfo=_CN_TZ).astimezone(timezone.utc)
-            except Exception:  # noqa: BLE001
-                continue
-            try:
-                bars.append(BarModel(
-                    market="ashare",
-                    symbol=symbol,
-                    ts=ts,
-                    open=Decimal(str(row["open"])),
-                    high=Decimal(str(row["high"])),
-                    low=Decimal(str(row["low"])),
-                    close=Decimal(str(row["close"])),
-                    volume=int(float(row["volume"])),
-                    interval=interval,
-                ))
-            except Exception:  # noqa: BLE001
-                continue
 
         if not bars:
             return
@@ -304,9 +271,9 @@ class BarPoller:
 # 独立入口 (collector lifespan 调用)
 # ------------------------------------------------------------------
 
-async def run_bar_poller(repo: BarRepo, redis_cache: RedisCache) -> None:
+async def run_bar_poller(repo: BarRepo, redis_cache: RedisCache, adapter) -> None:
     """collector lifespan 中作为 asyncio task 启动."""
-    poller = BarPoller(repo, redis_cache)
+    poller = BarPoller(repo, redis_cache, adapter)
     try:
         await poller.run()
     except asyncio.CancelledError:

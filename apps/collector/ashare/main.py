@@ -199,7 +199,7 @@ async def lifespan(app: FastAPI):
     # === A 股按需 K 线轮询 (SSE 订阅驱动 + 大盘默认) ===
     from apps.collector.ashare.bar_poller import run_bar_poller
     _poller_task = asyncio.create_task(
-        run_bar_poller(bar_repo, redis_cache),
+        run_bar_poller(bar_repo, redis_cache, registry.get("ashare")),
         name="ashare.bar_poller",
     )
 
