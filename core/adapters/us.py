@@ -248,6 +248,66 @@ class USAdapter:
         )
         return out
 
+    async def fetch_history_tf(
+        self, symbol: str, interval: str, start: datetime, end: datetime,
+    ) -> list[Bar]:
+        """按 interval 源头直拉非日线历史(冷启动种子用)。
+
+        Alpaca 各 timeframe 都能回溯到 2020(实测周/月/60m/4h 均可)。
+        intraday(60m/4h)出口 +interval 转 close(雷区3);周/月对齐自然周期直通。
+        仅主源(Alpaca)路径;未配置则抛 AdapterError。
+        """
+        if not self.has_primary:
+            raise AdapterError("alpaca not configured for fetch_history_tf", source="us")
+        return await asyncio.to_thread(self._fetch_history_tf_alpaca, symbol, interval, start, end)
+
+    def _fetch_history_tf_alpaca(
+        self, symbol: str, interval: str, start: datetime, end: datetime,
+    ) -> list[Bar]:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+
+        tf_map = {
+            "1wk": TimeFrame(1, TimeFrameUnit.Week),
+            "1mo": TimeFrame(1, TimeFrameUnit.Month),
+            "60m": TimeFrame(1, TimeFrameUnit.Hour),
+            "4h":  TimeFrame(4, TimeFrameUnit.Hour),
+        }
+        if interval not in tf_map:
+            raise ValueError(f"unsupported interval for fetch_history_tf: {interval}")
+
+        now = datetime.now(timezone.utc)
+        end_safe = min(end, now - timedelta(minutes=20))
+        client = StockHistoricalDataClient(self.api_key, self.secret)
+        yf_symbol = _to_yfinance_ticker(symbol)
+        req = StockBarsRequest(
+            symbol_or_symbols=yf_symbol, timeframe=tf_map[interval],
+            start=start, end=end_safe, feed="sip", adjustment="all",
+        )
+        resp = client.get_stock_bars(req)
+        raw_bars = resp.data.get(yf_symbol, [])
+        # intraday(60m/4h)Alpaca 返回 START → +interval 转 close(雷区3);周/月直通
+        _shift = {"60m": timedelta(hours=1), "4h": timedelta(hours=4)}
+        ts_shift = _shift.get(interval, timedelta(0))
+        out: list[Bar] = []
+        for b in raw_bars:
+            ts = b.timestamp + ts_shift
+            if ts_shift and ts > end_safe:  # 未封口的残缺大桶丢弃
+                continue
+            out.append(Bar(
+                market="us", symbol=symbol, ts=ts,
+                open=Decimal(str(float(b.open))),
+                high=Decimal(str(float(b.high))),
+                low=Decimal(str(float(b.low))),
+                close=Decimal(str(float(b.close))),
+                volume=int(b.volume) if b.volume else 0,
+                interval=interval,
+            ))
+        log.info("us.history_tf.fetched", symbol=symbol, interval=interval,
+                 bars=len(out), earliest=out[0].ts.isoformat() if out else None)
+        return out
+
     async def _fetch_history_yfinance(self, symbol: str, start: datetime, end: datetime) -> list[Bar]:
         """1d 历史。ts 与 A 股雷区 3 对称: normalize 为该市场本地交易日 00:00 → UTC。
         美股本地 = America/New_York(自动跟夏/冬令时)。

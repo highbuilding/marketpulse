@@ -291,6 +291,47 @@ class AShareAdapter:
             rows.append(merged)
         return pd.DataFrame(rows)
 
+    async def fetch_history_tf(
+        self, symbol: str, interval: str, start: datetime, end: datetime,
+    ) -> list[Bar]:
+        """按 interval 源头直拉非日线历史(冷启动种子用)。
+
+        A 股可直拉: 1wk(stock_zh_a_hist period=weekly, em 源)、60m(fetch_intraday)。
+        1mo / 4h 无可靠直拉源 → 抛 NotImplementedError, 由 reconcile 决定是否聚合兜底
+        (规则: 仅周/月允许聚合兜底; 4h 拿不到就跳过)。
+        em 源不稳时 1wk 也可能抛异常 → 同样交给 reconcile 兜底。
+        """
+        if interval == "60m":
+            # 复用 intraday 直取(freq=60, sina, 仅当日窗口; 收盘后可能空/失败)
+            return await self.fetch_intraday(symbol, "60")
+        if interval == "1wk":
+            sd, ed = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
+            code = _to_sina_code(symbol)[2:]  # stock_zh_a_hist 用 6 位裸码
+            df = await ak_call(
+                "stock_zh_a_hist",
+                symbol=code, period="weekly", start_date=sd, end_date=ed, adjust="qfq",
+                caller=f"ashare.fetch_history_tf:{symbol}:1wk",
+            )
+            out: list[Bar] = []
+            for _, row in df.iterrows():
+                d = row.get("日期")
+                if d is None or pd.isna(d):
+                    continue
+                ts = datetime.combine(
+                    d if hasattr(d, "year") else datetime.fromisoformat(str(d)).date(),
+                    datetime.min.time(), tzinfo=_CN_TZ).astimezone(timezone.utc)
+                out.append(Bar(
+                    market="ashare", symbol=symbol, ts=ts,
+                    open=Decimal(str(row["开盘"])), high=Decimal(str(row["最高"])),
+                    low=Decimal(str(row["最低"])), close=Decimal(str(row["收盘"])),
+                    volume=int(float(row["成交量"])), interval="1wk",
+                    amount=_num(row, "成交额"),
+                ))
+            log.info("ashare.history_tf.fetched", symbol=symbol, interval="1wk",
+                     bars=len(out), earliest=out[0].ts.isoformat() if out else None)
+            return out
+        raise NotImplementedError(f"ashare fetch_history_tf 不支持直拉 {interval}")
+
     async def fetch_intraday(self, symbol: str, freq: str = "5") -> list[Bar]:
         """freq: '1'/'5'/'15'/'30'/'60' min。
 
