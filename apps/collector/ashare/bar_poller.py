@@ -20,6 +20,7 @@ import structlog
 
 from core.cache import keys
 from core.cache.redis_client import RedisCache
+from core.domain.core_symbols import CORE_SYMBOLS
 from core.domain.market_calendar import is_trading_day
 from core.domain.models import Bar as BarModel
 from core.persistence.duckdb_repo import BarRepo
@@ -41,6 +42,11 @@ _DEFAULT_SYMBOLS = (
     "000905.SH", "000852.SH", "000688.SH", "000016.SH",
 )
 _DEFAULT_INTERVALS = ("5m", "15m", "30m")
+
+
+def _build_core_active() -> set[str]:
+    """CORE 标的常驻轮询集: 仅直取 5m(15m/30m/60m/4h 由 5m 聚合派生)。"""
+    return {f"{s}:5m" for s in CORE_SYMBOLS["ashare"]}
 
 
 class BarPoller:
@@ -177,7 +183,11 @@ class BarPoller:
     # ------------------------------------------------------------------
 
     async def _scan_subscriptions(self) -> set[str]:
-        """扫描 Redis 活跃订阅 → 返回需要轮询的 task_key 集合."""
+        """采集集 = CORE 常驻(与前端订阅解耦)。仅 5m 直取, 15m/30m/60m/4h 由 5m 聚合。"""
+        return _build_core_active()
+
+    async def _scan_subscriptions_legacy(self) -> set[str]:
+        """[废弃] 旧的订阅驱动扫描, 保留备查。"""
         active: set[str] = set()
 
         # 大盘默认始终轮询
@@ -232,7 +242,7 @@ class BarPoller:
 
     def _is_default(self, task_key: str) -> bool:
         symbol, interval = task_key.split(":", 1)
-        return symbol in _DEFAULT_SYMBOLS and interval in _DEFAULT_INTERVALS
+        return symbol in CORE_SYMBOLS["ashare"] and interval == "5m"
 
     # ------------------------------------------------------------------
     # 主循环
