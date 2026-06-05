@@ -39,6 +39,9 @@ from core.integrations.response_eval import evaluate_response
 
 log = structlog.get_logger(__name__)
 _DEFAULT_TIMEOUT_S = float(os.getenv("AK_CALL_TIMEOUT_S", "25"))
+# ratelimit acquire 最长阻塞等待 (秒)。prod 大标的集(~300)首轮请求挤令牌桶,
+# 配合 poller 启动 jitter 错峰后通常排不到上限;仍可经 env 调大兜底。
+_RATELIMIT_MAX_WAIT_S = float(os.getenv("AK_RATELIMIT_MAX_WAIT_S", "30"))
 
 # func_name -> source 映射(用于 breaker/ratelimit 分发)
 # 不完整时默认 source="sina"(akshare 大多走 sina 系)
@@ -86,7 +89,8 @@ async def ak_call(
 
     # 二层: ratelimit acquire (blocking)
     if middleware is not None and source in middleware.ratelimits:
-        await middleware.ratelimits[source].acquire(blocking=True)
+        await middleware.ratelimits[source].acquire(
+            blocking=True, max_wait_s=_RATELIMIT_MAX_WAIT_S)
 
     # 三层: outlet acquire
     lease = None

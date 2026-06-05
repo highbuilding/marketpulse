@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 from datetime import datetime, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -23,12 +24,15 @@ from core.cache.redis_client import RedisCache
 from core.domain.core_symbols import CORE_SYMBOLS
 from core.domain.market_calendar import is_trading_day
 from core.domain.models import Bar as BarModel
+from core.domain.runtime_env import tiered_int
 from core.persistence.duckdb_repo import BarRepo
 
 log = structlog.get_logger(__name__)
 
-# 轮询间隔 (秒)
-POLL_INTERVAL_S = 10
+# 轮询间隔 (秒): 按 APP_ENV 分层。test(本地, 标的少)=10s;
+# prod(线上 ~300 标的)=90s 卡 sina 5/s 限频(雷区: 5m 每 5min 才收线, 90s 轮询不影响及时性)。
+# POLL_INTERVAL_S 环境变量可显式覆盖。
+POLL_INTERVAL_S = tiered_int("POLL_INTERVAL_S", test=10, prod=90)
 
 # 订阅扫描间隔 (秒)
 SCAN_INTERVAL_S = 30
@@ -127,15 +131,27 @@ class BarPoller:
         if not closed_bars:
             return
 
-        # DuckDB upsert(仅已收线根)
+        # 增量: 只写比 DB 现有最新根更晚的 bar, 砍写放大
+        # (stock_zh_a_minute 每次返回全部历史 ~1200+ 根, 全量 upsert 写放大严重)。
         try:
-            self._repo.insert_bars(closed_bars)
+            existing = self._repo.fetch_history_paged(
+                "ashare", symbol, interval, before=None, limit=1)
+            last_ts = existing[-1].ts if existing else None
+        except Exception:  # noqa: BLE001
+            last_ts = None
+        fresh = [b for b in closed_bars if last_ts is None or b.ts > last_ts]
+        if not fresh:
+            return
+
+        # DuckDB upsert(仅新增已收线根)
+        try:
+            self._repo.insert_bars(fresh)
         except Exception as e:  # noqa: BLE001
             log.warning("bar_poller.db_write_failed",
                         symbol=symbol, interval=interval, error=str(e))
 
         # 发布最新已收线 bar 到 SSE 总线(final=true)
-        latest = closed_bars[-1]
+        latest = fresh[-1]
         payload = {
             "market": "ashare", "symbol": latest.symbol,
             "interval": latest.interval, "ts": latest.ts.isoformat(),
@@ -165,6 +181,12 @@ class BarPoller:
         """单标的轮询循环. 被 cancel 时干净退出."""
         key = self._task_key(symbol, interval)
         log.info("bar_poller.poll_start", symbol=symbol, interval=interval)
+        # 启动错峰: 首轮随机延迟 0~interval, 把 N 个并发 loop 的请求摊到整个周期,
+        # 避免所有标的节拍对齐 → 脉冲式打 sina 令牌桶 → 尾部标的 acquire 超时丢数据。
+        try:
+            await asyncio.sleep(random.uniform(0, POLL_INTERVAL_S))
+        except asyncio.CancelledError:
+            return
         while not self._stopped:
             try:
                 if is_trading_day("ashare"):

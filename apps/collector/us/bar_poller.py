@@ -16,11 +16,14 @@ from core.cache import keys
 from core.domain.core_symbols import core_symbols
 from core.domain.market_calendar import is_trading_day
 from core.domain.market_sessions import is_market_session_open
+from core.domain.runtime_env import tiered_int
 from apps.collector.jobs.aggregate_derived import aggregate_and_publish
 
 log = structlog.get_logger(__name__)
 
-POLL_INTERVAL_S = 60
+# 轮询间隔 (秒): 按 APP_ENV 分层。test=10s; prod=60s(Alpaca 限频宽松, ~100 标的串行)。
+# US_POLL_INTERVAL_S 环境变量可显式覆盖。
+POLL_INTERVAL_S = tiered_int("US_POLL_INTERVAL_S", test=10, prod=60)
 _POLL_INTERVALS = ("5m",)  # 只直取 5m; 15m/30m/60m/4h 由 5m 聚合派生
 _FREQ = {"5m": "5", "15m": "15", "30m": "30"}
 
