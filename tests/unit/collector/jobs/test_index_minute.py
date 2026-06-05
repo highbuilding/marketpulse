@@ -1,10 +1,25 @@
 import pytest
 import fakeredis.aioredis
 import pandas as pd
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from core.cache import keys
 from core.cache.redis_client import RedisCache
 from apps.collector.jobs.index_minute import refresh_one_index, INDEX_SYMBOLS
+
+_CN = ZoneInfo("Asia/Shanghai")
+
+
+def _today_bjt_at(hh: int, mm: int) -> str:
+    """生成今天 BJT 的 'YYYY-MM-DD HH:MM:00' 字符串。
+
+    refresh_one_index 只保留最近 2 天的点(now-2d cutoff), 用固定过去日期
+    会被滤空导致测试随时间腐烂, 故动态取今天。
+    """
+    now = datetime.now(_CN)
+    return now.replace(hour=hh, minute=mm, second=0, microsecond=0).strftime(
+        "%Y-%m-%d %H:%M:%S")
 
 
 @pytest.fixture
@@ -22,7 +37,7 @@ def test_index_symbols_covers_8_majors():
 
 async def test_refresh_one_index_writes_msgpack(cache, monkeypatch):
     fake_df = pd.DataFrame({
-        "day": ["2026-05-27 09:30:00", "2026-05-27 09:35:00"],
+        "day": [_today_bjt_at(9, 30), _today_bjt_at(9, 35)],
         "close": [3000.0, 3005.5],
         "volume": [12345, 23456],
     })
@@ -45,7 +60,7 @@ async def test_refresh_one_index_writes_msgpack(cache, monkeypatch):
 async def test_refresh_one_index_writes_prev_close(cache, monkeypatch):
     """传入 prev_close 应原样写入 payload, 给前端算今日涨跌幅。"""
     fake_df = pd.DataFrame({
-        "day": ["2026-05-28 09:35:00"],
+        "day": [_today_bjt_at(9, 35)],
         "close": [4099.95],
         "volume": [1000],
     })
@@ -80,7 +95,7 @@ async def test_refresh_one_index_handles_ak_failure(cache, monkeypatch):
 async def test_refresh_one_index_writes_market_extras(cache, monkeypatch):
     """传入 market_extras 应原样写入 payload (8 个 A 股指数共享同一份)。"""
     fake_df = pd.DataFrame({
-        "day": ["2026-05-28 14:30:00"],
+        "day": [_today_bjt_at(14, 30)],
         "close": [4099.95],
         "volume": [1000],
     })
