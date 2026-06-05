@@ -21,7 +21,7 @@ from apps.collector.jobs.aggregate_derived import aggregate_and_publish
 log = structlog.get_logger(__name__)
 
 POLL_INTERVAL_S = 60
-_POLL_INTERVALS = ("5m", "15m", "30m")
+_POLL_INTERVALS = ("5m",)  # 只直取 5m; 15m/30m/60m/4h 由 5m 聚合派生
 _FREQ = {"5m": "5", "15m": "15", "30m": "30"}
 
 
@@ -68,26 +68,11 @@ class UsBarPoller:
         if interval == "5m":
             await aggregate_and_publish(
                 self._repo, self._redis, "us", symbol,
-                targets=("60m", "4h"), now=datetime.now(timezone.utc))
+                targets=("15m", "30m", "60m", "4h"), now=datetime.now(timezone.utc))
 
     async def _scan_symbols(self) -> set[str]:
-        active: set[str] = set()
-        try:
-            cursor = 0
-            while True:
-                cursor, found = await self._redis._r.scan(  # noqa: SLF001
-                    cursor, match="state:subscribe:us:*", count=200)
-                for k in found:
-                    kk = k.decode() if isinstance(k, bytes) else k
-                    parts = kk.split(":")
-                    if len(parts) >= 4:
-                        active.add(parts[3])
-                if cursor == 0:
-                    break
-        except Exception as e:  # noqa: BLE001
-            log.warning("us_poller.scan_failed", error=str(e))
-        active.update(core_symbols("us"))   # 美股 baseline: 核心标的无条件轮询(不依赖订阅)
-        return active
+        """采集集 = CORE 常驻(与前端订阅解耦)。"""
+        return set(core_symbols("us"))
 
     async def run(self) -> None:
         log.info("us_bar_poller.started")
