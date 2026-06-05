@@ -8,7 +8,7 @@
 ## 0. 目标
 
 1. **标的集分层**:`APP_ENV` 选 test/prod 两套 CORE 字典。本地=test,线上=prod。
-2. **test 标的**:大盘指数 + 一批最热门(≈现有 CORE)。
+2. **test 标的**:每市场扩到 **30 个**(大盘指数 + 热门个股凑满 30;crypto 除外,仍 5 币)。
 3. **线上标的**:~400 —— A股沪深300 + 美股标普100 + 大盘指数。
 4. **数据清洗**:清空 A股+美股全部 bar,按新采集模型(5m+1d 直取/其余聚合)全重跑。crypto 保留。
 5. **部署流程**:test(本地)/ 线上 两套,固化成文档。
@@ -52,6 +52,15 @@ def core_symbols(market: str) -> list[str]:
 - 1d:低频 cron,无压力。
 - 美股 ~103:SIP 60s 轮询,Alpaca 限频宽松,压力小。
 - **决策**:`POLL_INTERVAL_S` 按 APP_ENV 取值(test=10,prod=90)。
+
+### 2.1 90s 轮询不影响分时图/进行态(已核实)
+三条链路独立,分时与进行态走 quote(10s)、与 bar_poller 的 5m 轮询无关:
+| 数据 | 驱动源 | 频率 | 受 90s 影响 |
+|---|---|---|---|
+| 分时图(时分线) | quote(intraday_line_writer 10s) | 10s | 否 |
+| 进行态 K线(final=false) | quote(quote_bar_ticker 10s) | 10s | 否 |
+| 5m 收线根(final=true) | bar_poller | prod 90s | 收线根晚 ~90s 入库 |
+- 唯一影响:一根 5m bar 收线后最多晚 ~90s 落库;这 90s 内进行态由 quote_bar_ticker 实时跳动填充,用户看图不空。分时图照常 10s 更新。
 
 ## 3. 数据清洗重跑
 
