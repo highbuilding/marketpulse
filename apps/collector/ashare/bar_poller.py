@@ -158,7 +158,7 @@ class BarPoller:
             from apps.collector.jobs.aggregate_derived import aggregate_and_publish
             await aggregate_and_publish(
                 self._repo, self._redis, "ashare", symbol,
-                targets=("60m", "4h"), now=now,
+                targets=("15m", "30m", "60m", "4h"), now=now,
             )
 
     async def _poll_loop(self, symbol: str, interval: str) -> None:
