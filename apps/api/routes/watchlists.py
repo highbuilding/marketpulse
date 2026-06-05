@@ -87,7 +87,13 @@ async def list_symbols(wl_id: int,
 async def _refill_new_symbol(symbol: str, redis_cache, watchlist) -> None:
     """新加自选: 发 refill 让对应市场 collector 立即拉该标的历史 bar。
     api 进程无 DuckDB(雷区6), 不能自己拉/扫, 必须经 refill 交给 collector。
-    覆盖信号周期 + 5m(详情页默认)。fire-and-forget, 失败只 log。"""
+    仅 CORE 名单内标的可触发(前端不可触发名单外采集)。fire-and-forget。"""
+    from core.domain.core_symbols import core_symbols
+    from core.domain.markets import infer_market
+    mkt = infer_market(symbol)
+    if symbol not in core_symbols(mkt):
+        log.info("watchlist.refill_skip_non_core", symbol=symbol, market=mkt)
+        return
     from apps.api.routes.symbols import _publish_refill_request
     days_map = {"5m": 30, "15m": 30, "30m": 60, "60m": 120, "4h": 365, "1d": 1825}
     for iv in ("5m", *SIGNAL_INTERVALS):
