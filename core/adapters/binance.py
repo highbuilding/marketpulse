@@ -242,5 +242,14 @@ class BinanceAdapter:
             r = await self._client.get("/api/v3/ping", timeout=3.0)
             r.raise_for_status()
             return HealthStatus(name="binance", state="ok")
+        except httpx.HTTPStatusError as e:
+            # 418(I'm a teapot, 反爬)/ 429(限频)是 Binance 对探针的限制性响应,
+            # 不代表数据源宕机 —— 实时 WS + backfill 仍在正常工作(走代理)。
+            # 不据此染灰, 报 ok(详情留痕便于排查)。data 通道真断会由熔断器/WS 重连日志反映。
+            code = e.response.status_code if e.response is not None else 0
+            if code in (418, 429):
+                log.debug("binance.health_ping_throttled", status=code)
+                return HealthStatus(name="binance", state="ok")
+            return HealthStatus(name="binance", state="degraded", detail=str(e))
         except Exception as e:  # noqa: BLE001
             return HealthStatus(name="binance", state="degraded", detail=str(e))

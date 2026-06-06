@@ -14,7 +14,7 @@ import { fetchHealth } from '@/lib/api'
 import { listWatchlists, listWatchlistSymbols } from '@/lib/watchlist_api'
 import { useActiveWatchlistId } from '@/lib/use_active_watchlist'
 import { isMarketOpenNow, inferMarket, type Market } from '@/lib/markets'
-import { useBarsHistory, mergeBarsAsc } from '@/lib/use_bars_history'
+import { useBarsHistory, mergeTail } from '@/lib/use_bars_history'
 import { useKlineStream } from '@/lib/use_kline_stream'
 import { KLineChart } from '@/components/KLineChart'
 import type { BarDTO, Interval } from '@/lib/types'
@@ -206,7 +206,7 @@ export default function HomePage() {
   const [chartIv, setChartIv] = useState<Interval>('5m')
   const hist = useBarsHistory(selected, chartIv, market, { enabled: true, poll: false })
   const streamBars = useKlineStream(selected, chartIv, true)
-  const displayBars = useMemo(() => mergeBarsAsc(hist.bars, streamBars), [hist.bars, streamBars])
+  const displayBars = useMemo(() => mergeTail(hist.bars, streamBars), [hist.bars, streamBars])
 
   // 信号: 首屏查当天(市场交易日)+ SSE 实时追加, merge 去重, bar_ts 降序
   const { data: signalsResp } = useSWR(`signals:${market}`,

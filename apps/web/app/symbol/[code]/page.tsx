@@ -15,7 +15,7 @@ import { listCDSignalsBySymbol } from '@/lib/cd_signals_api'
 import { CD_MARKER_INTERVALS, klineTabsForMarket } from '@/lib/intervals'
 import { inferMarket, isInTradingSession, isUsRegularSession } from '@/lib/markets'
 import { useKlineStream } from '@/lib/use_kline_stream'
-import { useBarsHistory, mergeBarsAsc } from '@/lib/use_bars_history'
+import { useBarsHistory, mergeTail } from '@/lib/use_bars_history'
 import type { BarDTO, Interval } from '@/lib/types'
 
 const EMPTY_BARS: BarDTO[] = []
@@ -74,7 +74,8 @@ export default function SymbolPage({ params }: { params: { code: string } }) {
 
   const displayBars: BarDTO[] = useMemo(() => {
     // 首屏历史(REST 500根)未到时不渲染 stream 单根, 消除切周期"先一根后一堆"闪烁
-    return hist.bars.length === 0 ? [] : mergeBarsAsc(hist.bars, streamBars)
+    // mergeTail: hist 稳定前缀 + streamBars 尾部覆盖, 避免每次 SSE tick 全量 sort
+    return hist.bars.length === 0 ? [] : mergeTail(hist.bars, streamBars)
   }, [hist.bars, streamBars])
 
   const { data: chipSummary, error: chipError, isLoading: chipLoading } = useSWR(

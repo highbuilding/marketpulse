@@ -184,8 +184,12 @@ async def lifespan(app: FastAPI):
     _ws_task = asyncio.create_task(ws_consume_loop(hub=_hub, redis=redis_cache), name="us.ws_consumer")
     _hub_task = asyncio.create_task(run_trade_hub(_hub), name="us.trade_hub")
     us_adapter = registry.get("us")
+    from core.domain.runtime_env import tiered_int as _tiered_int
+    # 冷启动让路 reconcile: poller 延迟启动, 避免与 reconcile(直拉 1d/60m/4h)并发叠加 Alpaca 压力。
+    _us_poller_delay = _tiered_int("BAR_POLLER_STARTUP_DELAY_S", test=45, prod=180)
     _poller_task = asyncio.create_task(
-        run_us_bar_poller(bar_repo, redis_cache, us_adapter), name="us.bar_poller")
+        run_us_bar_poller(bar_repo, redis_cache, us_adapter,
+                          startup_delay_s=_us_poller_delay), name="us.bar_poller")
     log.info("us_realtime.bootstrapped")
 
     # === 分时 90 天 purge cron ===

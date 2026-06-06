@@ -75,6 +75,15 @@ function fmtVolume(v: number): string {
   return v.toLocaleString()
 }
 
+// 重建 time→bar 映射 (crosshair 悬停反查那根 OHLCV)。原地清空复用同一 Map 引用。
+// 仅全量路径(setData)调用; 增量路径只 set 末根, 不走这里。
+function rebuildBarIndex(
+  m: Map<number, BarDTO>, bars: BarDTO[], interval: Interval, market: Market,
+): void {
+  m.clear()
+  for (const b of bars) m.set(toBarTime(b.ts, interval, market) as number, b)
+}
+
 interface Stats {
   last: number
   first: number
@@ -123,6 +132,9 @@ export function KLineChart({
   hasMoreRef.current = hasMore
   loadingMoreRef.current = loadingMore
   const intraday = INTRADAY.has(interval)
+  // crosshair 时间格式化器: 按 market memo 一次, hover 浮窗 + 建图 localization 共用,
+  // 避免鼠标移动每次重渲染都新建函数(hover 高频触发 setHoverBar)。
+  const crosshairFmt = useMemo(() => makeChartCrosshairFormatter(market), [market])
   // 悬停某根 K 线时显示该根 OHLCV(crosshair move 跟随)
   const [hoverBar, setHoverBar] = useState<BarDTO | null>(null)
   const barByTimeRef = useRef<Map<number, BarDTO>>(new Map())
@@ -220,6 +232,7 @@ export function KLineChart({
     if (len === 0) {
       candle.setData([])
       volume.setData([])
+      barByTimeRef.current = new Map()
     } else if (needsFull) {
       // 全量 setData
       const candleData: CandlestickData[] = bars.map((b) => ({
@@ -237,6 +250,8 @@ export function KLineChart({
         chartRef.current?.timeScale().fitContent()
         didFitRef.current = true
       }
+      // 全量路径才重建 time→bar 映射(O(n)); 增量路径只 set 末根(下方)
+      rebuildBarIndex(barByTimeRef.current, bars, interval, market)
     } else {
       // 增量: 只更新末根 (SSE tick/bar → 原地替换 或 追加一根)
       const last = bars[len - 1]
@@ -244,8 +259,10 @@ export function KLineChart({
       try {
         candle.update({ time, open: last.open, high: last.high, low: last.low, close: last.close } as CandlestickData)
         volume.update({ time, value: last.volume, color: last.close >= last.open ? '#22c55e44' : '#ef444444' } as HistogramData)
+        // 增量只动末根 → time→bar 映射 O(1) 更新, 不重建整个 Map
+        barByTimeRef.current.set(time as number, last)
       } catch {
-        // update 失败 (bar 不存在) → 回退 setData
+        // update 失败 (bar 不存在) → 回退 setData + 全量重建映射
         candle.setData(dedupAscByTime(bars.map((b) => ({
           time: toBarTime(b.ts, interval, market),
           open: b.open, high: b.high, low: b.low, close: b.close,
@@ -255,16 +272,13 @@ export function KLineChart({
           value: b.volume,
           color: b.close >= b.open ? '#22c55e44' : '#ef444444',
         }))))
+        rebuildBarIndex(barByTimeRef.current, bars, interval, market)
       }
     }
 
     prevLenRef.current = len
     prevFirstTsRef.current = firstTs
     prevKeyRef.current = key
-    // 重建 time→bar 映射(crosshair 悬停反查那根 OHLCV)
-    const m = new Map<number, BarDTO>()
-    for (const b of bars) m.set(toBarTime(b.ts, interval, market) as number, b)
-    barByTimeRef.current = m
   }, [bars, interval, market])
 
   // Effect 3: signals 变化 → setMarkers
@@ -337,7 +351,7 @@ export function KLineChart({
       <div ref={ref} className="w-full" />
       {hoverBar && (
         <div className="absolute top-2 right-2 z-10 pointer-events-none rounded-md border border-neutral-700 bg-neutral-900/90 px-3 py-2 text-xs font-mono leading-relaxed shadow-lg">
-          <div className="text-neutral-400 mb-1">{makeChartCrosshairFormatter(market)(toBarTime(hoverBar.ts, interval, market))}</div>
+          <div className="text-neutral-400 mb-1">{crosshairFmt(toBarTime(hoverBar.ts, interval, market))}</div>
           <div className="flex justify-between gap-4"><span className="text-neutral-500">开</span><span className="text-neutral-200">{fmtPrice(hoverBar.open)}</span></div>
           <div className="flex justify-between gap-4"><span className="text-neutral-500">高</span><span className="text-red-400">{fmtPrice(hoverBar.high)}</span></div>
           <div className="flex justify-between gap-4"><span className="text-neutral-500">低</span><span className="text-green-400">{fmtPrice(hoverBar.low)}</span></div>

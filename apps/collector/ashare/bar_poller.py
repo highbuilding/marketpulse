@@ -271,10 +271,20 @@ class BarPoller:
 # 独立入口 (collector lifespan 调用)
 # ------------------------------------------------------------------
 
-async def run_bar_poller(repo: BarRepo, redis_cache: RedisCache, adapter) -> None:
-    """collector lifespan 中作为 asyncio task 启动."""
+async def run_bar_poller(
+    repo: BarRepo, redis_cache: RedisCache, adapter, *, startup_delay_s: int = 0,
+) -> None:
+    """collector lifespan 中作为 asyncio task 启动。
+
+    startup_delay_s: 冷启动让路给 startup_reconcile —— reconcile 与 poller 都拉
+    同一个 fetch_intraday('5')/同一 sina 接口, 并发会 double sina 压力触发限频(456)。
+    延迟启动 poller, 让 reconcile 先把 5m 历史拉全, poller 再接管 live 收线轮询。
+    """
     poller = BarPoller(repo, redis_cache, adapter)
     try:
+        if startup_delay_s > 0:
+            log.info("bar_poller.startup_delay", seconds=startup_delay_s)
+            await asyncio.sleep(startup_delay_s)
         await poller.run()
     except asyncio.CancelledError:
         await poller.shutdown()

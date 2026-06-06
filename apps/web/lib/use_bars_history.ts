@@ -18,6 +18,33 @@ export function mergeBarsAsc(...groups: BarDTO[][]): BarDTO[] {
   return Array.from(m.values()).sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0))
 }
 
+// "稳定前缀 + 尾部覆盖" 合并: hist(升序去重)是 append-only 的稳定历史,
+// tail(实时尾部 / 最新页, 通常 1~few 根)只覆盖 hist 末尾少数几根。
+// 取 tail 最小 ts 为切点, hist 中早于切点的前缀**原样保留**(不参与 sort),
+// 只对 >= 切点的 hist 尾部 + tail 做小范围 mergeBarsAsc。
+//
+// 为何不直接 mergeBarsAsc(hist, tail): 那会把累积上万根的 hist 每次全量 Map+sort,
+// SSE 每秒 tick 一次就重算一次 → 滑动/实时越久越卡。本函数把每 tick 的代价从
+// O(n log n) 降到 O(k log k)(k = 尾部重叠根数, 通常个位数)。
+// 前提: hist 已由 useBarsHistory 保证升序去重(可二分切点)。
+export function mergeTail(hist: BarDTO[], tail: BarDTO[]): BarDTO[] {
+  if (tail.length === 0) return hist            // SSE 未推 → 零开销, 引用不变
+  if (hist.length === 0) return mergeBarsAsc(tail)
+  let cutoff = tail[0].ts
+  for (let i = 1; i < tail.length; i++) if (tail[i].ts < cutoff) cutoff = tail[i].ts
+  // 二分找 hist 中第一个 ts >= cutoff 的下标
+  let lo = 0, hi = hist.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (hist[mid].ts < cutoff) lo = mid + 1
+    else hi = mid
+  }
+  if (lo >= hist.length) return [...hist, ...mergeBarsAsc(tail)]  // tail 全在 hist 之后
+  const prefix = hist.slice(0, lo)              // 稳定前缀, 不参与 sort
+  const overlap = mergeBarsAsc(hist.slice(lo), tail)
+  return prefix.concat(overlap)
+}
+
 export interface BarsHistory {
   bars: BarDTO[]
   loading: boolean
@@ -70,7 +97,8 @@ export function useBarsHistory(
   // SWR 切 key 后 head.data 自动变 undefined(新 key 无缓存, 不跨 key 残留), 故切周期时
   // headBars 自然为空; 不需额外 key 守卫(之前加 olderKeyRef 守卫会因其滞后一帧误伤, 已回退)。
   const headBars = head.data?.bars ?? EMPTY
-  const bars = useMemo(() => mergeBarsAsc(safeOlder, headBars), [safeOlder, headBars])
+  // older(更早页, 稳定前缀)+ head(最新页, 尾部) → 稳定前缀合并, 避免每次全量 sort
+  const bars = useMemo(() => mergeTail(safeOlder, headBars), [safeOlder, headBars])
 
   const loadMore = useCallback(() => {
     if (!enabled || loadingRef.current || reachedFloor) return

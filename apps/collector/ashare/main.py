@@ -198,8 +198,13 @@ async def lifespan(app: FastAPI):
 
     # === A 股按需 K 线轮询 (SSE 订阅驱动 + 大盘默认) ===
     from apps.collector.ashare.bar_poller import run_bar_poller
+    from core.domain.runtime_env import tiered_int as _tiered_int
+    # 冷启动让路 reconcile: poller 延迟启动, 避免与 reconcile 并发同拉 5m 触发 sina 限频。
+    # test 标的少 reconcile 快(~30 标的); prod ~300 标的 reconcile 久, 延迟拉长。
+    _poller_delay = _tiered_int("BAR_POLLER_STARTUP_DELAY_S", test=45, prod=180)
     _poller_task = asyncio.create_task(
-        run_bar_poller(bar_repo, redis_cache, registry.get("ashare")),
+        run_bar_poller(bar_repo, redis_cache, registry.get("ashare"),
+                       startup_delay_s=_poller_delay),
         name="ashare.bar_poller",
     )
 

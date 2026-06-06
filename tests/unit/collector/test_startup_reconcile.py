@@ -21,8 +21,12 @@ def _mk_kline(*, tf_result=None, tf_exc=None):
 
 
 @pytest.mark.asyncio
-async def test_skips_when_data_current(monkeypatch):
-    """warm restart: 数据新鲜 → 不拉外部、不聚合、不直拉(避免 burst 打爆熔断器)。"""
+async def test_skips_fetch_when_data_current(monkeypatch):
+    """warm restart: 数据新鲜 → 不拉外部、不直拉(避免 burst 打爆熔断器)。
+
+    注: 派生聚合是本地 CPU + 幂等 upsert, 新逻辑每标的都跑一次(源为空则 noop),
+    不算外部调用, 故此处只断言"不拉外部"。
+    """
     repo = MagicMock()
     repo.fetch_last_ts_map.side_effect = lambda m, iv, syms: {"AAPL": NOW - timedelta(minutes=5)}
     kline, adapter = _mk_kline()
@@ -32,53 +36,62 @@ async def test_skips_when_data_current(monkeypatch):
     await run_startup_reconcile("us", repo, kline, ["AAPL"], now=NOW)
     kline.fetch_fresh_bars.assert_not_awaited()
     adapter.fetch_history_tf.assert_not_awaited()
-    agg.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_seed_direct_pull_all_intervals_no_agg(monkeypatch):
-    """空库种子: 1d + 5m/15m/30m + 60m/4h/1wk/1mo 全源头直拉成功 → 不聚合。"""
+async def test_ashare_seed_only_5m_1d_direct_rest_aggregated(monkeypatch):
+    """A股空库种子: 仅 5m + 1d 源头直取; 不走 TF 直拉; 末尾全量聚合派生周期。"""
     repo = MagicMock()
     repo.fetch_last_ts_map.side_effect = lambda m, iv, syms: {}
-    # 直拉返回非空(成功)
-    kline, adapter = _mk_kline(tf_result=[MagicMock()])
-    agg = AsyncMock()
-    monkeypatch.setattr("apps.collector.startup_reconcile.aggregate_derived_for_symbol", agg)
-    monkeypatch.setattr("apps.collector.startup_reconcile.asyncio.sleep", AsyncMock())
-    await run_startup_reconcile("us", repo, kline, ["AAPL"], now=NOW)
-    # 1d + 直取分钟走 fetch_fresh_bars
-    intervals = [c.kwargs["interval"] for c in kline.fetch_fresh_bars.await_args_list]
-    assert intervals[0] == "1d"
-    assert set(intervals) >= {"1d", "5m", "15m", "30m"}
-    # 60m/4h/1wk/1mo 走 adapter 直拉
-    tf_ivs = {c.args[1] for c in adapter.fetch_history_tf.await_args_list}
-    assert tf_ivs == {"60m", "4h", "1wk", "1mo"}
-    # 全直拉成功 → 不聚合
-    agg.assert_not_awaited()
-    repo.insert_bars.assert_called()
-
-
-@pytest.mark.asyncio
-async def test_seed_agg_fallback_only_for_week_month(monkeypatch):
-    """直拉失败: 仅 1wk/1mo 走聚合兜底; 60m/4h 拿不到就跳过(不聚合)。"""
-    repo = MagicMock()
-    repo.fetch_last_ts_map.side_effect = lambda m, iv, syms: {}
-    # 所有 fetch_history_tf 都抛(A股月线/4h em不稳 / 收盘后 60m 崩 的场景)
-    kline, adapter = _mk_kline(tf_exc=NotImplementedError("no direct"))
+    kline, adapter = _mk_kline()
     agg = AsyncMock()
     monkeypatch.setattr("apps.collector.startup_reconcile.aggregate_derived_for_symbol", agg)
     monkeypatch.setattr("apps.collector.startup_reconcile.asyncio.sleep", AsyncMock())
     await run_startup_reconcile("ashare", repo, kline, ["600519.SH"], now=NOW)
-    # 聚合兜底只针对周/月
+    # 直取只有 1d + 5m
+    intervals = [c.kwargs["interval"] for c in kline.fetch_fresh_bars.await_args_list]
+    assert intervals[0] == "1d"
+    assert set(intervals) == {"1d", "5m"}
+    # A股 direct_tf 为空 → 不走 adapter.fetch_history_tf
+    adapter.fetch_history_tf.assert_not_awaited()
+    # 末尾全量聚合: 15m/30m/60m/4h ← 5m, 1wk/1mo ← 1d
     agg.assert_awaited_once()
     kw = agg.await_args.kwargs
-    assert "window_1wk" in kw and "window_1mo" in kw
-    assert "window_60m" not in kw and "window_4h" not in kw  # 60m/4h 不兜底
+    assert all(kw[f"window_{iv}"] is None
+               for iv in ("15m", "30m", "60m", "4h", "1wk", "1mo"))
+
+
+@pytest.mark.asyncio
+async def test_us_seed_only_5m_1d_direct_rest_aggregated(monkeypatch):
+    """美股空库种子(2026-06-06 回退后 = 与 A股统一): 仅 5m+1d 直取; 不走 TF 直拉;
+    末尾全量聚合 15m/30m/60m/4h ← 5m, 1wk/1mo ← 1d(富途口径单锚点)。
+
+    回退原因: Alpaca 60m/4h 整点切桶, 无视美股 09:30 开盘(4h 盘前盘中混一根),
+    锚点不符看盘习惯且与聚合双写 → 改为从 5m 聚合。
+    """
+    repo = MagicMock()
+    repo.fetch_last_ts_map.side_effect = lambda m, iv, syms: {}
+    kline, adapter = _mk_kline()
+    agg = AsyncMock()
+    monkeypatch.setattr("apps.collector.startup_reconcile.aggregate_derived_for_symbol", agg)
+    monkeypatch.setattr("apps.collector.startup_reconcile.asyncio.sleep", AsyncMock())
+    await run_startup_reconcile("us", repo, kline, ["AAPL"], now=NOW)
+    # 直取只有 1d + 5m
+    intervals = [c.kwargs["interval"] for c in kline.fetch_fresh_bars.await_args_list]
+    assert intervals[0] == "1d"
+    assert set(intervals) == {"1d", "5m"}
+    # 美股 direct_tf 现为空 → 不走 adapter.fetch_history_tf(与 A股一致)
+    adapter.fetch_history_tf.assert_not_awaited()
+    # 末尾全量聚合: 15m/30m/60m/4h ← 5m, 1wk/1mo ← 1d
+    agg.assert_awaited_once()
+    kw = agg.await_args.kwargs
+    assert all(kw[f"window_{iv}"] is None
+               for iv in ("15m", "30m", "60m", "4h", "1wk", "1mo"))
 
 
 @pytest.mark.asyncio
 async def test_fetches_1d_only_when_intraday_current_but_daily_stale(monkeypatch):
-    """日线陈旧但 intraday/tf 都新鲜: 只补 1d, 不重拉其他。"""
+    """日线陈旧但 5m/TF 都新鲜: 只补 1d, 不重拉分钟/TF(聚合仍跑, 幂等)。"""
     repo = MagicMock()
 
     def last_map(m, iv, syms):

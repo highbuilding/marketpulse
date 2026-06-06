@@ -20,6 +20,10 @@ Requires-Dist: pydantic>=2.9
 Requires-Dist: pydantic-settings>=2.6
 Requires-Dist: pyyaml>=6.0
 Requires-Dist: tenacity>=8.1
+Requires-Dist: redis>=5.0
+Requires-Dist: ormsgpack>=1.4
+Requires-Dist: honcho>=1.1
+Requires-Dist: exchange-calendars>=4.5
 Provides-Extra: dev
 Requires-Dist: pytest>=8.3; extra == "dev"
 Requires-Dist: pytest-asyncio>=0.24; extra == "dev"
@@ -27,3 +31,5 @@ Requires-Dist: pytest-mock>=3.14; extra == "dev"
 Requires-Dist: respx>=0.21; extra == "dev"
 Requires-Dist: ruff>=0.7; extra == "dev"
 Requires-Dist: mypy>=1.13; extra == "dev"
+Requires-Dist: fakeredis>=2.20; extra == "dev"
+Requires-Dist: lupa>=2.0; extra == "dev"

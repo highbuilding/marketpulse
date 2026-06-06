@@ -15,6 +15,10 @@ pydantic>=2.9
 pydantic-settings>=2.6
 pyyaml>=6.0
 tenacity>=8.1
+redis>=5.0
+ormsgpack>=1.4
+honcho>=1.1
+exchange-calendars>=4.5
 
 [dev]
 pytest>=8.3
@@ -23,3 +27,5 @@ pytest-mock>=3.14
 respx>=0.21
 ruff>=0.7
 mypy>=1.13
+fakeredis>=2.20
+lupa>=2.0

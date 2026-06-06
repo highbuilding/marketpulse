@@ -90,5 +90,14 @@ class UsBarPoller:
             await asyncio.sleep(POLL_INTERVAL_S)
 
 
-async def run_us_bar_poller(repo, redis, adapter) -> None:
+async def run_us_bar_poller(repo, redis, adapter, *, startup_delay_s: int = 0) -> None:
+    """collector lifespan 启动。
+
+    startup_delay_s: 冷启动让路给 startup_reconcile —— reconcile 直拉 1d/60m/4h +
+    poller 拉 5m 都打 Alpaca, 并发叠加增大限频/连接压力。延迟启动 poller, 让 reconcile
+    先把历史拉全, poller 再接管 live 收线轮询。
+    """
+    if startup_delay_s > 0:
+        log.info("us_bar_poller.startup_delay", seconds=startup_delay_s)
+        await asyncio.sleep(startup_delay_s)
     await UsBarPoller(repo, redis, adapter).run()
