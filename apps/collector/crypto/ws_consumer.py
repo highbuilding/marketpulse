@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -43,6 +44,12 @@ _TTL_MAP = {
     "5m": 600, "15m": 1800, "30m": 3600, "60m": 7200,
     "4h": 28800, "1d": 172800, "1wk": 1209600, "1mo": 5184000,
 }
+
+# 数据活性看门狗: 连续 N 秒收不到任何帧 → 判定"假活连接"(连上却不产数据,
+# 代理链路不稳时常见),主动断开重连,不再空转到库层 ping timeout(~16min)。
+# combined-stream 正常每秒都推进行中更新, 60s 静默远超正常间隔、远小于假活窗口。
+# CRYPTO_WS_IDLE_TIMEOUT_S 环境变量可覆盖。
+WS_IDLE_TIMEOUT_S = int(os.getenv("CRYPTO_WS_IDLE_TIMEOUT_S", "60"))
 
 
 def _build_streams_url() -> str:
@@ -192,7 +199,15 @@ async def consume_loop(
             ) as ws:
                 log.info("ws.connected")
                 backoff = 1.0
-                async for raw in ws:
+                while True:
+                    # 活性看门狗: 超时收不到帧 → 假活连接, 主动重连(不空转到 ping timeout)
+                    try:
+                        raw = await asyncio.wait_for(
+                            ws.recv(), timeout=WS_IDLE_TIMEOUT_S
+                        )
+                    except asyncio.TimeoutError:
+                        log.warning("ws.idle_reconnect", idle_s=WS_IDLE_TIMEOUT_S)
+                        break  # 退出内层 → 退出 async with(关坏连接)→ 外层重连
                     try:
                         msg = json.loads(raw)
                         await handle_message(

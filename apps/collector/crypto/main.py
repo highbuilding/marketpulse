@@ -76,6 +76,17 @@ async def lifespan(app: FastAPI):
         name="crypto.ws_consumer",
     )
 
+    # === REST 收线兜底 poller ===
+    # WS 代理链路不稳会出现"假活连接"漏收低频 final(4h/1d/60m), poller 周期性
+    # refresh_recent 补齐。startup_delay 让路给上面的 initial backfill(避免并发挤代理)。
+    from apps.collector.crypto.bar_poller import run_crypto_bar_poller
+    poller_task = asyncio.create_task(
+        run_crypto_bar_poller(
+            adapter, bar_repo, redis_bars, startup_delay_s=60,
+        ),
+        name="crypto.bar_poller",
+    )
+
     # === APScheduler: 每日兜底回填 + CD 信号扫描 ===
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
     from apscheduler.triggers.cron import CronTrigger
@@ -110,6 +121,7 @@ async def lifespan(app: FastAPI):
         adapter="binance",
         backfill_task="crypto.backfill_initial",
         ws_task="crypto.ws_consumer",
+        poller_task="crypto.bar_poller",
         cron="04:00 UTC daily",
     )
 
@@ -119,8 +131,9 @@ async def lifespan(app: FastAPI):
         sched.shutdown(wait=False)
         ws_task.cancel()
         backfill_task.cancel()
+        poller_task.cancel()
         scan_consumer_task.cancel()
-        for t in (ws_task, backfill_task, scan_consumer_task):
+        for t in (ws_task, backfill_task, poller_task, scan_consumer_task):
             try:
                 await t
             except (asyncio.CancelledError, Exception):
