@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime, timedelta, timezone
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
@@ -25,6 +27,8 @@ from core.services.symbol_directory_service import SymbolDirectoryService
 from core.services.volume_indicator_service import VolumeIndicatorService
 
 router = APIRouter(prefix="/api/symbols", tags=["symbols"])
+
+log = structlog.get_logger(__name__)
 
 _US_TICKER_RE = re.compile(r"^[A-Z]{1,5}(\.[A-Z])?$")
 
@@ -282,11 +286,23 @@ async def bars_history(
     params = {"symbol": symbol, "interval": interval, "limit": limit}
     if before:
         params["before"] = before
+    t0 = time.monotonic()
     try:
         resp = await client.get(f"{base}/internal/bars/history", params=params)
         resp.raise_for_status()
         payload = resp.json()
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        # 不再静默吞: 区分超时(collector 满载/慢查询)与其他失败, 记录耗时 + 目标,
+        # 便于事后定位"为什么 stale"。超时类名含 Timeout(httpx.*TimeoutException 系列)。
+        elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+        etype = type(e).__name__
+        if "Timeout" in etype:
+            log.warning("api.bars_forward_timeout", symbol=symbol, interval=interval,
+                        market=market, limit=limit, elapsed_ms=elapsed_ms, base=base)
+        else:
+            log.warning("api.bars_forward_failed", symbol=symbol, interval=interval,
+                        market=market, elapsed_ms=elapsed_ms,
+                        error=str(e), error_type=etype)
         return BarsResponse(
             symbol=symbol, interval=interval, bars=[],
             meta=BarsResponseMeta(stale=True, reason="collector_unreachable"),
@@ -345,7 +361,9 @@ async def intraday_line(
         body = resp.json()
         body["realtime"] = realtime
         return body
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        log.warning("api.intraday_forward_failed", symbol=symbol, market=market,
+                    error=str(e), error_type=type(e).__name__)
         return {"symbol": symbol, "points": [],
                 "realtime": realtime,
                 "meta": {"stale": True, "reason": "collector_unreachable"}}

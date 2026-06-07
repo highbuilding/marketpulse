@@ -100,7 +100,10 @@ def get_collector_http_client():
     localhost collector 调用绝不能经代理。
     """
     import httpx
-    return httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=2.0), trust_env=False)
+    # read 超时 15s: 历史查询(limit≤2000)在 collector 满载时可能较慢; 配合
+    # collector 侧 to_thread(不冻结事件循环)+ 慢查询日志, 给开盘极端场景留余量。
+    # connect 2s 不变: 连不上要快速失败, 不拖前端。
+    return httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=2.0), trust_env=False)
 
 
 @lru_cache(maxsize=1)
