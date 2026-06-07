@@ -25,6 +25,12 @@ class BarRepo:
     def _conn(self):
         return duckdb.connect(self.db_path, read_only=self.read_only)
 
+    # 读写锁分离(2026-06-08): self._lock 仅保护写(insert_bars/init), 读方法不持锁。
+    # 依据 DuckDB 1.5.2 同进程实测: 多个 RW 连接(含长持写连接 + 短生命周期读连接)
+    # 共存安全, 无 Conflicting lock(read_only 连接才冲突, 故读仍用默认 RW _conn)。
+    # 收益: 开盘 bar_poller 高频 insert 持锁时, 历史查询(/internal/bars/history)
+    # 不再排队等写锁。配合 base.py 的 to_thread(查询移出事件循环), 根治满载慢查询。
+
     def init(self) -> None:
         if self.read_only:
             return
@@ -105,7 +111,7 @@ class BarRepo:
         self, market: str, symbol: str,
         start: datetime, end: datetime, interval: str = "1d",
     ) -> list[Bar]:
-        with self._lock, self._conn() as c:
+        with self._conn() as c:  # 读不持锁(读写分离)
             cur = c.execute("""
                 SELECT ts, interval, open, high, low, close, volume,
                        amount, turnover, outstanding_share
@@ -133,7 +139,7 @@ class BarRepo:
             before.astimezone(timezone.utc).replace(tzinfo=None)
             if before is not None else None
         )
-        with self._lock, self._conn() as c:
+        with self._conn() as c:  # 读不持锁(读写分离)
             cur = c.execute("""
                 SELECT ts, interval, open, high, low, close, volume,
                        amount, turnover, outstanding_share
@@ -157,7 +163,7 @@ class BarRepo:
         if not symbols:
             return {}
         placeholders = ",".join(["?"] * len(symbols))
-        with self._lock, self._conn() as c:
+        with self._conn() as c:  # 读不持锁(读写分离)
             rows = c.execute(f"""
                 SELECT symbol, MAX(ts) FROM bars
                 WHERE market=? AND interval=?
@@ -173,7 +179,7 @@ class BarRepo:
         if not symbols:
             return {}
         placeholders = ",".join(["?"] * len(symbols))
-        with self._lock, self._conn() as c:
+        with self._conn() as c:  # 读不持锁(读写分离)
             rows = c.execute(f"""
                 SELECT symbol, MIN(ts) FROM bars
                 WHERE market=? AND interval=?

@@ -110,9 +110,19 @@ def attach_bars_history_route(app: FastAPI, get_repo, market: str) -> None:
             return {"symbol": symbol, "interval": interval, "bars": [],
                     "meta": {"stale": True, "reason": "repo_not_ready"}}
         try:
-            bars = repo.fetch_history_paged(
+            import time
+            t0 = time.monotonic()
+            # to_thread: 同步 DuckDB 查询移出事件循环线程, 开盘 bar_poller 满载时
+            # 不再冻结整个事件循环(health/SSE/其他转发照常响应)。
+            bars = await asyncio.to_thread(
+                repo.fetch_history_paged,
                 market, symbol, interval, before=before_dt, limit=limit,
             )
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            if elapsed_ms > 1000:  # 慢查询告警: 开盘满载/大 limit 时浮现
+                log.warning("collector.bars_history_slow",
+                            market=market, symbol=symbol, interval=interval,
+                            limit=limit, elapsed_ms=round(elapsed_ms, 1))
         except Exception as e:  # noqa: BLE001
             log.warning("collector.bars_history_failed",
                         market=market, symbol=symbol, interval=interval,
@@ -172,7 +182,10 @@ def attach_intraday_route(
         if get_bar_repo is not None:
             try:
                 br = get_bar_repo()
-                daily = br.fetch_history_paged(market, symbol, "1d", before=None, limit=1)
+                daily = await asyncio.to_thread(
+                    br.fetch_history_paged, market, symbol, "1d",
+                    before=None, limit=1,
+                )
                 if daily:
                     prev_close = float(daily[-1].close)
             except Exception:  # noqa: BLE001
