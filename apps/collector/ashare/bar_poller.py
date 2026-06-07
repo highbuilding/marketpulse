@@ -20,6 +20,7 @@ from core.cache import keys
 from core.cache.redis_client import RedisCache
 from core.domain.core_symbols import CORE_SYMBOLS
 from core.domain.market_calendar import is_trading_day
+from core.domain.market_sessions import is_market_session_open
 from core.domain.runtime_env import tiered_int
 from core.persistence.duckdb_repo import BarRepo
 
@@ -156,7 +157,11 @@ class BarPoller:
             return
         while not self._stopped:
             try:
-                if is_trading_day("ashare"):
+                # 双门控: 交易日 + 交易时段。盘前/盘后/午休停 live 轮询 —— 非交易时段
+                # sina 5m 不会变(还是上一收盘值), 空转纯浪费且吃满 CPU, 会饿死同进程
+                # 的 DuckDB 历史查询(/internal/bars/history)→ api 转发超时。对齐美股
+                # us/bar_poller.py 的 is_trading_day + is_market_session_open。
+                if is_trading_day("ashare") and is_market_session_open("ashare"):
                     await self._poll_one(symbol, interval)
                 await asyncio.sleep(POLL_INTERVAL_S)
             except asyncio.CancelledError:
