@@ -42,12 +42,21 @@ def install_async_exception_handler() -> None:
     """兜住 asyncio.create_task 抛出的异常, 强制走 root logger 落 errors.log."""
     def _handler(loop, context):
         msg = context.get("exception") or context.get("message")
-        log.error("asyncio.unhandled_exception",
-                  message=context.get("message"),
-                  exception_type=type(context.get("exception")).__name__
-                      if context.get("exception") else None,
-                  error=str(msg) if msg else None,
-                  task=str(context.get("task")) if context.get("task") else None)
+        exc = context.get("exception")
+        # websockets 16.0 自身 bug: 异常关闭路径的 connection_lost 回调里调用了
+        # 不存在的 ClientConnection.recv_messages → AttributeError。纯噪音,
+        # 不影响主循环重连(ws_consumer 的活性看门狗 + 外层退避已处理)。降级 debug,
+        # 避免污染 errors.log。
+        is_ws_noise = (
+            isinstance(exc, AttributeError)
+            and "recv_messages" in str(msg)
+        )
+        log_fn = log.debug if is_ws_noise else log.error
+        log_fn("asyncio.unhandled_exception",
+               message=context.get("message"),
+               exception_type=type(exc).__name__ if exc else None,
+               error=str(msg) if msg else None,
+               task=str(context.get("task")) if context.get("task") else None)
     asyncio.get_event_loop().set_exception_handler(_handler)
 
 
