@@ -104,6 +104,22 @@ export interface Watchlist {
   created_at: string
 }
 
+export interface Position {
+  id: number
+  market: Market
+  symbol: string
+  name: string | null
+  quantity: number
+  cost_price: number | null
+  opened_at: string | null
+  strategy_tag: string | null
+  entry_reason: string | null
+  status: string
+  note: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
 export interface SymbolProfile {
   symbol: string
   name: string | null

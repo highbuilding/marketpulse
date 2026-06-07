@@ -13,6 +13,13 @@ async def test_init_creates_tables(tmp_path):
         cur = await db.execute("SELECT name FROM sqlite_master WHERE type='table'")
         names = {row[0] for row in await cur.fetchall()}
     assert "health_log" in names and "app_state" in names
+    assert "positions" in names
+    assert "theme_snapshots" in names
+    assert "theme_states" in names
+    assert "theme_memberships" in names
+    assert "market_events" in names
+    assert "trade_candidates" in names
+    assert "ai_trade_opinions" in names
 
 
 @pytest.mark.asyncio
