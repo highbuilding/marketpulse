@@ -156,3 +156,147 @@ CREATE TABLE IF NOT EXISTS market_amount_baseline (
 );
 CREATE INDEX IF NOT EXISTS idx_baseline_market_date
   ON market_amount_baseline(market, trading_date DESC);
+
+-- Plan: A 股 AI 盘中决策助手
+-- 用户手动维护持仓/观察记录。删除用 status='closed' 软删除, 保留复盘依据。
+CREATE TABLE IF NOT EXISTS positions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  market TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  name TEXT,
+  quantity INTEGER NOT NULL DEFAULT 0,
+  cost_price REAL,
+  opened_at TIMESTAMP,
+  strategy_tag TEXT,
+  entry_reason TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  note TEXT,
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  UNIQUE(market, symbol)
+);
+CREATE INDEX IF NOT EXISTS idx_positions_market_status
+  ON positions(market, status, updated_at DESC);
+
+-- 题材/板块快照: collector 写, API/Web 只读。
+CREATE TABLE IF NOT EXISTS theme_snapshots (
+  market TEXT NOT NULL,
+  theme_code TEXT NOT NULL,
+  theme_name TEXT NOT NULL,
+  classification TEXT NOT NULL,
+  ts TIMESTAMP NOT NULL,
+  pct_change REAL,
+  pct_change_5m REAL,
+  amount REAL,
+  amount_ratio REAL,
+  up_ratio REAL,
+  limit_up_count INTEGER,
+  member_count INTEGER,
+  leader_symbols_json TEXT NOT NULL DEFAULT '[]',
+  divergence_score REAL,
+  support_score REAL,
+  raw_json TEXT NOT NULL DEFAULT '{}',
+  updated_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (market, theme_code, ts)
+);
+CREATE INDEX IF NOT EXISTS idx_theme_snapshots_market_ts
+  ON theme_snapshots(market, ts DESC);
+
+-- 题材状态机当前结果。
+CREATE TABLE IF NOT EXISTS theme_states (
+  market TEXT NOT NULL,
+  theme_code TEXT NOT NULL,
+  theme_name TEXT NOT NULL,
+  state TEXT NOT NULL,
+  score REAL,
+  reason TEXT,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  updated_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (market, theme_code)
+);
+CREATE INDEX IF NOT EXISTS idx_theme_states_market_state
+  ON theme_states(market, state, updated_at DESC);
+
+-- 题材成分股角色。role 由 RoleResolver 生成。
+CREATE TABLE IF NOT EXISTS theme_memberships (
+  market TEXT NOT NULL,
+  theme_code TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  name TEXT,
+  role TEXT,
+  pct_change REAL,
+  amount REAL,
+  volume_ratio REAL,
+  is_above_intraday_avg INTEGER,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  updated_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (market, theme_code, symbol)
+);
+CREATE INDEX IF NOT EXISTS idx_theme_memberships_symbol
+  ON theme_memberships(market, symbol);
+
+-- 程序生成的事实事件, 不放 AI 长结论。
+CREATE TABLE IF NOT EXISTS market_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  market TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  subject_type TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  summary TEXT,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  occurred_at TIMESTAMP NOT NULL,
+  created_at TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_market_events_market_time
+  ON market_events(market, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_market_events_subject
+  ON market_events(market, subject_type, subject_id, occurred_at DESC);
+
+-- 策略规则生成候选, AI 基于候选和证据给观察结论。
+CREATE TABLE IF NOT EXISTS trade_candidates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  market TEXT NOT NULL,
+  candidate_key TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  name TEXT,
+  theme_code TEXT,
+  theme_name TEXT,
+  candidate_type TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  score REAL NOT NULL,
+  reasons_json TEXT NOT NULL DEFAULT '[]',
+  risks_json TEXT NOT NULL DEFAULT '[]',
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'active',
+  generated_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  UNIQUE(market, candidate_key)
+);
+CREATE INDEX IF NOT EXISTS idx_trade_candidates_market_status
+  ON trade_candidates(market, status, score DESC, generated_at DESC);
+
+-- AI 交易观察结论。不是下单指令, 只提供结论和证据。
+CREATE TABLE IF NOT EXISTS ai_trade_opinions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  market TEXT NOT NULL,
+  opinion_key TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  target_name TEXT,
+  decision TEXT NOT NULL,
+  confidence REAL,
+  title TEXT NOT NULL,
+  thesis TEXT NOT NULL,
+  reasons_json TEXT NOT NULL DEFAULT '[]',
+  risks_json TEXT NOT NULL DEFAULT '[]',
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  source_candidate_id INTEGER,
+  generated_at TIMESTAMP NOT NULL,
+  expires_at TIMESTAMP,
+  status TEXT NOT NULL DEFAULT 'active',
+  UNIQUE(market, opinion_key)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_trade_opinions_market_status
+  ON ai_trade_opinions(market, status, generated_at DESC);

@@ -2,7 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 Market = Literal["ashare", "hk", "us", "crypto"]
 HealthState = Literal["ok", "degraded", "disabled", "down"]
@@ -129,3 +129,130 @@ class ChipSummary:
     cost_70_low: float | None
     cost_70_high: float | None
     concentration_70: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class Position:
+    """用户手动维护的观察/持仓记录。"""
+    market: str
+    symbol: str
+    name: str | None = None
+    quantity: int = 0
+    cost_price: float | None = None
+    opened_at: datetime | None = None
+    strategy_tag: str | None = None
+    entry_reason: str | None = None
+    status: str = "active"
+    note: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ThemeSnapshot:
+    """题材/板块某一时点的摘要快照。"""
+    market: str
+    theme_code: str
+    theme_name: str
+    classification: str
+    ts: datetime
+    pct_change: float | None = None
+    pct_change_5m: float | None = None
+    amount: float | None = None
+    amount_ratio: float | None = None
+    up_ratio: float | None = None
+    limit_up_count: int | None = None
+    member_count: int | None = None
+    leader_symbols: list[str] | None = None
+    divergence_score: float | None = None
+    support_score: float | None = None
+    raw: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ThemeState:
+    """题材状态机当前结果。"""
+    market: str
+    theme_code: str
+    theme_name: str
+    state: str
+    score: float | None = None
+    reason: str | None = None
+    evidence: dict[str, Any] | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ThemeMembership:
+    """题材成分股及角色。"""
+    market: str
+    theme_code: str
+    symbol: str
+    name: str | None = None
+    role: str | None = None
+    pct_change: float | None = None
+    amount: float | None = None
+    volume_ratio: float | None = None
+    is_above_intraday_avg: bool | None = None
+    evidence: dict[str, Any] | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MarketEvent:
+    """程序生成的事实事件。"""
+    market: str
+    event_type: str
+    severity: str
+    subject_type: str
+    subject_id: str
+    title: str
+    summary: str | None
+    evidence: dict[str, Any]
+    occurred_at: datetime
+    created_at: datetime | None = None
+    id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TradeCandidate:
+    """策略规则生成的候选机会/风险。"""
+    market: str
+    candidate_key: str
+    symbol: str
+    candidate_type: str
+    decision: str
+    score: float
+    name: str | None = None
+    theme_code: str | None = None
+    theme_name: str | None = None
+    reasons: list[str] | None = None
+    risks: list[str] | None = None
+    evidence: dict[str, Any] | None = None
+    status: str = "active"
+    generated_at: datetime | None = None
+    updated_at: datetime | None = None
+    id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AITradeOpinion:
+    """AI 基于候选和证据生成的交易观察结论。"""
+    market: str
+    opinion_key: str
+    target_type: str
+    target_id: str
+    target_name: str | None
+    decision: str
+    confidence: float | None
+    title: str
+    thesis: str
+    reasons: list[str]
+    risks: list[str]
+    evidence: dict[str, Any]
+    source_candidate_id: int | None = None
+    generated_at: datetime | None = None
+    expires_at: datetime | None = None
+    status: str = "active"
+    id: int | None = None

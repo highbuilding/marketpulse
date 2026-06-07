@@ -11,10 +11,12 @@ from core.persistence.duckdb_repo import BarRepo
 from core.persistence.chip_repo import ChipRepo
 from core.persistence.fund_flow_repo import FundFlowRepo
 from core.persistence.notification_repo import NotificationRepo
+from core.persistence.position_repo import PositionRepo
 from core.persistence.signal_repo import SignalRepo
 from core.persistence.sqlite_repo import StateRepo
 from core.persistence.symbol_directory_repo import SymbolDirectoryRepo
 from core.persistence.watchlist_repo import WatchlistRepo
+from core.positions.service import PositionService
 from core.services.fund_flow_service import FundFlowService
 from core.services.chip_service import ChipService
 from core.services.ai_market_service import AIMarketService
@@ -127,6 +129,16 @@ def get_watchlist_repo() -> WatchlistRepo:
 @lru_cache(maxsize=1)
 def get_watchlist_service() -> WatchlistService:
     return WatchlistService(get_watchlist_repo())
+
+
+@lru_cache(maxsize=1)
+def get_position_repo() -> PositionRepo:
+    return PositionRepo(str(_DATA / "state.db"))
+
+
+@lru_cache(maxsize=1)
+def get_position_service() -> PositionService:
+    return PositionService(get_position_repo())
 
 
 @lru_cache(maxsize=1)

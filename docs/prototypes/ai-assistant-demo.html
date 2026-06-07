@@ -1,0 +1,662 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MarketPulse 行情 + AI 助手原型</title>
+  <style>
+    :root {
+      --bg: #f5f6f8; --bg2: #ffffff; --bg3: #f0f1f3; --bg4: #e8eaef;
+      --border: #e5e7eb; --border2: #d1d5db;
+      --text: #111827; --text2: #6b7280; --text3: #9ca3af;
+      --red: #dc2626; --green: #059669; --yellow: #d97706; --blue: #2563eb;
+      --accent: #4f46e5; --accent-bg: #eef2ff;
+      --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+    }
+    [data-theme="dark"] {
+      --bg: #0f1117; --bg2: #161822; --bg3: #1e2130; --bg4: #242838;
+      --border: #2a2d3a; --border2: #363b4a;
+      --text: #e2e4e9; --text2: #a3a7bb; --text3: #62687c;
+      --red: #f87171; --green: #34d399; --yellow: #fbbf24; --blue: #60a5fa;
+      --accent: #818cf8; --accent-bg: rgba(99,102,241,0.12);
+      --shadow: 0 1px 3px rgba(0,0,0,0.28);
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+      font-size: 13px; line-height: 1.5; overflow: hidden;
+    }
+    button, input, textarea { font: inherit; }
+    button { cursor: pointer; }
+    .app { height: 100vh; display: flex; min-width: 1180px; }
+    .sidebar {
+      width: 200px; min-width: 200px; background: var(--bg);
+      border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 16px 0;
+    }
+    .logo { padding: 0 16px 20px; font-size: 18px; font-weight: 800; }
+    .logo span { color: var(--accent); }
+    .nav-label {
+      font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+      color: var(--text3); padding: 12px 16px 6px;
+    }
+    .nav-item {
+      display: flex; align-items: center; gap: 10px; margin: 0 8px; padding: 8px 16px;
+      border-radius: 6px; color: var(--text2); font-weight: 500; text-decoration: none;
+      border: 0; background: transparent; width: calc(100% - 16px); text-align: left;
+    }
+    .nav-item:hover { background: var(--bg3); color: var(--text); }
+    .nav-item.active { background: var(--accent-bg); color: var(--accent); }
+    .nav-dot { width: 16px; color: var(--text3); text-align: center; font-size: 11px; }
+    .sidebar-footer {
+      margin-top: auto; padding: 12px 16px; border-top: 1px solid var(--border);
+      color: var(--text3); font-size: 12px;
+    }
+    .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    .topbar {
+      height: 50px; display: flex; align-items: center; justify-content: space-between;
+      padding: 9px 20px; background: var(--bg2); border-bottom: 1px solid var(--border);
+    }
+    .market-tabs { display: flex; gap: 6px; align-items: center; }
+    .mkt-tab {
+      border: 1px solid transparent; background: transparent; color: var(--text2);
+      padding: 6px 12px; border-radius: 6px; font-weight: 600;
+    }
+    .mkt-tab:hover { background: var(--bg3); color: var(--text); }
+    .mkt-tab.active { background: var(--accent-bg); color: var(--accent); border-color: rgba(129,140,248,0.6); }
+    .top-actions { display: flex; align-items: center; gap: 12px; color: var(--text3); }
+    .search {
+      width: 190px; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+      border-radius: 6px; padding: 6px 10px; outline: none;
+    }
+    .content { flex: 1; overflow-y: auto; padding: 18px 20px 28px; }
+    .page { display: none; }
+    .page.active { display: block; }
+    .page-head {
+      display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 14px;
+    }
+    h1 { margin: 0 0 4px; font-size: 20px; line-height: 1.2; }
+    h2, h3 { margin: 0; }
+    .subtext { color: var(--text3); font-size: 12px; }
+    .status-line { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .pill {
+      display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border);
+      background: var(--bg2); color: var(--text2); border-radius: 6px; padding: 5px 8px; white-space: nowrap;
+      font-size: 12px;
+    }
+    .pill.strong { color: var(--accent); background: var(--accent-bg); border-color: rgba(129,140,248,0.45); }
+    .pill.warn { color: var(--yellow); background: rgba(251,191,36,0.08); border-color: rgba(251,191,36,0.25); }
+    .pill.risk { color: var(--red); background: rgba(248,113,113,0.08); border-color: rgba(248,113,113,0.25); }
+    .layout { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(370px, 0.7fr); gap: 14px; }
+    .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+    .stack { display: flex; flex-direction: column; gap: 14px; }
+    .panel {
+      background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; box-shadow: var(--shadow);
+    }
+    .panel-header {
+      min-height: 45px; padding: 12px 14px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between; gap: 10px; font-weight: 700;
+    }
+    .panel-body { padding: 14px; }
+    .grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .metric {
+      border: 1px solid var(--border); border-radius: 7px; padding: 11px; background: var(--bg);
+      min-height: 78px;
+    }
+    .metric .label { color: var(--text3); font-size: 11px; }
+    .metric .value { margin-top: 6px; font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
+    .metric .note { margin-top: 3px; color: var(--text3); font-size: 11px; }
+    .up { color: var(--red); }
+    .down { color: var(--green); }
+    .good { color: var(--green); }
+    .bad { color: var(--red); }
+    .warn-text { color: var(--yellow); }
+    .blue { color: var(--blue); }
+    .mono { font-family: "SF Mono", "Cascadia Code", Consolas, monospace; font-variant-numeric: tabular-nums; }
+    .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+    .tab {
+      border: 1px solid var(--border); background: var(--bg); color: var(--text2);
+      padding: 5px 9px; border-radius: 6px; font-size: 12px;
+    }
+    .tab.active { color: var(--accent); background: var(--accent-bg); border-color: rgba(129,140,248,0.55); }
+    .table { width: 100%; border-collapse: collapse; }
+    .table th, .table td { border-bottom: 1px solid rgba(128,128,128,0.1); padding: 9px 8px; text-align: right; }
+    .table th { color: var(--text3); font-size: 11px; font-weight: 600; }
+    .table th:first-child, .table td:first-child { text-align: left; }
+    .table tr { cursor: pointer; }
+    .table tbody tr:hover td { background: var(--bg3); }
+    .table tr.selected td { background: var(--accent-bg); }
+    .state {
+      display: inline-flex; border-radius: 5px; padding: 2px 7px; border: 1px solid var(--border);
+      color: var(--text2); background: var(--bg); font-size: 11px; white-space: nowrap;
+    }
+    .state.hot { color: var(--red); border-color: rgba(248,113,113,0.35); background: rgba(248,113,113,0.08); }
+    .state.diverging { color: var(--yellow); border-color: rgba(251,191,36,0.35); background: rgba(251,191,36,0.08); }
+    .state.warming { color: var(--blue); border-color: rgba(96,165,250,0.35); background: rgba(96,165,250,0.08); }
+    .state.repairing { color: var(--green); border-color: rgba(52,211,153,0.35); background: rgba(52,211,153,0.08); }
+    .role-row {
+      display: grid; grid-template-columns: 72px minmax(0, 1fr) 58px 58px 72px; gap: 8px;
+      align-items: center; padding: 8px 0; border-bottom: 1px solid rgba(128,128,128,0.08);
+    }
+    .role-row:last-child { border-bottom: 0; }
+    .role {
+      border-radius: 5px; padding: 3px 6px; text-align: center; background: var(--bg3); color: var(--text2); font-size: 11px;
+    }
+    .role.leader { color: var(--red); background: rgba(248,113,113,0.1); }
+    .role.core { color: var(--accent); background: var(--accent-bg); }
+    .role.mid { color: var(--blue); background: rgba(96,165,250,0.08); }
+    .role.junk { color: var(--text3); background: transparent; border: 1px solid var(--border); }
+    .event {
+      display: grid; grid-template-columns: 72px minmax(0,1fr) 72px; gap: 10px; padding: 10px 0;
+      border-bottom: 1px solid rgba(128,128,128,0.08);
+    }
+    .event:last-child { border-bottom: 0; }
+    .opinion {
+      border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: var(--bg);
+      display: grid; grid-template-columns: 128px minmax(0, 1fr) 112px; gap: 12px; align-items: start;
+    }
+    .opinion + .opinion { margin-top: 10px; }
+    .decision {
+      border-radius: 6px; padding: 8px; text-align: center; font-weight: 800; font-size: 13px;
+      background: var(--accent-bg); color: var(--accent); border: 1px solid rgba(129,140,248,0.35);
+    }
+    .decision.wait { background: rgba(251,191,36,0.08); color: var(--yellow); border-color: rgba(251,191,36,0.3); }
+    .decision.risk { background: rgba(248,113,113,0.08); color: var(--red); border-color: rgba(248,113,113,0.3); }
+    .decision.hold { background: rgba(52,211,153,0.08); color: var(--green); border-color: rgba(52,211,153,0.3); }
+    .opinion h3 { margin: 0 0 6px; font-size: 14px; }
+    .opinion p { margin: 0; color: var(--text2); }
+    .small-list { margin: 8px 0 0; padding-left: 16px; color: var(--text2); }
+    .small-list li { margin: 2px 0; }
+    .score { text-align: right; color: var(--text3); font-variant-numeric: tabular-nums; }
+    .score b { display: block; color: var(--text); font-size: 18px; }
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .field { display: flex; flex-direction: column; gap: 4px; }
+    .field label { color: var(--text3); font-size: 11px; }
+    .field input, .field textarea {
+      width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+      border-radius: 6px; padding: 7px 9px; outline: none;
+    }
+    .field textarea { min-height: 62px; resize: vertical; grid-column: 1 / -1; }
+    .btn {
+      border: 1px solid var(--border); background: var(--bg3); color: var(--text);
+      padding: 7px 10px; border-radius: 6px; font-weight: 700;
+    }
+    .btn.primary { background: var(--accent); color: white; border-color: var(--accent); }
+    .btn.danger { color: var(--red); background: transparent; }
+    .position-row {
+      display: grid; grid-template-columns: minmax(0, 1fr) 72px 72px 78px 86px 56px;
+      gap: 8px; align-items: center; padding: 9px 0; border-bottom: 1px solid rgba(128,128,128,0.08);
+    }
+    .position-row:last-child { border-bottom: 0; }
+    .bubble {
+      border: 1px solid var(--border); background: var(--bg); padding: 10px 12px; border-radius: 8px;
+    }
+    .chat { display: flex; flex-direction: column; gap: 10px; }
+    .bubble.user { align-self: flex-end; background: var(--accent); color: white; border-color: var(--accent); max-width: 82%; }
+    .chat-input { display: flex; gap: 8px; margin-top: 10px; }
+    .chat-input input { flex: 1; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+    .unsupported {
+      min-height: 520px; display: none; align-items: center; justify-content: center; padding: 24px;
+    }
+    .unsupported-card {
+      width: min(620px, 100%); border: 1px solid var(--border); background: var(--bg2);
+      border-radius: 8px; padding: 28px; text-align: center;
+    }
+    .unsupported-card h2 { margin: 0 0 8px; }
+    .unsupported-card p { color: var(--text2); margin: 0 0 16px; }
+    @media (max-width: 1280px) {
+      .layout, .three-col { grid-template-columns: 1fr; }
+      .grid4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="logo">Market<span>Pulse</span></div>
+      <div class="nav-label">导航</div>
+      <button class="nav-item" data-page="overview"><span class="nav-dot">01</span>概览</button>
+      <button class="nav-item active" data-page="market"><span class="nav-dot">02</span>行情</button>
+      <button class="nav-item" data-page="watchlist"><span class="nav-dot">03</span>自选</button>
+      <button class="nav-item" data-page="signals"><span class="nav-dot">04</span>CD 信号</button>
+      <button class="nav-item" data-page="strategy"><span class="nav-dot">05</span>策略回测</button>
+      <button class="nav-item" data-page="assistant"><span class="nav-dot">06</span>AI 助手</button>
+      <button class="nav-item" data-page="positions"><span class="nav-dot">07</span>持仓</button>
+      <div class="nav-label">系统</div>
+      <button class="nav-item"><span class="nav-dot">08</span>设置</button>
+      <div class="sidebar-footer">原型文件 · 用于确认信息架构</div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="market-tabs">
+          <button class="mkt-tab active" data-market="ashare">A 股</button>
+          <button class="mkt-tab" data-market="us">美股</button>
+          <button class="mkt-tab" data-market="hk">港股</button>
+          <button class="mkt-tab" data-market="crypto">Crypto</button>
+        </div>
+        <div class="top-actions">
+          <input class="search" placeholder="搜索代码或题材" />
+          <span class="pill strong">交易中</span>
+          <span class="mono" id="clock">--:--:-- BJT</span>
+        </div>
+      </header>
+
+      <div class="content">
+        <section id="marketPage" class="page active">
+          <div class="page-head">
+            <div>
+              <h1>行情</h1>
+              <div class="subtext">事实层：大盘、题材、成分股、个股异动、事件流。这里尽量不放 AI 长结论。</div>
+            </div>
+            <div class="status-line">
+              <span class="pill strong">A 股事实层</span>
+              <span class="pill">最新快照 10:42:18</span>
+              <span class="pill warn">分歧监控中</span>
+            </div>
+          </div>
+
+          <div class="stack">
+            <section class="panel">
+              <div class="panel-header">
+                <span>大盘脉搏</span>
+                <div class="tabs"><button class="tab active">实时</button><button class="tab">5m</button><button class="tab">15m</button></div>
+              </div>
+              <div class="panel-body">
+                <div class="grid4">
+                  <div class="metric"><div class="label">上证指数</div><div class="value up">+0.42%</div><div class="note">成交额 3,218 亿</div></div>
+                  <div class="metric"><div class="label">创业板指</div><div class="value up">+1.18%</div><div class="note">成长风格占优</div></div>
+                  <div class="metric"><div class="label">涨跌家数</div><div class="value">3178 / 1812</div><div class="note">宽度小幅改善</div></div>
+                  <div class="metric"><div class="label">全 A 成交额</div><div class="value">7421 亿</div><div class="note">较昨日同刻 +8.4%</div></div>
+                </div>
+              </div>
+            </section>
+
+            <div class="layout">
+              <section class="panel">
+                <div class="panel-header">
+                  <span>题材 / 板块雷达</span>
+                  <span class="subtext">低位启动、热门主线、分歧、修复、退潮</span>
+                </div>
+                <div class="panel-body" style="padding:0">
+                  <table class="table">
+                    <thead>
+                      <tr>
+                        <th>题材</th><th>状态</th><th>涨幅</th><th>5m</th><th>上涨占比</th><th>成交放大</th><th>事实提示</th>
+                      </tr>
+                    </thead>
+                    <tbody id="themeRows">
+                      <tr class="selected" data-theme="robot">
+                        <td><b>机器人</b><div class="subtext">主线抱团 · 核心承接</div></td>
+                        <td><span class="state diverging">DIVERGING</span></td>
+                        <td class="up">+3.42%</td><td class="up">+0.86%</td><td>61%</td><td>1.8x</td><td class="warn-text">后排分化</td>
+                      </tr>
+                      <tr data-theme="ai-phone">
+                        <td><b>AI 手机</b><div class="subtext">高位加速 · 后排分化</div></td>
+                        <td><span class="state hot">ACCELERATING</span></td>
+                        <td class="up">+4.11%</td><td class="up">+1.22%</td><td>58%</td><td>2.4x</td><td class="bad">追高风险</td>
+                      </tr>
+                      <tr data-theme="semi">
+                        <td><b>半导体</b><div class="subtext">修复确认 · 中军增强</div></td>
+                        <td><span class="state repairing">REPAIRING</span></td>
+                        <td class="up">+2.18%</td><td class="up">+0.52%</td><td>67%</td><td>1.5x</td><td class="good">承接改善</td>
+                      </tr>
+                      <tr data-theme="medicine">
+                        <td><b>创新药</b><div class="subtext">低位启动 · 首次放量</div></td>
+                        <td><span class="state warming">WARMING</span></td>
+                        <td class="up">+1.64%</td><td class="up">+0.72%</td><td>64%</td><td>1.9x</td><td class="blue">扩散待确认</td>
+                      </tr>
+                      <tr data-theme="low-alt">
+                        <td><b>低空经济</b><div class="subtext">退潮风险 · 炸板扩散</div></td>
+                        <td><span class="state">FADING</span></td>
+                        <td class="down">-0.44%</td><td class="down">-0.38%</td><td>38%</td><td>1.2x</td><td class="bad">后排风险</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-header">
+                  <span>题材详情：成分股角色</span>
+                  <span class="subtext" id="themeDetailTitle">机器人</span>
+                </div>
+                <div class="panel-body">
+                  <div id="themeNarrative" class="bubble" style="margin-bottom:10px">
+                    分歧阶段只看龙头和核心，中军用于确认承接，后排跟风不追。
+                  </div>
+                  <div id="roleList"></div>
+                </div>
+              </section>
+            </div>
+
+            <div class="three-col">
+              <section class="panel">
+                <div class="panel-header"><span>个股异动</span><span class="subtext">事实榜单</span></div>
+                <div class="panel-body">
+                  <div class="event"><span class="mono">10:39</span><div><b>中大力德</b><div class="subtext">机器人核心股，放量回踩均线后拉回</div></div><span class="up">+8.7%</span></div>
+                  <div class="event"><span class="mono">10:35</span><div><b>寒武纪</b><div class="subtext">半导体核心，放量跌破分时均线</div></div><span class="down">-1.4%</span></div>
+                  <div class="event"><span class="mono">10:31</span><div><b>恒瑞医药</b><div class="subtext">创新药核心，低位放量先动</div></div><span class="up">+3.5%</span></div>
+                </div>
+              </section>
+              <section class="panel">
+                <div class="panel-header"><span>事实事件流</span><span class="subtext">程序生成</span></div>
+                <div class="panel-body">
+                  <div class="event"><span class="mono">10:42</span><div><b>机器人分歧扩大</b><div class="subtext">上涨占比 82% → 61%，龙头仍强</div></div><span class="warn-text">watch</span></div>
+                  <div class="event"><span class="mono">10:37</span><div><b>创新药低位启动</b><div class="subtext">首次进入成交额前 30，成交放大 1.9x</div></div><span class="blue">info</span></div>
+                  <div class="event"><span class="mono">10:28</span><div><b>创业板相对走强</b><div class="subtext">创业板指相对沪深300 +0.76%</div></div><span class="good">style</span></div>
+                </div>
+              </section>
+              <section class="panel">
+                <div class="panel-header"><span>持仓事实</span><span class="subtext">非 AI 结论</span></div>
+                <div class="panel-body">
+                  <div class="event"><span class="mono">002415</span><div><b>海康威视</b><div class="subtext">成本 18.80，现价 19.42，高于筹码均价</div></div><span class="up">+3.3%</span></div>
+                  <div class="event"><span class="mono">688256</span><div><b>寒武纪</b><div class="subtext">成本 690.0，现价 662.4，跌破盘中均价</div></div><span class="down">-4.0%</span></div>
+                </div>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <section id="assistantPage" class="page">
+          <div id="assistantAshare">
+            <div class="page-head">
+              <div>
+                <h1>AI 助手</h1>
+                <div class="subtext">结论层：基于行情事实、题材状态和持仓上下文，输出明确观察结论。</div>
+              </div>
+              <div class="status-line">
+                <span class="pill strong">A 股 AI 决策助手</span>
+                <span class="pill warn">4 条需要关注</span>
+              </div>
+            </div>
+
+            <div class="layout">
+              <div class="stack">
+                <section class="panel">
+                  <div class="panel-header">
+                    <span>今日 AI 盘面结论</span>
+                    <div class="tabs"><button class="tab active">5 分钟</button><button class="tab">15 分钟</button><button class="tab">收盘复盘</button></div>
+                  </div>
+                  <div class="panel-body">
+                    <div class="opinion">
+                      <div class="decision wait">谨慎试错</div>
+                      <div>
+                        <h3>主线仍在机器人，但进入弱分歧；新方向观察创新药扩散</h3>
+                        <p>市场宽度未恶化，创业板相对占优。机器人主线后排分化扩大，核心承接仍在；创新药低位首次放量，但还需要确认成分股扩散。</p>
+                        <ul class="small-list">
+                          <li>盘中只看核心股和中军，不追无辨识度后排</li>
+                          <li>如果机器人上涨占比跌破 50%，降低主线优先级</li>
+                          <li>创新药若连续两次快照维持成交放大，可进入开单观察</li>
+                        </ul>
+                      </div>
+                      <div class="score">AI 置信度<b>76%</b></div>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="panel">
+                  <div class="panel-header"><span>AI 开单观察</span><span class="subtext">只展示候选结论，不重复完整行情表</span></div>
+                  <div class="panel-body">
+                    <div class="opinion">
+                      <div class="decision wait">等回踩</div>
+                      <div>
+                        <h3>机器人：弱分歧有承接，只等核心股回踩</h3>
+                        <p>板块仍是主线，但后排分化扩大。核心股回踩分时均线后拉回，说明承接尚可。</p>
+                        <ul class="small-list">
+                          <li>观察点：核心股回踩均线不破</li>
+                          <li>失效：上涨家数跌破 50% 或龙头跌破均线</li>
+                        </ul>
+                      </div>
+                      <div class="score">机会分<b>74</b></div>
+                    </div>
+                    <div class="opinion">
+                      <div class="decision">开单观察</div>
+                      <div>
+                        <h3>创新药：低位首次放量，加入观察池</h3>
+                        <p>近期不是持续热门，今天成交额和上涨占比同步改善，不是单一龙头独涨。</p>
+                      </div>
+                      <div class="score">机会分<b>81</b></div>
+                    </div>
+                    <div class="opinion">
+                      <div class="decision risk">放弃追高</div>
+                      <div>
+                        <h3>AI 手机：高位加速，后排风险大于机会</h3>
+                        <p>成交放大但上涨占比不足，前排与中位数差距扩大，不适合追后排。</p>
+                      </div>
+                      <div class="score">风险分<b>78</b></div>
+                    </div>
+                  </div>
+                </section>
+              </div>
+
+              <aside class="stack">
+                <section class="panel">
+                  <div class="panel-header">
+                    <span>持仓与 AI 建议</span>
+                    <button class="btn primary" id="addPositionBtn">新增持仓</button>
+                  </div>
+                  <div class="panel-body">
+                    <div id="positionForm" style="display:none; margin-bottom:12px">
+                      <div class="form-grid">
+                        <div class="field"><label>代码</label><input id="posSymbol" placeholder="如 002415.SZ" /></div>
+                        <div class="field"><label>名称</label><input id="posName" placeholder="股票名称" /></div>
+                        <div class="field"><label>数量</label><input id="posQty" type="number" placeholder="1000" /></div>
+                        <div class="field"><label>成本价</label><input id="posCost" type="number" step="0.01" placeholder="18.80" /></div>
+                        <div class="field" style="grid-column:1 / -1"><label>买入理由</label><textarea id="posReason" placeholder="低位布局、主线低吸、趋势持有等"></textarea></div>
+                      </div>
+                      <div style="display:flex; gap:8px; margin-top:8px">
+                        <button class="btn primary" id="savePositionBtn">保存</button>
+                        <button class="btn" id="cancelPositionBtn">取消</button>
+                      </div>
+                    </div>
+                    <div id="positions">
+                      <div class="position-row">
+                        <span><b>海康威视</b><br><span class="subtext mono">002415.SZ</span></span>
+                        <span class="mono">18.80</span><span class="mono">19.42</span><span class="up">+3.30%</span>
+                        <span class="decision hold" style="padding:5px">继续持有</span><button class="btn danger" data-delete>删除</button>
+                      </div>
+                      <div class="position-row">
+                        <span><b>寒武纪</b><br><span class="subtext mono">688256.SH</span></span>
+                        <span class="mono">690.0</span><span class="mono">662.4</span><span class="down">-4.00%</span>
+                        <span class="decision risk" style="padding:5px">减仓观察</span><button class="btn danger" data-delete>删除</button>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="panel">
+                  <div class="panel-header"><span>AI 追问</span><span class="subtext">基于当前结构化证据回答</span></div>
+                  <div class="panel-body">
+                    <div class="chat" id="chat">
+                      <div class="bubble"><b>AI 助手</b><div style="margin-top:4px;color:var(--text2)">机器人处于弱分歧，有承接但不适合追后排。若要开单观察，只看核心股回踩分时均线不破。</div></div>
+                      <div class="bubble user">我手里的寒武纪要不要减？</div>
+                      <div class="bubble"><b>AI 助手</b><div style="margin-top:4px;color:var(--text2)">当前建议减仓观察。半导体修复，但该股跌破盘中均价且放量走弱，若 30 分钟内不能重新站回均线，风险优先。</div></div>
+                    </div>
+                    <div class="chat-input">
+                      <input id="chatInput" placeholder="追问当前题材、持仓或候选机会" />
+                      <button class="btn primary" id="sendChat">发送</button>
+                    </div>
+                  </div>
+                </section>
+              </aside>
+            </div>
+          </div>
+
+          <div id="assistantUnsupported" class="unsupported">
+            <div class="unsupported-card">
+              <h2>AI 助手当前仅支持 A 股题材决策</h2>
+              <p id="unsupportedText">其他市场的行业、题材、核心标的和持仓建议将在后续方案中单独设计。</p>
+              <button class="btn primary" data-market-back>切回 A 股</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="placeholderPage" class="page">
+          <div class="unsupported" style="display:flex">
+            <div class="unsupported-card">
+              <h2>原型重点为“行情 / AI 助手”信息架构</h2>
+              <p>其他页面保持占位。正式接入时会沿用现有 MarketPulse 页面。</p>
+              <button class="btn primary" data-page-back>回到行情</button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    let currentMarket = 'ashare';
+    let currentPage = 'market';
+    const marketTabs = Array.from(document.querySelectorAll('.mkt-tab'));
+    const navItems = Array.from(document.querySelectorAll('.nav-item[data-page]'));
+    const marketNames = { us: '美股', hk: '港股', crypto: 'Crypto' };
+
+    function updateMarket() {
+      marketTabs.forEach((tab) => tab.classList.toggle('active', tab.dataset.market === currentMarket));
+      const unsupported = document.getElementById('assistantUnsupported');
+      const ashare = document.getElementById('assistantAshare');
+      if (currentPage === 'assistant' && currentMarket !== 'ashare') {
+        ashare.style.display = 'none';
+        unsupported.style.display = 'flex';
+        document.getElementById('unsupportedText').textContent = `${marketNames[currentMarket]}暂未接入 AI 题材决策。当前版本只展示 A 股真实行业、概念、核心标的、成分股和持仓建议。`;
+      } else {
+        ashare.style.display = 'block';
+        unsupported.style.display = 'none';
+      }
+    }
+
+    function setPage(page) {
+      currentPage = (page === 'market' || page === 'assistant') ? page : 'placeholder';
+      document.querySelectorAll('.page').forEach((p) => p.classList.remove('active'));
+      document.getElementById(currentPage === 'market' ? 'marketPage' : currentPage === 'assistant' ? 'assistantPage' : 'placeholderPage').classList.add('active');
+      navItems.forEach((item) => item.classList.toggle('active', item.dataset.page === page || (currentPage === 'placeholder' && item.dataset.page === page)));
+      updateMarket();
+      document.querySelector('.content').scrollTop = 0;
+    }
+
+    marketTabs.forEach((tab) => tab.addEventListener('click', () => {
+      currentMarket = tab.dataset.market;
+      updateMarket();
+    }));
+    navItems.forEach((item) => item.addEventListener('click', () => setPage(item.dataset.page)));
+    document.querySelector('[data-market-back]').addEventListener('click', () => { currentMarket = 'ashare'; updateMarket(); });
+    document.querySelector('[data-page-back]').addEventListener('click', () => setPage('market'));
+
+    function tickClock() {
+      document.getElementById('clock').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false }) + ' BJT';
+    }
+    tickClock();
+    setInterval(tickClock, 1000);
+
+    const themeData = {
+      robot: {
+        title: '机器人',
+        narrative: '分歧阶段只看龙头和核心，中军用于确认承接，后排跟风不追。',
+        rows: [
+          ['龙头','leader','中大力德','002896.SZ','+8.7%','2.5x','承接强','good'],
+          ['核心','core','机器人','300024.SZ','+5.4%','1.9x','均线上','good'],
+          ['中军','mid','汇川技术','300124.SZ','+2.1%','1.4x','稳',''],
+          ['跟风','','拓斯达','300607.SZ','+3.0%','1.1x','谨慎','warn-text'],
+          ['杂毛','junk','某后排股','30XXXX.SZ','-0.4%','0.7x','回避','bad']
+        ]
+      },
+      'ai-phone': {
+        title: 'AI 手机',
+        narrative: '高位加速阶段不追后排。只有龙头继续封强且中军不松动，才保留观察价值。',
+        rows: [
+          ['龙头','leader','领益智造','002600.SZ','+9.8%','3.1x','加速','good'],
+          ['核心','core','立讯精密','002475.SZ','+3.8%','1.7x','中军强','good'],
+          ['跟风','','某消费电子','00XXXX.SZ','+4.1%','0.9x','不追','warn-text'],
+          ['杂毛','junk','某后排股','30XXXX.SZ','+1.2%','0.6x','回避','bad']
+        ]
+      },
+      semi: {
+        title: '半导体',
+        narrative: '修复确认阶段优先看中军和核心，不做无辨识度后排。',
+        rows: [
+          ['中军','mid','中芯国际','688981.SH','+2.6%','1.8x','承接','good'],
+          ['核心','core','寒武纪','688256.SH','-1.4%','2.0x','分歧','warn-text'],
+          ['核心','core','北方华创','002371.SZ','+3.1%','1.5x','修复','good'],
+          ['跟风','','某设备股','30XXXX.SZ','+0.8%','0.8x','一般','']
+        ]
+      },
+      medicine: {
+        title: '创新药',
+        narrative: '低位启动阶段重点看扩散能否持续，不急于追第一根放量。',
+        rows: [
+          ['核心','core','恒瑞医药','600276.SH','+3.5%','1.8x','先动','good'],
+          ['中军','mid','药明康德','603259.SH','+2.2%','1.4x','稳','good'],
+          ['核心','core','康龙化成','300759.SZ','+4.6%','2.1x','放量','good'],
+          ['跟风','','某医药股','00XXXX.SZ','+1.1%','0.7x','观察','']
+        ]
+      },
+      'low-alt': {
+        title: '低空经济',
+        narrative: '退潮状态优先规避后排，持仓只看龙头是否能快速修复。',
+        rows: [
+          ['龙头','leader','万丰奥威','002085.SZ','-1.2%','1.7x','转弱','bad'],
+          ['核心','core','宗申动力','001696.SZ','-0.8%','1.2x','弱修复','warn-text'],
+          ['杂毛','junk','某后排股','30XXXX.SZ','-3.6%','1.4x','回避','bad']
+        ]
+      }
+    };
+
+    function renderTheme(key) {
+      const data = themeData[key];
+      document.getElementById('themeDetailTitle').textContent = data.title;
+      document.getElementById('themeNarrative').textContent = data.narrative;
+      document.getElementById('roleList').innerHTML = data.rows.map((r) => `
+        <div class="role-row">
+          <span class="role ${r[1]}">${r[0]}</span>
+          <span><b>${r[2]}</b><br><span class="subtext mono">${r[3]}</span></span>
+          <span class="${r[4].startsWith('-') ? 'down' : 'up'}">${r[4]}</span>
+          <span>${r[5]}</span>
+          <span class="${r[7]}">${r[6]}</span>
+        </div>
+      `).join('');
+    }
+    renderTheme('robot');
+    document.querySelectorAll('#themeRows tr').forEach((row) => {
+      row.addEventListener('click', () => {
+        document.querySelectorAll('#themeRows tr').forEach((r) => r.classList.remove('selected'));
+        row.classList.add('selected');
+        renderTheme(row.dataset.theme);
+      });
+    });
+
+    const form = document.getElementById('positionForm');
+    document.getElementById('addPositionBtn').addEventListener('click', () => form.style.display = 'block');
+    document.getElementById('cancelPositionBtn').addEventListener('click', () => form.style.display = 'none');
+    document.getElementById('savePositionBtn').addEventListener('click', () => {
+      const symbol = document.getElementById('posSymbol').value.trim() || '000001.SZ';
+      const name = document.getElementById('posName').value.trim() || '示例持仓';
+      const cost = Number(document.getElementById('posCost').value || 10).toFixed(2);
+      const last = (Number(cost) * 1.018).toFixed(2);
+      const row = document.createElement('div');
+      row.className = 'position-row';
+      row.innerHTML = `
+        <span><b>${name}</b><br><span class="subtext mono">${symbol}</span></span>
+        <span class="mono">${cost}</span><span class="mono">${last}</span><span class="up">+1.80%</span>
+        <span class="decision hold" style="padding:5px">继续持有</span><button class="btn danger" data-delete>删除</button>
+      `;
+      document.getElementById('positions').prepend(row);
+      form.style.display = 'none';
+      ['posSymbol','posName','posQty','posCost','posReason'].forEach((id) => document.getElementById(id).value = '');
+    });
+    document.getElementById('positions').addEventListener('click', (event) => {
+      if (event.target.matches('[data-delete]')) event.target.closest('.position-row').remove();
+    });
+
+    document.getElementById('sendChat').addEventListener('click', () => {
+      const input = document.getElementById('chatInput');
+      const text = input.value.trim();
+      if (!text) return;
+      const chat = document.getElementById('chat');
+      chat.insertAdjacentHTML('beforeend', `<div class="bubble user">${text}</div>`);
+      chat.insertAdjacentHTML('beforeend', `<div class="bubble"><b>AI 助手</b><div style="margin-top:4px;color:var(--text2)">原型回复：我会基于当前题材状态、核心标的角色、持仓成本和风险条件生成结构化结论。</div></div>`);
+      input.value = '';
+    });
+  </script>
+</body>
+</html>
