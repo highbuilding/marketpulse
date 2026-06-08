@@ -19,7 +19,7 @@ from core.adapters.registry import AdapterRegistry
 from core.cache import keys
 from core.domain.intervals import KLINE_INTERVALS
 from core.domain.core_symbols import core_symbols
-from core.domain.markets import infer_market
+from core.domain.markets import infer_market, normalize_symbol
 from core.services.fund_flow_service import FundFlowService
 from core.services.chip_service import ChipService
 from core.services.kline_service import KLineService
@@ -131,21 +131,6 @@ class ProfilesResponse(BaseModel):
     profiles: list[ProfileResponse]
 
 
-class QuoteMeta(BaseModel):
-    stale: bool = False
-    reason: str | None = None
-    data_age_seconds: float | None = None
-
-
-class QuoteResponse(BaseModel):
-    symbol: str
-    price: float | None
-    change_pct: float | None
-    volume: int | None
-    ts: str | None
-    meta: QuoteMeta = QuoteMeta()
-
-
 class SearchHit(BaseModel):
     symbol: str
     name: str
@@ -199,10 +184,12 @@ async def profiles(
     syms = [s.strip() for s in symbols.split(",") if s.strip()]
     if not syms:
         return ProfilesResponse(profiles=[])
-    names = await svc.get_names(syms)
+    # 裸 A 股码补后缀, 否则 get_names 查不到 (目录 key 带后缀) + market 误判
+    norm = [normalize_symbol(s) for s in syms]
+    names = await svc.get_names(norm)
     return ProfilesResponse(profiles=[
         ProfileResponse(symbol=s, name=names.get(s), market=infer_market(s))
-        for s in syms
+        for s in norm
     ])
 
 
@@ -211,37 +198,9 @@ async def profile(
     symbol: str,
     svc: SymbolDirectoryService = Depends(get_symbol_directory_service),
 ) -> ProfileResponse:
+    symbol = normalize_symbol(symbol)  # 裸 A 股码补后缀
     name = await svc.get_name(symbol)
     return ProfileResponse(symbol=symbol, name=name, market=infer_market(symbol))
-
-
-@router.get("/{symbol}/quote", response_model=QuoteResponse)
-async def quote(
-    symbol: str,
-    redis_cache=Depends(get_redis_cache),
-) -> QuoteResponse:
-    market = infer_market(symbol)
-    if not market:
-        return QuoteResponse(
-            symbol=symbol, price=None, change_pct=None, volume=None, ts=None,
-            meta=QuoteMeta(stale=True, reason="unknown_market"),
-        )
-    payload = await redis_cache.get_msgpack(keys.cache_quote(market, symbol))
-    if payload is None:
-        return QuoteResponse(
-            symbol=symbol, price=None, change_pct=None, volume=None, ts=None,
-            meta=QuoteMeta(stale=True, reason="warming_up"),
-        )
-    ts = datetime.fromisoformat(payload["ts"])
-    age_s = (datetime.now(timezone.utc) - ts).total_seconds()
-    return QuoteResponse(
-        symbol=payload["symbol"],
-        price=payload.get("price"),
-        change_pct=payload.get("change_pct"),
-        volume=payload.get("volume"),
-        ts=payload["ts"],
-        meta=QuoteMeta(stale=age_s > 60, data_age_seconds=age_s),
-    )
 
 
 @router.get("/{symbol}/bars/history", response_model=BarsResponse)

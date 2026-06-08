@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { useState, useEffect } from 'react'
 import { MarketProvider, useMarket, MARKET_LABELS, type MarketId } from '@/lib/market-context'
-import { marketPhase, marketPhaseLabel, type MarketPhase } from '@/lib/markets'
+import { marketPhase, marketPhaseLabel, normalizeSymbol, type MarketPhase } from '@/lib/markets'
 import { fetchHealth } from '@/lib/api'
 import useSWR from 'swr'
 
@@ -129,7 +129,7 @@ function TopBar() {
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               const v = (e.target as HTMLInputElement).value.trim()
-              if (v) router.push(`/symbol/${encodeURIComponent(v)}`)
+              if (v) router.push(`/symbol/${encodeURIComponent(normalizeSymbol(v.toUpperCase()))}`)
             }
           }}
         />

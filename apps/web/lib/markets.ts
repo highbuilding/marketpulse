@@ -2,11 +2,24 @@
 
 export type Market = 'ashare' | 'hk' | 'us' | 'crypto'
 
+// 裸 A 股 6 位数字码补后缀 (SSoT 镜像: core/domain/markets.py::normalize_symbol)。
+// 600519 → 600519.SH, 000858 → 000858.SZ, 920001 → 920001.BJ。其余原样。
+// 用户搜索常输裸码, 不补后缀会导致 profile 查不到名称 + 市场误判成 us。
+export function normalizeSymbol(symbol: string): string {
+  if (/^\d{6}$/.test(symbol)) {
+    if (/^(60|68|51|50|11|13)/.test(symbol)) return `${symbol}.SH`
+    if (/^([48]|920)/.test(symbol)) return `${symbol}.BJ`
+    return `${symbol}.SZ`
+  }
+  return symbol
+}
+
 export function inferMarket(symbol: string): Market {
   if (/\.(SH|SZ|BJ)$/.test(symbol)) return 'ashare'
   if (symbol.endsWith('.HK')) return 'hk'
   if (symbol.includes('/')) return 'crypto'
   if (/-(USDT|USDC|BUSD|FDUSD)$/.test(symbol)) return 'crypto'
+  if (/^\d{6}$/.test(symbol)) return 'ashare'
   return 'us'
 }
 
