@@ -109,14 +109,16 @@ sleep 2
 # ... 干活、改代码、commit、跑测试 ...
 
 # 收尾:重启 3 collector + api,不要留任何端口空着
+# stdout 镜像用 `>`(启动截断)而非 `>>`(append 永涨) —— /tmp 非事实源,
+# 事实源在 data/logs(已 rotate)。`>>` 跨多次重启累积曾涨到 4.5GB 拖慢排查。
 docker compose -f docker-compose.dev.yml up -d redis
-nohup bash -c '. .venv/bin/activate && python -m apps.collector.ashare.main' >> /tmp/collector_ashare.log 2>&1 &
+nohup bash -c '. .venv/bin/activate && python -m apps.collector.ashare.main' > /tmp/collector_ashare.log 2>&1 &
 disown
-nohup bash -c '. .venv/bin/activate && python -m apps.collector.us.main' >> /tmp/collector_us.log 2>&1 &
+nohup bash -c '. .venv/bin/activate && python -m apps.collector.us.main' > /tmp/collector_us.log 2>&1 &
 disown
-nohup bash -c '. .venv/bin/activate && python -m apps.collector.crypto.main' >> /tmp/collector_crypto.log 2>&1 &
+nohup bash -c '. .venv/bin/activate && python -m apps.collector.crypto.main' > /tmp/collector_crypto.log 2>&1 &
 disown
-nohup bash -c '. .venv/bin/activate && uvicorn apps.api.main:app --port 8787' >> /tmp/api.log 2>&1 &
+nohup bash -c '. .venv/bin/activate && uvicorn apps.api.main:app --port 8787' > /tmp/api.log 2>&1 &
 disown
 sleep 8
 curl -s -m 3 http://localhost:8787/api/health | grep -o '"status":"[^"]*"'
@@ -159,7 +161,7 @@ for p in 8788 8789 8790; do curl -s -m 3 http://127.0.0.1:$p/health | grep -o '"
 - `data/logs/collector.log` / `collector-errors.log`(WARNING+)— collector 进程
 - `data/logs/fault.log`(SIGABRT/SIGSEGV C 层栈,append 不 rotate,共享)
 
-`/tmp/api.log` 和 `/tmp/collector.log` 仅 nohup stdout 镜像,**不是事实源**但因为 append 模式重启不丢。
+`/tmp/api.log` 和 `/tmp/collector.log` 仅 nohup stdout 镜像,**不是事实源**(事实源在 `data/logs/`,已按大小 rotate)。重启模板用 `>`(启动截断)而非 `>>`,避免跨多次重启无限累积(曾涨到 4.5GB)。要留存历史看 `data/logs/`。
 
 `core/integrations/logging_setup.py::setup_logging(process_name=...)` 在 collector + api 启动早期各调一次,`process_name` 决定文件名前缀。`faulthandler` fd 直写 fault.log,V8 SIGABRT 时 stdout 来不及 flush 但 fault.log 仍落盘。
 
