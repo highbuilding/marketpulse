@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 from apps.collector.base import setup_proxy_and_logging
-setup_proxy_and_logging("collector_ashare")
+setup_proxy_and_logging("collector_ashare", use_proxy=False)
 
 import asyncio
 import os
@@ -153,14 +153,10 @@ async def lifespan(app: FastAPI):
     from core.cache.quote_cache import QuoteCache
     cache = QuoteCache(ttl_s=60)
 
-    # === MarketAmountBaselineRepo ===
-    from core.persistence.market_amount_baseline_repo import MarketAmountBaselineRepo
-    baseline_repo = MarketAmountBaselineRepo(str(_DATA / "state.db"))
-
     # === scheduler: 仅 A 股专属 cron ===
     from core.scheduler.scheduler import (
-        attach_ai_packet_job, attach_baseline_persist_jobs, attach_chip_preload_job,
-        attach_fundamentals_jobs, attach_index_minute_job, attach_market_dashboard_job,
+        attach_ai_packet_job, attach_chip_preload_job,
+        attach_fundamentals_jobs, attach_market_dashboard_job,
         attach_market_top_job, attach_signal_jobs, build_scheduler,
     )
     from apps.api.deps import (
@@ -188,8 +184,6 @@ async def lifespan(app: FastAPI):
         ),
         name="ashare.signal_scan_consumer",
     )
-    attach_index_minute_job(sched, cache=redis_cache, baseline_repo=baseline_repo)
-    attach_baseline_persist_jobs(sched, baseline_repo=baseline_repo)
     attach_market_dashboard_job(sched, cache=redis_cache)
     attach_market_top_job(sched,
                           market_query=get_market_query_service(),
@@ -228,29 +222,40 @@ async def lifespan(app: FastAPI):
         name="ashare.intraday_line_writer",
     )
 
-    # === 定期聚合派生周期 (60m/4h/1wk/1mo) ===
+    # === 标的集 (CORE ∪ watchlist): 供 startup_reconcile + daily_settlement 用 ===
     from datetime import datetime, timedelta, timezone
-    from apps.collector.jobs.aggregate_derived import sweep_derived
     from core.domain.core_symbols import core_symbols as _core_symbols
     from core.domain.markets import infer_market as _infer_market
     _wl_syms = await get_watchlist_service().dynamic_universe()
     _sweep_syms = sorted({s for s in (set(_wl_syms) | set(_core_symbols("ashare")))
                           if _infer_market(s) == "ashare"})
-    log.info("sweep_derived.symbols_ready", market="ashare", count=len(_sweep_syms))
-    sched.add_job(
-        sweep_derived,
-        "interval", minutes=120,  # 事件驱动聚合为主, sweep 降频兜底
-        args=(bar_repo, "ashare", _sweep_syms),
-        id="ashare:sweep_derived",
-        max_instances=1, coalesce=True,
-        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=10),
-    )
+    log.info("ashare.symbols_ready", market="ashare", count=len(_sweep_syms))
+    # 移除 (2026-06-08): ashare:sweep_derived 120min 聚合 cron。按"K线采集链改事件驱动,
+    # 消除 cron"重构 —— 派生聚合改由三路事件/启动路径覆盖, 不再 cron 兜底:
+    #   1) 5m 收线事件驱动聚合 intraday 派生 (bar_poller→aggregate_and_publish, 2天窗自愈)
+    #   2) daily_settlement 收盘结算管 1d→1wk/1mo resample
+    #   3) startup_reconcile 启动时全量初始化 + 缺口补齐 (含派生全周期)
 
     # === 启动 reconcile: CORE ∪ watchlist 缺口回补 (非阻塞) ===
     from apps.collector.startup_reconcile import run_startup_reconcile
     _reconcile_task = asyncio.create_task(
         run_startup_reconcile("ashare", bar_repo, kline, _sweep_syms),
         name="ashare.startup_reconcile",
+    )
+
+    # === 收盘结算 (完成度驱动, 非 cron): 1d 唯一的稳态写入路径 ===
+    # 检测 session open→closed 边沿, 收盘后条件等待拉齐当日 1d + resample 1wk/1mo,
+    # 全就位才转空闲。根治"1d 只在启动 reconcile 写一次, 之后全天不更新"。
+    from apps.collector.ashare.daily_settlement import run_daily_settlement
+
+    async def _settle_symbols_provider() -> list[str]:
+        _wl = await get_watchlist_service().dynamic_universe()
+        return sorted({s for s in (set(_wl) | set(_core_symbols("ashare")))
+                       if _infer_market(s) == "ashare"})
+
+    _settlement_task = asyncio.create_task(
+        run_daily_settlement(kline, bar_repo, _settle_symbols_provider),
+        name="ashare.daily_settlement",
     )
 
     # === 分时数据 90 天 purge (每日 02:30 UTC) ===
@@ -346,6 +351,11 @@ async def lifespan(app: FastAPI):
         _reconcile_task.cancel()
         try:
             await _reconcile_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        _settlement_task.cancel()
+        try:
+            await _settlement_task
         except (asyncio.CancelledError, Exception):
             pass
         sched.shutdown(wait=False)
