@@ -43,6 +43,36 @@ _DEFAULT_TIMEOUT_S = float(os.getenv("AK_CALL_TIMEOUT_S", "25"))
 # 配合 poller 启动 jitter 错峰后通常排不到上限;仍可经 env 调大兜底。
 _RATELIMIT_MAX_WAIT_S = float(os.getenv("AK_RATELIMIT_MAX_WAIT_S", "30"))
 
+# 瞬时网络错误内层重试: 经代理 TLS 抖动 / 连接重置 / DNS 抖动等"重试一下就好"的错误。
+# 根因(2026-06-08 坐实): 冷启动经代理 7890 打 sina 偶发 SSLError: UNEXPECTED_EOF,
+# 而 ak_call 此前无任何重试 → 一次抖动该标的就卡到次日。只重试网络类瞬时错误,
+# 不重试 banned/限频/空数据(那些重试有害或无意义)。
+_NET_RETRY_ATTEMPTS = int(os.getenv("AK_NET_RETRY_ATTEMPTS", "2"))   # 额外重试次数
+_NET_RETRY_BASE_S = float(os.getenv("AK_NET_RETRY_BASE_S", "0.8"))   # 指数退避基数
+
+# 瞬时网络错误特征。子进程/worker 把底层异常包成 RuntimeError 字符串透传
+# ("... failed in worker: SSLError: ..."), 故按消息特征匹配, 不靠异常类型。
+_TRANSIENT_NET_MARKERS = (
+    "UNEXPECTED_EOF",
+    "SSLError",
+    "SSLEOFError",
+    "Max retries exceeded",
+    "Connection reset",
+    "Connection aborted",
+    "ConnectionError",
+    "RemoteDisconnected",
+    "Read timed out",
+    "ReadTimeout",
+    "ConnectTimeout",
+    "Temporary failure in name resolution",
+)
+
+
+def _is_transient_network_error(exc: BaseException) -> bool:
+    """异常是否为"重试一下可能就好"的瞬时网络错误。"""
+    msg = str(exc)
+    return any(m in msg for m in _TRANSIENT_NET_MARKERS)
+
 # func_name -> source 映射(用于 breaker/ratelimit 分发)
 # 不完整时默认 source="sina"(akshare 大多走 sina 系)
 _FUNC_TO_SOURCE = {
@@ -138,14 +168,32 @@ async def ak_call(
         # 默认(env_extras 空, LocalOutlet)走常驻 worker 池, 复用进程省去每次
         # import akshare(~0.8s CPU)。代理池注入 env_extras 时退回一次性子进程
         # (池 worker 用启动 env, 无法按请求改 env)。
+        # 瞬时网络错误(经代理 TLS 抖动等)内层重试: 只重试网络类, 指数退避。
+        # 重试在 _report_all 之前完成 → 恢复后只向 breaker 报一次成功, 不误触熔断。
         pool = get_worker_pool()
-        if pool is not None and not env_extras:
-            result = await pool.call(func_name, args, kwargs, timeout_s)
-        else:
-            result = await asyncio.to_thread(
-                _run_ak_in_child_process,
-                func_name, args, kwargs, timeout_s, env_extras,
-            )
+        attempt = 0
+        while True:
+            try:
+                if pool is not None and not env_extras:
+                    result = await pool.call(func_name, args, kwargs, timeout_s)
+                else:
+                    result = await asyncio.to_thread(
+                        _run_ak_in_child_process,
+                        func_name, args, kwargs, timeout_s, env_extras,
+                    )
+                break
+            except subprocess.TimeoutExpired:
+                raise  # timeout 不在网络瞬时重试范围, 交给外层 breaker
+            except Exception as e:  # noqa: BLE001
+                if attempt >= _NET_RETRY_ATTEMPTS or not _is_transient_network_error(e):
+                    raise
+                delay = _NET_RETRY_BASE_S * (2 ** attempt)
+                attempt += 1
+                log.warning("ak_call.net_retry", func=func_name, caller=label,
+                            source=source, attempt=attempt,
+                            max_attempts=_NET_RETRY_ATTEMPTS, delay_s=round(delay, 2),
+                            error_type=type(e).__name__, error=str(e)[:120])
+                await asyncio.sleep(delay)
         outcome = evaluate_response(result, source=source)
     except subprocess.TimeoutExpired:
         outcome = Outcome.timeout

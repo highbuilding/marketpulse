@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime, timedelta, timezone
 
 import structlog
@@ -69,6 +70,8 @@ _DAILY_LOOKBACK_DAYS = 2400           # 覆盖到 2020-01(2347 天)。日线深�
 _DAILY_STALE = timedelta(days=2)      # 日线落后超 2 天才补
 _INTRADAY_STALE = timedelta(days=4)   # 分钟/TF 落后超 4 天才补(否则 live poller 自愈)
 THROTTLE_S = 1.5   # 温和节流: 摊平 startup burst, 不加剧 sina/Alpaca 限频(P0 复盘)
+# 失败日线标的重试前的等待: 给瞬时网络抖动平息 / breaker 5min open 窗口进入 half-open。
+_DAILY_RETRY_DELAY_S = float(os.getenv("RECONCILE_DAILY_RETRY_DELAY_S", "20"))
 
 
 def _stale(last: datetime | None, now: datetime, thresh: timedelta) -> bool:
@@ -111,14 +114,23 @@ async def run_startup_reconcile(
         last_1d, last_5m, last_tf = {}, {}, {iv: {} for iv in direct_tf}
 
     filled = 0
+    failed_daily: list[str] = []  # 日线 fetch 失败的标的, 末尾重试一轮
     for sym in symbols:
         did_fetch = False
         try:
             # 1) 日线深窗口(冷启动填史到 2020 + 喂周/月聚合)
+            #    独立 try/except: 日线瞬时失败(经代理 SSL 抖动等)不再冒泡中断
+            #    本标的的分钟/聚合步。ak_call 已有网络瞬时重试; 这里再收集失败标的
+            #    末尾补一轮, 双保险根治"冷启动撞抖动 → 一批标的卡旧数据到次日"。
             if _stale(last_1d.get(sym), now, _DAILY_STALE):
-                await kline.fetch_fresh_bars(
-                    sym, interval="1d", start=start_deep, end=now)
-                did_fetch = True
+                try:
+                    await kline.fetch_fresh_bars(
+                        sym, interval="1d", start=start_deep, end=now)
+                    did_fetch = True
+                except Exception as e:  # noqa: BLE001
+                    failed_daily.append(sym)
+                    log.warning("reconcile.daily_failed",
+                                market=market, symbol=sym, error=str(e))
                 await asyncio.sleep(THROTTLE_S)
 
             # 2) 直取分钟周期(源头直拉, 不聚合): A股/美股都只 5m
@@ -165,4 +177,32 @@ async def run_startup_reconcile(
         except Exception as e:  # noqa: BLE001
             log.warning("startup_reconcile.symbol_failed",
                         market=market, symbol=sym, error=str(e))
+
+    # 失败日线标的补一轮: 冷启动瞬时抖动(经代理 SSL EOF)+ breaker 短暂 open 时,
+    # 首轮可能整批失败。sleep 让抖动平息 / breaker 进入 half-open, 再重拉一次。
+    # ak_call 自身的网络瞬时重试管"单次调用内"的抖动; 这一轮管"breaker open 期间
+    # 被直接拒绝"的标的(那种 ak_call 没机会重试)。仍失败的留给次日兜底, 不无限重试。
+    if failed_daily:
+        log.info("reconcile.daily_retry_start", market=market, count=len(failed_daily))
+        await asyncio.sleep(_DAILY_RETRY_DELAY_S)
+        recovered = 0
+        for sym in failed_daily:
+            try:
+                await kline.fetch_fresh_bars(
+                    sym, interval="1d", start=start_deep, end=now)
+                # 补聚合派生周期(日线刚补上, 1wk/1mo 需要重算)
+                try:
+                    await aggregate_derived_for_symbol(repo, market, sym, **agg_full)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("reconcile.retry_agg_failed",
+                                market=market, symbol=sym, error=str(e))
+                recovered += 1
+                filled += 1
+            except Exception as e:  # noqa: BLE001
+                log.warning("reconcile.daily_retry_failed",
+                            market=market, symbol=sym, error=str(e))
+            await asyncio.sleep(THROTTLE_S)
+        log.info("reconcile.daily_retry_done", market=market,
+                 recovered=recovered, total=len(failed_daily))
+
     log.info("startup_reconcile.done", market=market, filled=filled, total=len(symbols))
