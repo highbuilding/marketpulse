@@ -111,7 +111,11 @@ export interface Position {
   name: string | null
   quantity: number
   cost_price: number | null
+  close_price: number | null
+  profit_amount: number | null
+  profit_pct: number | null
   opened_at: string | null
+  closed_at: string | null
   strategy_tag: string | null
   entry_reason: string | null
   status: string

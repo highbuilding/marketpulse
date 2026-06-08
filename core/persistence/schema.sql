@@ -159,6 +159,7 @@ CREATE INDEX IF NOT EXISTS idx_baseline_market_date
 
 -- Plan: A 股 AI 盘中决策助手
 -- 用户手动维护持仓/观察记录。删除用 status='closed' 软删除, 保留复盘依据。
+-- 同一标的可多条记录(多次开/平仓), 按 id 操作; 无 UNIQUE(market,symbol) 约束。
 CREATE TABLE IF NOT EXISTS positions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   market TEXT NOT NULL,
@@ -166,14 +167,17 @@ CREATE TABLE IF NOT EXISTS positions (
   name TEXT,
   quantity INTEGER NOT NULL DEFAULT 0,
   cost_price REAL,
+  close_price REAL,
+  profit_amount REAL,
+  profit_pct REAL,
   opened_at TIMESTAMP,
+  closed_at TIMESTAMP,
   strategy_tag TEXT,
   entry_reason TEXT,
   status TEXT NOT NULL DEFAULT 'active',
   note TEXT,
   created_at TIMESTAMP NOT NULL,
-  updated_at TIMESTAMP NOT NULL,
-  UNIQUE(market, symbol)
+  updated_at TIMESTAMP NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_positions_market_status
   ON positions(market, status, updated_at DESC);

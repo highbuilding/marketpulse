@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { id: 'dashboard', label: '概览',     icon: '📊', href: '/' },
   { id: 'market',    label: '行情',     icon: '📈', href: '/market' },
   { id: 'watchlist', label: '自选',     icon: '⭐', href: '/watchlist' },
+  { id: 'positions', label: '持仓',     icon: '📋', href: '/positions' },
   { id: 'signals',   label: 'CD 信号',  icon: '🎯', href: '/signals' },
   { id: 'strategy',  label: '策略回测', icon: '🧪', href: '/strategy' },
   { id: 'assistant', label: 'AI 助手',  icon: '🤖', href: '/assistant' },
@@ -22,17 +23,24 @@ const NAV_ITEMS = [
 function ClientTime() {
   const [t, setT] = useState('')
   useEffect(() => {
-    setT(new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }))
-    const id = setInterval(() => setT(new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })), 1000)
+    const fmt = () => new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+    setT(fmt())
+    const id = setInterval(() => setT(fmt()), 1000)
     return () => clearInterval(id)
   }, [])
-  return <span style={{ fontSize: 12, color: 'var(--text3)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{t || '--:--:--'} BJT</span>
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 5, whiteSpace: 'nowrap' }}>
+      <span style={{ fontSize: 17, fontWeight: 700, color: 'var(--text)', fontFamily: 'monospace', letterSpacing: 0.5 }}>{t || '--:--:--'}</span>
+      <span style={{ fontSize: 11, color: 'var(--text3)' }}>BJT</span>
+    </span>
+  )
 }
 
 const PHASE_COLOR: Record<MarketPhase, string> = {
   open: 'var(--green)', pre: '#e0a73e', after: '#e0a73e', lunch: '#e0a73e', closed: 'var(--text3)',
 }
 
+// 跟随当前选中市场展示交易阶段(切市场→换状态), 含数据源离线提示 + 市场标签。
 function MarketPhaseBadge({ market }: { market: MarketId }) {
   const [phase, setPhase] = useState<MarketPhase | null>(null)
   useEffect(() => {

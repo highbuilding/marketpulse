@@ -133,13 +133,21 @@ class ChipSummary:
 
 @dataclass(frozen=True, slots=True)
 class Position:
-    """用户手动维护的观察/持仓记录。"""
+    """用户手动维护的观察/持仓记录。
+
+    同一标的可多条(多次开/平仓), 按 id 操作。盈亏存库(B 方案):
+    活跃持仓概览页用实时现价算浮动盈亏(不写库); 已平仓用手填平仓价算已实现盈亏写库。
+    """
     market: str
     symbol: str
     name: str | None = None
     quantity: int = 0
     cost_price: float | None = None
+    close_price: float | None = None
+    profit_amount: float | None = None
+    profit_pct: float | None = None
     opened_at: datetime | None = None
+    closed_at: datetime | None = None
     strategy_tag: str | None = None
     entry_reason: str | None = None
     status: str = "active"

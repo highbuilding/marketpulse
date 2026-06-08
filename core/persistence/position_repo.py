@@ -38,7 +38,11 @@ class PositionRepo:
             name=row["name"],
             quantity=row["quantity"],
             cost_price=row["cost_price"],
+            close_price=row["close_price"],
+            profit_amount=row["profit_amount"],
+            profit_pct=row["profit_pct"],
             opened_at=_dt(row["opened_at"]),
+            closed_at=_dt(row["closed_at"]),
             strategy_tag=row["strategy_tag"],
             entry_reason=row["entry_reason"],
             status=row["status"],
@@ -47,57 +51,64 @@ class PositionRepo:
             updated_at=_dt(row["updated_at"]),
         )
 
-    async def upsert(self, position: Position) -> int:
+    _COLS = (
+        "id, market, symbol, name, quantity, cost_price, close_price, "
+        "profit_amount, profit_pct, opened_at, closed_at, strategy_tag, "
+        "entry_reason, status, note, created_at, updated_at"
+    )
+
+    async def create(self, position: Position) -> int:
+        """新增一条持仓(A 方案: 同标的可多条, 纯 insert 不 upsert)。"""
         now = datetime.now(timezone.utc).isoformat()
         async with self._connect() as db:
-            await db.execute(
+            cur = await db.execute(
                 """INSERT INTO positions (
-                     market, symbol, name, quantity, cost_price, opened_at,
+                     market, symbol, name, quantity, cost_price, close_price,
+                     profit_amount, profit_pct, opened_at, closed_at,
                      strategy_tag, entry_reason, status, note, created_at, updated_at
                    )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(market, symbol) DO UPDATE SET
-                     name=excluded.name,
-                     quantity=excluded.quantity,
-                     cost_price=excluded.cost_price,
-                     opened_at=excluded.opened_at,
-                     strategy_tag=excluded.strategy_tag,
-                     entry_reason=excluded.entry_reason,
-                     status=excluded.status,
-                     note=excluded.note,
-                     updated_at=excluded.updated_at""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    position.market,
-                    position.symbol,
-                    position.name,
-                    position.quantity,
-                    position.cost_price,
-                    _iso(position.opened_at),
-                    position.strategy_tag,
-                    position.entry_reason,
-                    position.status,
-                    position.note,
+                    position.market, position.symbol, position.name,
+                    position.quantity, position.cost_price, position.close_price,
+                    position.profit_amount, position.profit_pct,
+                    _iso(position.opened_at), _iso(position.closed_at),
+                    position.strategy_tag, position.entry_reason,
+                    position.status, position.note,
                     position.created_at.astimezone(timezone.utc).isoformat()
                     if position.created_at else now,
                     now,
                 ),
             )
             await db.commit()
-            cur = await db.execute(
-                "SELECT id FROM positions WHERE market = ? AND symbol = ?",
-                (position.market, position.symbol),
-            )
-            row = await cur.fetchone()
-        return int(row["id"])
+            return int(cur.lastrowid)
 
-    async def get(self, market: str, symbol: str) -> Position | None:
+    async def update(self, position: Position) -> None:
+        """按 id 更新一条持仓(全字段, 含平仓价/盈亏)。"""
+        if position.id is None:
+            raise ValueError("update requires position.id")
+        now = datetime.now(timezone.utc).isoformat()
+        async with self._connect() as db:
+            await db.execute(
+                """UPDATE positions SET
+                     name=?, quantity=?, cost_price=?, close_price=?,
+                     profit_amount=?, profit_pct=?, opened_at=?, closed_at=?,
+                     strategy_tag=?, entry_reason=?, status=?, note=?, updated_at=?
+                   WHERE id=?""",
+                (
+                    position.name, position.quantity, position.cost_price,
+                    position.close_price, position.profit_amount, position.profit_pct,
+                    _iso(position.opened_at), _iso(position.closed_at),
+                    position.strategy_tag, position.entry_reason,
+                    position.status, position.note, now, position.id,
+                ),
+            )
+            await db.commit()
+
+    async def get_by_id(self, position_id: int) -> Position | None:
         async with self._connect() as db:
             cur = await db.execute(
-                """SELECT id, market, symbol, name, quantity, cost_price, opened_at,
-                          strategy_tag, entry_reason, status, note, created_at, updated_at
-                   FROM positions
-                   WHERE market = ? AND symbol = ?""",
-                (market, symbol),
+                f"SELECT {self._COLS} FROM positions WHERE id = ?", (position_id,),
             )
             row = await cur.fetchone()
         return self._row_to_position(row) if row else None
@@ -105,12 +116,7 @@ class PositionRepo:
     async def list_by_market(
         self, market: str, *, include_closed: bool = False,
     ) -> list[Position]:
-        sql = [
-            """SELECT id, market, symbol, name, quantity, cost_price, opened_at,
-                      strategy_tag, entry_reason, status, note, created_at, updated_at
-               FROM positions
-               WHERE market = ?""",
-        ]
+        sql = [f"SELECT {self._COLS} FROM positions WHERE market = ?"]
         args: list[object] = [market]
         if not include_closed:
             sql.append("AND status != 'closed'")
@@ -120,12 +126,23 @@ class PositionRepo:
             rows = await cur.fetchall()
         return [self._row_to_position(r) for r in rows]
 
-    async def close(self, market: str, symbol: str) -> None:
+    async def close(
+        self, position_id: int, *, close_price: float | None = None,
+        profit_amount: float | None = None, profit_pct: float | None = None,
+    ) -> None:
+        """按 id 平仓: status=closed + 记平仓价/盈亏/平仓时间。"""
+        now = datetime.now(timezone.utc).isoformat()
         async with self._connect() as db:
             await db.execute(
-                """UPDATE positions
-                   SET status = 'closed', updated_at = ?
-                   WHERE market = ? AND symbol = ?""",
-                (datetime.now(timezone.utc).isoformat(), market, symbol),
+                """UPDATE positions SET
+                     status='closed', close_price=?, profit_amount=?, profit_pct=?,
+                     closed_at=?, updated_at=?
+                   WHERE id=?""",
+                (close_price, profit_amount, profit_pct, now, now, position_id),
             )
+            await db.commit()
+
+    async def delete(self, position_id: int) -> None:
+        async with self._connect() as db:
+            await db.execute("DELETE FROM positions WHERE id = ?", (position_id,))
             await db.commit()

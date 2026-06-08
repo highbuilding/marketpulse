@@ -20,7 +20,11 @@ class PositionDTO(BaseModel):
     name: str | None
     quantity: int
     cost_price: float | None
+    close_price: float | None
+    profit_amount: float | None
+    profit_pct: float | None
     opened_at: str | None
+    closed_at: str | None
     strategy_tag: str | None
     entry_reason: str | None
     status: str
@@ -33,7 +37,7 @@ class PositionsResp(BaseModel):
     positions: list[PositionDTO]
 
 
-class UpsertPositionBody(BaseModel):
+class CreatePositionBody(BaseModel):
     market: str = "ashare"
     symbol: str = Field(..., min_length=1)
     name: str | None = None
@@ -42,7 +46,6 @@ class UpsertPositionBody(BaseModel):
     opened_at: str | None = None
     strategy_tag: str | None = None
     entry_reason: str | None = None
-    status: str = "active"
     note: str | None = None
 
 
@@ -57,8 +60,13 @@ class PatchPositionBody(BaseModel):
     opened_at: str | None = None
     strategy_tag: str | None = None
     entry_reason: str | None = None
-    status: str | None = None
     note: str | None = None
+
+
+class ClosePositionBody(BaseModel):
+    """平仓: 手填平仓价, 盈亏由 (平仓价-开仓价)*股数 算出并存库。"""
+    close_price: float | None = Field(default=None, ge=0)
+    closed_at: str | None = None
 
 
 def _parse_dt(value: str | None) -> datetime | None:
@@ -67,7 +75,7 @@ def _parse_dt(value: str | None) -> datetime | None:
     try:
         return datetime.fromisoformat(value)
     except ValueError as exc:
-        raise HTTPException(400, "invalid opened_at datetime") from exc
+        raise HTTPException(400, "invalid datetime") from exc
 
 
 def _dto(p: Position) -> PositionDTO:
@@ -78,7 +86,11 @@ def _dto(p: Position) -> PositionDTO:
         name=p.name,
         quantity=p.quantity,
         cost_price=p.cost_price,
+        close_price=p.close_price,
+        profit_amount=p.profit_amount,
+        profit_pct=p.profit_pct,
         opened_at=p.opened_at.isoformat() if p.opened_at else None,
+        closed_at=p.closed_at.isoformat() if p.closed_at else None,
         strategy_tag=p.strategy_tag,
         entry_reason=p.entry_reason,
         status=p.status,
@@ -106,15 +118,15 @@ async def list_positions(
 
 
 @router.post("", response_model=PositionIdResp)
-async def upsert_position(
-    body: UpsertPositionBody,
+async def create_position(
+    body: CreatePositionBody,
     svc: PositionService = Depends(get_position_service),
 ) -> PositionIdResp:
     symbol = body.symbol.strip().upper()
     if not symbol:
         raise HTTPException(400, "symbol cannot be empty")
     try:
-        row_id = await svc.upsert_position(
+        row_id = await svc.create_position(
             Position(
                 market=body.market,
                 symbol=symbol,
@@ -124,7 +136,7 @@ async def upsert_position(
                 opened_at=_parse_dt(body.opened_at),
                 strategy_tag=body.strategy_tag,
                 entry_reason=body.entry_reason,
-                status=body.status,
+                status="active",
                 note=body.note,
             ),
         )
@@ -133,45 +145,66 @@ async def upsert_position(
     return PositionIdResp(id=row_id)
 
 
-@router.patch("/{symbol}", response_model=PositionIdResp)
+@router.patch("/{position_id}", response_model=PositionIdResp)
 async def patch_position(
-    symbol: str,
+    position_id: int,
     body: PatchPositionBody,
-    market: str = Query("ashare"),
     svc: PositionService = Depends(get_position_service),
 ) -> PositionIdResp:
-    sym = symbol.strip().upper()
-    try:
-        existing = await svc.get_position(market, sym)
-    except ValueError as exc:
-        _handle_unsupported(exc)
+    existing = await svc.get_position(position_id)
     if existing is None:
         raise HTTPException(404, "position not found")
-    row_id = await svc.upsert_position(
-        Position(
-            market=market,
-            symbol=sym,
-            name=body.name if body.name is not None else existing.name,
-            quantity=body.quantity if body.quantity is not None else existing.quantity,
-            cost_price=body.cost_price if body.cost_price is not None else existing.cost_price,
-            opened_at=_parse_dt(body.opened_at) if body.opened_at is not None else existing.opened_at,
-            strategy_tag=body.strategy_tag if body.strategy_tag is not None else existing.strategy_tag,
-            entry_reason=body.entry_reason if body.entry_reason is not None else existing.entry_reason,
-            status=body.status if body.status is not None else existing.status,
-            note=body.note if body.note is not None else existing.note,
-            created_at=existing.created_at,
-        ),
-    )
-    return PositionIdResp(id=row_id)
-
-
-@router.delete("/{symbol}", status_code=204)
-async def close_position(
-    symbol: str,
-    market: str = Query("ashare"),
-    svc: PositionService = Depends(get_position_service),
-) -> None:
     try:
-        await svc.close_position(market, symbol.strip().upper())
+        await svc.update_position(
+            Position(
+                id=position_id,
+                market=existing.market,
+                symbol=existing.symbol,
+                name=body.name if body.name is not None else existing.name,
+                quantity=body.quantity if body.quantity is not None else existing.quantity,
+                cost_price=body.cost_price if body.cost_price is not None else existing.cost_price,
+                close_price=existing.close_price,
+                profit_amount=existing.profit_amount,
+                profit_pct=existing.profit_pct,
+                opened_at=_parse_dt(body.opened_at) if body.opened_at is not None else existing.opened_at,
+                closed_at=existing.closed_at,
+                strategy_tag=body.strategy_tag if body.strategy_tag is not None else existing.strategy_tag,
+                entry_reason=body.entry_reason if body.entry_reason is not None else existing.entry_reason,
+                status=existing.status,
+                note=body.note if body.note is not None else existing.note,
+                created_at=existing.created_at,
+            ),
+        )
     except ValueError as exc:
         _handle_unsupported(exc)
+    return PositionIdResp(id=position_id)
+
+
+@router.post("/{position_id}/close", response_model=PositionIdResp)
+async def close_position(
+    position_id: int,
+    body: ClosePositionBody,
+    svc: PositionService = Depends(get_position_service),
+) -> PositionIdResp:
+    """平仓: 手填平仓价 → 盈亏=(平仓价-开仓价)*股数 算出并存库。"""
+    existing = await svc.get_position(position_id)
+    if existing is None:
+        raise HTTPException(404, "position not found")
+    profit_amount: float | None = None
+    profit_pct: float | None = None
+    if body.close_price is not None and existing.cost_price:
+        profit_amount = (body.close_price - existing.cost_price) * existing.quantity
+        profit_pct = (body.close_price - existing.cost_price) / existing.cost_price * 100
+    await svc.close_position(
+        position_id, close_price=body.close_price,
+        profit_amount=profit_amount, profit_pct=profit_pct,
+    )
+    return PositionIdResp(id=position_id)
+
+
+@router.delete("/{position_id}", status_code=204)
+async def delete_position(
+    position_id: int,
+    svc: PositionService = Depends(get_position_service),
+) -> None:
+    await svc.delete_position(position_id)
