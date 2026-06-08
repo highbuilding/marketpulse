@@ -1,6 +1,6 @@
 import type {
-  BarsResponse, ChipSummaryResponse, FundFlowResponse, IndexMinuteResponse,
-  Interval, SearchHit, SymbolProfile, SymbolQuote, VolumeIndicatorsResponse,
+  BarsResponse, ChipSummaryResponse, FundFlowResponse,
+  Interval, SearchHit, SymbolProfile, VolumeIndicatorsResponse,
 } from './types'
 
 export async function fetchBars(symbol: string, interval: Interval, days: number): Promise<BarsResponse> {
@@ -56,24 +56,12 @@ export async function fetchSymbolProfiles(symbols: string[]): Promise<SymbolProf
   return data.profiles
 }
 
-export async function fetchSymbolQuote(symbol: string): Promise<SymbolQuote> {
-  const r = await fetch(`/api/symbols/${symbol}/quote`, { cache: 'no-store' })
-  if (!r.ok) throw new Error(`${r.status}`)
-  return r.json()
-}
-
 export async function searchSymbols(
   q: string, limit = 20, market?: string,
 ): Promise<{ query: string; hits: SearchHit[] }> {
   const sp = new URLSearchParams({ q, limit: String(limit) })
   if (market) sp.set('market', market)
   const r = await fetch(`/api/symbols/search?${sp}`, { cache: 'no-store' })
-  if (!r.ok) throw new Error(`${r.status}`)
-  return r.json()
-}
-
-export async function fetchIndexMinute(symbol: string, days = 1): Promise<IndexMinuteResponse> {
-  const r = await fetch(`/api/indices/${encodeURIComponent(symbol)}/minute?days=${days}`, { cache: 'no-store' })
   if (!r.ok) throw new Error(`${r.status}`)
   return r.json()
 }

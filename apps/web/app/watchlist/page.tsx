@@ -8,27 +8,13 @@ import { SymbolSearch } from '@/components/SymbolSearch'
 import {
   addWatchlistSymbol, listWatchlists, listWatchlistSymbols, removeWatchlistSymbol,
 } from '@/lib/watchlist_api'
-import { fetchSymbolProfile, fetchSymbolQuote } from '@/lib/symbol_api'
+import { fetchSymbolProfile } from '@/lib/symbol_api'
 import { inferMarket, type Market } from '@/lib/markets'
 import { useMarket, MARKET_LABELS } from '@/lib/market-context'
 import { useActiveWatchlistId } from '@/lib/use_active_watchlist'
 
-function fmtVolume(v: number | null | undefined): string {
-  if (v == null) return '—'
-  const abs = Math.abs(v)
-  if (abs >= 1e8) return `${(v / 1e8).toFixed(2)} 亿`
-  if (abs >= 1e4) return `${(v / 1e4).toFixed(2)} 万`
-  return v.toFixed(0)
-}
-
 function SymbolRow({ symbol, onRemove }: { symbol: string; onRemove: (s: string) => void }) {
   const { data: profile } = useSWR(`profile:${symbol}`, () => fetchSymbolProfile(symbol))
-  const { data: quote } = useSWR(`quote:${symbol}`, () => fetchSymbolQuote(symbol), { refreshInterval: 15_000 })
-
-  const price = quote?.price
-  const pct = quote?.change_pct
-  const vol = quote?.volume
-  const pctCls = pct == null ? '' : pct > 0 ? 'text-up' : pct < 0 ? 'text-down' : ''
 
   return (
     <tr>
@@ -38,9 +24,6 @@ function SymbolRow({ symbol, onRemove }: { symbol: string; onRemove: (s: string)
           <span style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'monospace' }}>{symbol}</span>
         </Link>
       </td>
-      <td style={{ fontFamily: 'monospace' }}>{price != null ? price.toFixed(2) : '—'}</td>
-      <td><span style={{ fontSize: 11 }} className={pctCls}>{pct != null ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : '—'}</span></td>
-      <td style={{ fontFamily: 'monospace', color: 'var(--text2)' }}>{fmtVolume(vol)}</td>
       <td><button onClick={() => onRemove(symbol)} style={{ color: 'var(--red)', fontSize: 12, background: 'none', border: 'none', cursor: 'pointer' }}>移除</button></td>
     </tr>
   )
@@ -115,10 +98,10 @@ export default function WatchlistPage() {
           <span style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 400 }}>{symbolsForTab.length} 只</span>
         </div>
         <table className="data-table">
-          <thead><tr><th>名称</th><th>价格</th><th>涨跌幅</th><th>成交量</th><th></th></tr></thead>
+          <thead><tr><th>名称</th><th></th></tr></thead>
           <tbody>
             {symbolsForTab.length === 0 && (
-              <tr><td colSpan={5} style={{ textAlign: 'center', padding: 40, color: 'var(--text3)' }}>
+              <tr><td colSpan={2} style={{ textAlign: 'center', padding: 40, color: 'var(--text3)' }}>
                 {market === 'hk' ? '港股本期暂未接入' : '当前市场暂无自选,搜索添加'}
               </td></tr>
             )}

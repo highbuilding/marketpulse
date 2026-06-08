@@ -126,14 +126,6 @@ export interface SymbolProfile {
   market: Market | null
 }
 
-export interface SymbolQuote {
-  symbol: string
-  price: number | null
-  change_pct: number | null
-  volume: number | null
-  ts: string | null
-}
-
 export interface SearchHit {
   symbol: string
   name: string
@@ -153,30 +145,6 @@ export interface CDSignalDTO {
   price: number
   d_value: number | null
   acknowledged: boolean
-}
-
-export interface IndexMinutePoint {
-  ts: string
-  close: number
-  volume: number
-}
-
-export interface MarketExtras {
-  fund_inflow?: number | null
-  fund_inflow_label?: string | null
-  amount?: number | null
-  amount_unit?: string | null
-  amount_ratio?: number | null
-}
-
-export interface IndexMinuteResponse {
-  symbol: string
-  name: string
-  granularity: '1m' | '5m' | '1d'
-  prev_close?: number | null
-  points: IndexMinutePoint[]
-  market_extras?: MarketExtras
-  meta?: ResponseMeta
 }
 
 export interface AIMarketBreadth {
