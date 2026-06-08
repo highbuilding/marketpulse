@@ -156,7 +156,7 @@ async def lifespan(app: FastAPI):
     # === scheduler: 仅 A 股专属 cron ===
     from core.scheduler.scheduler import (
         attach_ai_packet_job, attach_chip_preload_job,
-        attach_fundamentals_jobs, attach_market_dashboard_job,
+        attach_fundamentals_jobs,
         attach_market_top_job, attach_signal_jobs, build_scheduler,
     )
     from apps.api.deps import (
@@ -184,7 +184,6 @@ async def lifespan(app: FastAPI):
         ),
         name="ashare.signal_scan_consumer",
     )
-    attach_market_dashboard_job(sched, cache=redis_cache)
     attach_market_top_job(sched,
                           market_query=get_market_query_service(),
                           cache=redis_cache)

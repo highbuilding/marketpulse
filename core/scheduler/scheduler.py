@@ -315,20 +315,6 @@ def attach_crypto_signal_jobs(
     log.info("scheduler.crypto_signal_jobs_attached")
 
 
-def attach_market_dashboard_job(
-    sched: AsyncIOScheduler,
-    *, cache,  # RedisCache
-) -> None:
-    from apps.collector.jobs.market_dashboard import refresh_dashboard_job
-    sched.add_job(
-        _leader_gated(refresh_dashboard_job), IntervalTrigger(seconds=60),
-        args=(cache,),
-        id="market_dashboard:ashare", max_instances=1, coalesce=True,
-        misfire_grace_time=30,
-    )
-    log.info("scheduler.market_dashboard_attached")
-
-
 def attach_chip_preload_job(
     sched: AsyncIOScheduler,
     *, chip_service, watchlist,
