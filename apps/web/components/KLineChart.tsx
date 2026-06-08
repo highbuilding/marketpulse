@@ -10,6 +10,20 @@ import { marketTz, tzOffsetSeconds, type Market } from '@/lib/markets'
 import { makeChartCrosshairFormatter, makeChartTickFormatter } from '@/lib/chart_time'
 import type { BarDTO, Interval } from '@/lib/types'
 
+// 从全局 CSS 变量读当前主题色值传给图表 (lightweight-charts 是 canvas, 读不到 CSS 变量)。
+// 让 K 线背景/文字/网格跟随明暗主题, 不再硬编码纯黑(暗色用 --bg2 面板色, 与卡片一致)。
+function readChartTheme() {
+  const cs = typeof window !== 'undefined'
+    ? getComputedStyle(document.documentElement) : null
+  const v = (name: string, fallback: string) =>
+    (cs?.getPropertyValue(name).trim() || fallback)
+  return {
+    bg: v('--bg2', '#161822'),
+    text: v('--text2', '#8b8fa3'),
+    grid: v('--border', '#2a2d3a'),
+  }
+}
+
 export interface SignalMarker {
   ts: string                 // ISO UTC, 与 bar.ts 同源
   signal_type: 'buy' | 'sell'
@@ -144,21 +158,22 @@ export function KLineChart({
   // setData / setMarkers / priceLines, 不重建 chart → 用户视野不会被强制拉回末端.
   useEffect(() => {
     if (!ref.current) return
+    const theme = readChartTheme()
     const chart = createChart(ref.current, {
       height,
       layout: {
-        background: { color: '#0a0a0a' }, textColor: '#d4d4d4',
+        background: { color: theme.bg }, textColor: theme.text,
         attributionLogo: false,
       },
-      grid: { vertLines: { color: '#262626' }, horzLines: { color: '#262626' } },
+      grid: { vertLines: { color: theme.grid }, horzLines: { color: theme.grid } },
       localization: { timeFormatter: makeChartCrosshairFormatter(market) },
       timeScale: {
         timeVisible: intraday,
         secondsVisible: false,
-        borderColor: '#262626',
+        borderColor: theme.grid,
         tickMarkFormatter: makeChartTickFormatter(market),
       },
-      rightPriceScale: { borderColor: '#262626' },
+      rightPriceScale: { borderColor: theme.grid },
     })
     chartRef.current = chart
     const candle = chart.addCandlestickSeries({
@@ -180,6 +195,18 @@ export function KLineChart({
     })
     ro.observe(ref.current)
 
+    // 主题切换 (data-theme 变) → 重读 CSS 变量, 更新图表背景/文字/网格色, 跟随明暗主题。
+    const mo = new MutationObserver(() => {
+      const t = readChartTheme()
+      chart.applyOptions({
+        layout: { background: { color: t.bg }, textColor: t.text },
+        grid: { vertLines: { color: t.grid }, horzLines: { color: t.grid } },
+        timeScale: { borderColor: t.grid },
+        rightPriceScale: { borderColor: t.grid },
+      })
+    })
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+
     // 滑动翻页: 可视区左边界逼近已加载最老一根 (logical from < 阈值) → 拉更早一页。
     // lightweight-charts 在 prepend setData 后按 bar-index 保留逻辑区间, 视野不跳。
     const onRange = (range: { from: number } | null) => {
@@ -200,6 +227,7 @@ export function KLineChart({
 
     return () => {
       ro.disconnect()
+      mo.disconnect()
       try { chart.timeScale().unsubscribeVisibleLogicalRangeChange(onRange) } catch { /* chart 已销毁 */ }
       try { chart.unsubscribeCrosshairMove(onCrosshair) } catch { /* chart 已销毁 */ }
       for (const line of priceLineRefsRef.current) {

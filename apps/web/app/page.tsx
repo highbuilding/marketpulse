@@ -5,10 +5,6 @@ import useSWR from 'swr'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useMarket } from '@/lib/market-context'
-import { fmtSignalTs } from '@/lib/signal_time'
-import { listCDSignals } from '@/lib/cd_signals_api'
-import { useSignalStream } from '@/lib/use_signal_stream'
-import { tradingDateKey, todayKey } from '@/lib/markets'
 import { fetchSymbolProfile } from '@/lib/symbol_api'
 import { fetchHealth } from '@/lib/api'
 import { listWatchlists, listWatchlistSymbols } from '@/lib/watchlist_api'
@@ -17,6 +13,7 @@ import { isMarketOpenNow, inferMarket, type Market } from '@/lib/markets'
 import { useBarsHistory, mergeTail } from '@/lib/use_bars_history'
 import { useKlineStream } from '@/lib/use_kline_stream'
 import { KLineChart } from '@/components/KLineChart'
+import { PositionsPanel } from '@/components/PositionsPanel'
 import type { BarDTO, Interval } from '@/lib/types'
 
 // ── helpers ──
@@ -198,23 +195,6 @@ export default function HomePage() {
   const streamBars = useKlineStream(selected, chartIv, true)
   const displayBars = useMemo(() => mergeTail(hist.bars, streamBars), [hist.bars, streamBars])
 
-  // 信号: 首屏查当天(市场交易日)+ SSE 实时追加, merge 去重, bar_ts 降序
-  const { data: signalsResp } = useSWR(`signals:${market}`,
-    () => listCDSignals({ market, limit: 50 }), { refreshInterval: 60_000 })
-  const liveSignals = useSignalStream()
-  const signals = useMemo(() => {
-    const today = todayKey(market as Market)
-    const merged = new Map<string, any>()
-    for (const s of [...(signalsResp?.signals ?? []), ...liveSignals]) {
-      if (inferMarket(s.symbol) !== market) continue
-      if (tradingDateKey(s.bar_ts, market as Market) !== today) continue
-      merged.set(`${s.symbol}:${s.interval}:${s.bar_ts}:${s.signal_type}`, s)
-    }
-    return Array.from(merged.values())
-      .sort((a, b) => b.bar_ts.localeCompare(a.bar_ts))
-      .slice(0, 4)
-  }, [signalsResp, liveSignals, market])
-
   // 数据源健康: 离线时价格区标灰 + 关闪烁(crypto→binance, 其余同名)
   const { data: health } = useSWR('health', fetchHealth, { refreshInterval: 30_000 })
   const adapterKey = market === 'crypto' ? 'binance' : market
@@ -318,40 +298,8 @@ export default function HomePage() {
         </div>
       </div>
 
-      {/* Bottom: Signals + Info */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        <div className="panel">
-          <div className="panel-header">
-            🎯 最近信号 · {market === 'ashare' ? 'A股' : market === 'us' ? '美股' : market === 'crypto' ? 'Crypto' : market}
-            <Link href="/signals" style={{ fontSize: 12, color: 'var(--accent)' }}>全部 →</Link>
-          </div>
-          <div>
-            {signals.length === 0 && <div style={{ padding: 30, textAlign: 'center', color: 'var(--text3)' }}>暂无信号</div>}
-            {signals.map((s: any, i: number) => (
-              <div key={i} onClick={() => { setMarket(inferMarket(s.symbol)); router.push(`/symbol/${encodeURIComponent(s.symbol)}`) }}
-                style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 18px', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
-                <div className={`sig-badge ${s.signal_type === 'buy' ? 'buy' : 'sell'}`}>{s.signal_type === 'buy' ? '📈' : '📉'}</div>
-                <div style={{ flex: 1 }}>
-                  <span style={{ fontWeight: 600 }}>{s.symbol}</span>
-                  <div style={{ fontSize: 12, color: 'var(--text2)' }}>{s.signal_type === 'buy' ? '底背离买入' : '顶背离卖出'} · {s.interval}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text3)' }}>
-                    {fmtSignalTs(s.bar_ts, s.interval, inferMarket(s.symbol))}
-                    {s.price != null && <span> · 触发价 <span className="font-mono">{s.price}</span></span>}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className="panel">
-          <div className="panel-header"><MarketStatus market={market} /> · {market === 'crypto' ? 'Binance WS 实时' : market === 'us' ? 'Alpaca WS 实时' : 'bar_poller 10s'}</div>
-          <div style={{ padding: '14px 18px' }}>
-            <p style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.8 }}>
-              点击<b>自选列表</b>切换预览标的 · <b>鼠标滚轮缩放</b> · <b>拖拽回看历史</b> · <b>详情 →</b> 全屏 K 线
-            </p>
-          </div>
-        </div>
-      </div>
+      {/* Bottom: 持仓 (手动填入, 仅A股) */}
+      <PositionsPanel />
     </div>
   )
 }
