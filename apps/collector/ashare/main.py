@@ -91,6 +91,12 @@ async def lifespan(app: FastAPI):
              outlets=["local"], breakers=list(_breakers.keys()),
              ratelimits=list(_ratelimits.keys()))
 
+    # 常驻 akshare worker 池: 复用进程省去每次 ak_call 冷启动重 import akshare
+    # (~0.8s CPU)。并发上限=池大小, 天然削峰防开盘 CPU 打满。
+    from core.integrations.akshare import init_worker_pool
+    from core.domain.runtime_env import tiered_int as _tiered_int_pool
+    await init_worker_pool(_tiered_int_pool("AK_WORKER_POOL_SIZE", test=2, prod=6))
+
     # Leader (per-process, 进程拆开后每个 collector 独立 leader 锁; 互不干扰)
     from core.cache import keys as _keys
     _node_id = f"{socket.gethostname()}-ashare-{os.getpid()}"
@@ -343,6 +349,11 @@ async def lifespan(app: FastAPI):
         except (asyncio.CancelledError, Exception):
             pass
         sched.shutdown(wait=False)
+        try:
+            from core.integrations.akshare import close_worker_pool
+            await close_worker_pool()
+        except Exception:
+            pass
         try:
             await _redis_for_mw.aclose()
         except Exception:

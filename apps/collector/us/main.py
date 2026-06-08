@@ -263,6 +263,11 @@ async def lifespan(app: FastAPI):
             pass
         sched.shutdown(wait=False)
         try:
+            from core.integrations.akshare import close_worker_pool
+            await close_worker_pool()
+        except Exception:
+            pass
+        try:
             await _redis_for_mw.aclose()
         except Exception:
             pass

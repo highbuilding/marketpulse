@@ -69,6 +69,33 @@ def _infer_source(func_name: str) -> str:
     return _FUNC_TO_SOURCE.get(func_name, "sina")
 
 
+# ── 常驻 worker 池单例(collector 启动时 init, api/crypto 不 init → None 退回旧路径)──
+_worker_pool = None  # type: ignore[var-annotated]
+
+
+def get_worker_pool():
+    """返回当前进程的 worker 池单例; 未 init(api/crypto/测试)返 None。"""
+    return _worker_pool
+
+
+async def init_worker_pool(size: int) -> None:
+    """collector lifespan 启动池。重复调用幂等(已存在则跳过)。"""
+    global _worker_pool
+    if _worker_pool is not None:
+        return
+    from core.integrations.ak_worker_pool import AkWorkerPool
+    _worker_pool = AkWorkerPool(size)
+    await _worker_pool.start()
+
+
+async def close_worker_pool() -> None:
+    """collector lifespan 关闭池。"""
+    global _worker_pool
+    if _worker_pool is not None:
+        await _worker_pool.aclose()
+        _worker_pool = None
+
+
 async def ak_call(
     func_name: str,
     *args: Any,
@@ -108,10 +135,17 @@ async def ak_call(
     outcome: Outcome
     result: Any = None
     try:
-        result = await asyncio.to_thread(
-            _run_ak_in_child_process,
-            func_name, args, kwargs, timeout_s, env_extras,
-        )
+        # 默认(env_extras 空, LocalOutlet)走常驻 worker 池, 复用进程省去每次
+        # import akshare(~0.8s CPU)。代理池注入 env_extras 时退回一次性子进程
+        # (池 worker 用启动 env, 无法按请求改 env)。
+        pool = get_worker_pool()
+        if pool is not None and not env_extras:
+            result = await pool.call(func_name, args, kwargs, timeout_s)
+        else:
+            result = await asyncio.to_thread(
+                _run_ak_in_child_process,
+                func_name, args, kwargs, timeout_s, env_extras,
+            )
         outcome = evaluate_response(result, source=source)
     except subprocess.TimeoutExpired:
         outcome = Outcome.timeout
