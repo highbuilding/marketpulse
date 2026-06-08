@@ -129,22 +129,12 @@ export default function HomePage() {
       .then(r => { const m: Record<string, BarDTO[]> = {}; indices.forEach((x, i) => { m[x.symbol] = r[i] ?? [] }); return m }),
     { refreshInterval: 60_000, revalidateOnFocus: false })
 
-  // 指数实时: /indices/minute(今日末点 vs 昨收)。30s 轮询。A股/美股有数据→实时;
-  // crypto 无 minute 数据→该 symbol 返回 null, 渲染回退到 idxBars(1d 历史, 不退化)。
-  const { data: idxLive } = useSWR(`idxm:${market}`,
-    () => Promise.all(indices.map(s => fetch(`/api/indices/${encodeURIComponent(s.symbol)}/minute`)
-      .then(r => r.json())
-      .then(d => {
-        const pts = (d.points ?? []) as { close: number }[]
-        return (pts.length > 0 && d.prev_close != null)
-          ? { close: pts[pts.length - 1].close, prev: d.prev_close as number }
-          : null
-      }).catch(() => null)))
-      .then(arr => { const m: Record<string, { close: number; prev: number } | null> = {}; indices.forEach((x, i) => { m[x.symbol] = arr[i] }); return m }),
-    { refreshInterval: 30_000, revalidateOnFocus: false })
-
   // 自选价格: REST 初始 + batch SSE 实时推送
-  const { data: wlRest } = useSWR(`wl:${market}`,
+  // key 必须含 watchlist 内容: 否则清单从空(realWatchlist 未到)变满时 key 不变,
+  // SWR 认为已有数据不重新取 → 刷新后价格空, 要重新挂载(进详情再返回)才出现。
+  // 清单空时 key=null, SWR 跳过请求(不发无谓的 0 标的请求)。
+  const wlKey = watchlist.length ? `wl:${market}:${watchlist.join(',')}` : null
+  const { data: wlRest } = useSWR(wlKey,
     () => Promise.all(watchlist.map(s => fetch(`/api/symbols/${encodeURIComponent(s)}/bars/history?interval=5m&limit=2`)
       .then(r => r.json()).then(d => (d.bars ?? []) as BarDTO[]).catch(() => [] as BarDTO[])))
       .then(r => { const m: Record<string, BarDTO[]> = {}; watchlist.forEach((s, i) => { m[s] = r[i] ?? [] }); return m }),
@@ -238,10 +228,10 @@ export default function HomePage() {
         {indices.map(idx => {
           const bars = (idxBars ?? {})[idx.symbol] ?? []
           const fb = pctChange(bars)
-          const live = (idxLive ?? {})[idx.symbol]
-          // 实时优先(今日 vs 昨收); 无实时(crypto)回退 1d 历史
-          const close = live ? live.close : (fb?.close ?? null)
-          const pct = live && live.prev ? ((live.close - live.prev) / live.prev) * 100 : (fb?.pct ?? null)
+          // 指数与自选统一走 bar 数据源(1d bars/history): close=最新收线, pct=日涨跌。
+          // 盘中 bars/history 末根即当日进行中根, 非盘中=今日收盘根, 天然满足实时/收盘快照。
+          const close = fb?.close ?? null
+          const pct = fb?.pct ?? null
           const up = (pct ?? 0) >= 0
           return (
             <Link key={idx.symbol} href={`/symbol/${encodeURIComponent(idx.symbol)}`} style={{ textDecoration: 'none', color: 'inherit' }}>
@@ -302,7 +292,8 @@ export default function HomePage() {
         <div className="panel">
           <div className="panel-header" style={{ borderBottom: 'none' }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-              <span style={{ fontSize: 16, fontWeight: 700, fontFamily: 'monospace' }}>{selected}</span>
+              <span style={{ fontSize: 16, fontWeight: 700 }}><SymbolName symbol={selected} /></span>
+              <span style={{ fontSize: 12, color: 'var(--text3)', fontFamily: 'monospace' }}>{selected}</span>
               {offline && <span style={{ fontSize: 11, color: 'var(--red)' }}>● 数据源离线·价格可能过期</span>}
               <Link href={`/symbol/${encodeURIComponent(selected)}`}
                 style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none', fontWeight: 600 }}>详情 →</Link>
