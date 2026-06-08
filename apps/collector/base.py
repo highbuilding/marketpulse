@@ -26,13 +26,28 @@ class CollectorContext:
     bar_repo_path: str  # data/bars_{market}.duckdb
 
 
-def setup_proxy_and_logging(process_name: str) -> None:
-    """所有 collector 共用的启动顺序: proxy 必须在 import adapter 前."""
+def setup_proxy_and_logging(process_name: str, *, use_proxy: bool = True) -> None:
+    """所有 collector 共用的启动顺序: proxy 必须在 import adapter 前.
+
+    use_proxy=False (A 股): 不注入进程代理。A 股源全是境内 (sina hq.sinajs.cn /
+    finance.sina.com.cn + eastmoney), 直连更快更稳 (0.2-0.5s); 经代理 7890 反而
+    引入 TLS 握手抖动 (2026-06-08 坐实: 冷启动经代理打 sina 偶发 SSLError:
+    UNEXPECTED_EOF → 数据卡旧)。利用 collector 3 进程隔离, A 股进程整体直连。
+    美股 (Alpaca/yfinance) / crypto (Binance) 仍走代理穿墙。
+    """
     from dotenv import load_dotenv
     load_dotenv()
 
-    from core.integrations.proxy_setup import setup_process_proxy
-    setup_process_proxy()
+    if use_proxy:
+        from core.integrations.proxy_setup import setup_process_proxy
+        setup_process_proxy()
+    else:
+        # 显式清掉可能从 shell 继承的代理 env, 确保 A 股进程纯直连
+        import os
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"):
+            os.environ.pop(key, None)
+        log.info("proxy.skipped", process=process_name,
+                 note="A 股境内源直连, 不走代理 (避免 TLS 抖动)")
 
     from core.integrations.logging_setup import setup_logging
     setup_logging(process_name=process_name)
