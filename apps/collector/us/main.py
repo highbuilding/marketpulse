@@ -134,13 +134,9 @@ async def lifespan(app: FastAPI):
     from core.cache.quote_cache import QuoteCache
     cache = QuoteCache(ttl_s=60)
 
-    # === MarketAmountBaselineRepo (us_index_minute 也需要) ===
-    from core.persistence.market_amount_baseline_repo import MarketAmountBaselineRepo
-    baseline_repo = MarketAmountBaselineRepo(str(_DATA / "state.db"))
-
     # === scheduler: 仅 美股专属 cron ===
     from core.scheduler.scheduler import (
-        build_scheduler, attach_us_signal_jobs, attach_us_index_minute_job,
+        build_scheduler, attach_us_signal_jobs,
     )
     from apps.api.deps import (
         get_notification_service, get_signal_scan_service,
@@ -162,7 +158,6 @@ async def lifespan(app: FastAPI):
         ),
         name="us.signal_scan_consumer",
     )
-    attach_us_index_minute_job(sched, cache=redis_cache, baseline_repo=baseline_repo)
     sched.start()
 
     # === 美股实时链路: trades WS → TradeHub → writer/ticker; REST SIP poller 收线 ===
