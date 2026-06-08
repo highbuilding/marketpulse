@@ -14,11 +14,15 @@ from core.services.watchlist_service import WatchlistService
 log = structlog.get_logger(__name__)
 
 
-async def write_quote_to_redis(q, *, cache: RedisCache, ttl_s: int = 90) -> None:
+async def write_quote_to_redis(q, *, cache: RedisCache, ttl_s: int = 24 * 3600) -> None:
     """把单条 Quote 写到 Redis cache:quote:{market}:{symbol},供 api 读路径用。
 
     Plan 1 拆进程后,api 进程的 QuoteCache 是空的;collector 必须把 quote 同时
     落到 Redis 给 api 看。失败仅 warning, 不抛(优雅降级)。
+
+    TTL 24h(对齐 index_minute / dashboard 的"收盘快照"模式): 盘中每 10s 覆盖刷新,
+    收盘后停刷但 cache 保留 → 用户看到"今日收盘价"而非空白。读路径按交易时段判 stale,
+    不靠裸 age(收盘后 age 必然 >60s 但不该染灰)。
     """
     try:
         payload = {
