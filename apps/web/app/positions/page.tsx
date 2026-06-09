@@ -5,6 +5,7 @@ import Link from 'next/link'
 
 import { useMarket } from '@/lib/market-context'
 import type { Position } from '@/lib/types'
+import { SymbolSearch } from '@/components/SymbolSearch'
 import {
   createPosition, listPositions, patchPosition, closePosition, deletePosition,
 } from '@/lib/positions_api'
@@ -55,7 +56,7 @@ export default function PositionsPage() {
   const submit = async () => {
     if (!isAshare || saving) return
     const symbol = form.symbol.trim().toUpperCase()
-    if (!symbol) { setError('请填写代码'); return }
+    if (!symbol) { setError('请先搜索选择标的(仅采集集内可选)'); return }
     setSaving(true); setError(null)
     try {
       await createPosition({
@@ -106,14 +107,25 @@ export default function PositionsPage() {
       <div className="panel" style={{ marginBottom: 16 }}>
         <div className="panel-header">新增持仓</div>
         <div style={{ padding: '14px 18px' }}>
+          {/* 标的: SymbolSearch 选(coreOnly), 选中带出 code+name, 杜绝手填错配 + 限采集集 */}
+          <div style={{ position: 'relative', zIndex: 20, marginBottom: 8 }}>
+            {form.symbol ? (
+              <div style={st.picked}>
+                <span><b>{form.name || form.symbol}</b> <span style={st.code}>{form.symbol}</span></span>
+                <button style={st.ghost} onClick={() => setForm({ ...form, symbol: '', name: '' })}>更换</button>
+              </div>
+            ) : (
+              <SymbolSearch market={market} coreOnly
+                placeholder="搜索代码或名称选择标的(仅采集集内)"
+                onSelect={(hit: any) => setForm({ ...form, symbol: hit.symbol, name: hit.name || '' })} />
+            )}
+          </div>
           <div style={st.formGrid}>
-            <input style={st.input} placeholder="代码 002415.SZ" value={form.symbol} onChange={(e) => setForm({ ...form, symbol: e.target.value })} />
-            <input style={st.input} placeholder="名称" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             <input style={st.input} placeholder="股数" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} />
             <input style={st.input} placeholder="开仓价" value={form.cost_price} onChange={(e) => setForm({ ...form, cost_price: e.target.value })} />
-            <input style={st.input} placeholder="开仓日期 2026-06-08" value={form.opened_at} onChange={(e) => setForm({ ...form, opened_at: e.target.value })} />
-            <input style={st.input} placeholder="策略标签" value={form.strategy_tag} onChange={(e) => setForm({ ...form, strategy_tag: e.target.value })} />
-            <input style={{ ...st.input, gridColumn: '1 / -1' }} placeholder="买入理由 / 备注" value={form.entry_reason} onChange={(e) => setForm({ ...form, entry_reason: e.target.value })} />
+            <input style={st.input} type="date" placeholder="开仓日期" value={form.opened_at} onChange={(e) => setForm({ ...form, opened_at: e.target.value })} />
+            <input style={st.input} placeholder="策略标签(可空)" value={form.strategy_tag} onChange={(e) => setForm({ ...form, strategy_tag: e.target.value })} />
+            <input style={{ ...st.input, gridColumn: '1 / -1' }} placeholder="买入理由 / 备注(可空)" value={form.entry_reason} onChange={(e) => setForm({ ...form, entry_reason: e.target.value })} />
           </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
             <button style={st.btn} onClick={submit} disabled={saving}>{saving ? '保存中' : '新增持仓'}</button>
@@ -198,4 +210,5 @@ const st: Record<string, CSSProperties> = {
   empty: { textAlign: 'center', padding: 24, color: 'var(--text3)' },
   mono: { fontFamily: 'monospace' },
   code: { fontSize: 11, color: 'var(--text3)', fontFamily: 'monospace' },
+  picked: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '9px 12px', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 13 },
 }
