@@ -8,10 +8,11 @@ import type { SearchHit } from '@/lib/types'
 interface Props {
   placeholder?: string
   market?: string  // 限定搜索 scope, 例 'us' / 'ashare';未传则全市场搜
+  coreOnly?: boolean  // 仅搜采集集(CORE)内标的, 自选/持仓添加用(搜到即可加)
   onSelect: (hit: SearchHit) => void
 }
 
-export function SymbolSearch({ placeholder = '搜索代码或名称…', market, onSelect }: Props) {
+export function SymbolSearch({ placeholder = '搜索代码或名称…', market, coreOnly = false, onSelect }: Props) {
   const [q, setQ] = useState('')
   const [hits, setHits] = useState<SearchHit[]>([])
   const [open, setOpen] = useState(false)
@@ -28,7 +29,7 @@ export function SymbolSearch({ placeholder = '搜索代码或名称…', market,
     debounceRef.current = setTimeout(async () => {
       setLoading(true)
       try {
-        const resp = await searchSymbols(q.trim(), 15, market)
+        const resp = await searchSymbols(q.trim(), 15, market, coreOnly)
         setHits(resp.hits)
         setOpen(true)
       } catch {

@@ -147,16 +147,21 @@ async def search(
     q: str = Query(..., min_length=1, max_length=50),
     market: str | None = Query(None),
     limit: int = Query(20, ge=1, le=50),
+    core_only: bool = Query(False, description="仅返回采集集(CORE)内标的, 供自选/持仓添加用"),
     svc: SymbolDirectoryService = Depends(get_symbol_directory_service),
     registry: AdapterRegistry = Depends(get_registry),
 ) -> SearchResponse:
     hits = await svc.search(q, limit, market=market)
+    if core_only:
+        # watchlist/持仓 ⊆ 采集集: 只返回能加的标的(∈ 其市场 core_symbols)
+        hits = [(s, n, m) for s, n, m in hits if s in set(core_symbols(infer_market(s)))]
     if hits:
         return SearchResponse(query=q, hits=[
             SearchHit(symbol=s, name=n, market=m) for s, n, m in hits
         ])
     # 美股懒加载: market 为 'us' 或未指定, 且 q 像 US ticker → yfinance verify
-    if market in (None, "us") and _looks_like_us_ticker(q):
+    # core_only 时跳过懒加载(懒加载的新 ticker 必不在 CORE, 加了也会被拒)
+    if not core_only and market in (None, "us") and _looks_like_us_ticker(q):
         try:
             us_adapter = registry.get("us")
             sym = q.upper()

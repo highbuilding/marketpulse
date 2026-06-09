@@ -57,10 +57,11 @@ export async function fetchSymbolProfiles(symbols: string[]): Promise<SymbolProf
 }
 
 export async function searchSymbols(
-  q: string, limit = 20, market?: string,
+  q: string, limit = 20, market?: string, coreOnly = false,
 ): Promise<{ query: string; hits: SearchHit[] }> {
   const sp = new URLSearchParams({ q, limit: String(limit) })
   if (market) sp.set('market', market)
+  if (coreOnly) sp.set('core_only', 'true')
   const r = await fetch(`/api/symbols/search?${sp}`, { cache: 'no-store' })
   if (!r.ok) throw new Error(`${r.status}`)
   return r.json()
