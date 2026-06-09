@@ -6,7 +6,9 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from core.domain.derived_provisional import synthesize_provisional
+from core.domain.derived_provisional import (
+    synthesize_provisional, synthesize_daily_provisional,
+)
 from core.domain.models import Bar
 
 
@@ -88,3 +90,48 @@ def test_only_today_price_no_history():
     assert bar is not None
     assert float(bar.open) == 120
     assert float(bar.close) == 120
+
+
+def _5m(o, h, l, c, v=10) -> Bar:
+    return Bar(
+        market="ashare", symbol="600519.SH",
+        ts=datetime(2026, 6, 9, 2, 0, tzinfo=timezone.utc),
+        open=Decimal(str(o)), high=Decimal(str(h)), low=Decimal(str(l)),
+        close=Decimal(str(c)), volume=v, interval="5m",
+    )
+
+
+def test_daily_provisional_aggregates_today_5m():
+    # 今日 5m: 开 100, 盘中到 110, 回落; 实时价 105
+    today = [_5m(100, 105, 99, 103), _5m(103, 110, 102, 108), _5m(108, 109, 104, 106)]
+    bar = synthesize_daily_provisional(
+        today, market="ashare", symbol="600519.SH",
+        today_ts=datetime(2026, 6, 9, tzinfo=timezone.utc), price=105.0,
+    )
+    assert bar is not None
+    assert bar.interval == "1d"
+    assert float(bar.open) == 100   # 今日首根开盘
+    assert float(bar.high) == 110   # 今日5m极值
+    assert float(bar.low) == 99
+    assert float(bar.close) == 105  # 实时价
+
+
+def test_daily_provisional_live_price_breaks_high():
+    # 实时价创当日新高 → high 跟上
+    today = [_5m(100, 105, 99, 103)]
+    bar = synthesize_daily_provisional(
+        today, market="ashare", symbol="600519.SH",
+        today_ts=datetime(2026, 6, 9, tzinfo=timezone.utc), price=112.0,
+    )
+    assert float(bar.high) == 112  # 实时价 > 5m 极值
+    assert float(bar.close) == 112
+
+
+def test_daily_provisional_no_5m_uses_price():
+    # 开盘第一根 5m 未收线 → 用实时价单点起一根
+    bar = synthesize_daily_provisional(
+        [], market="ashare", symbol="600519.SH",
+        today_ts=datetime(2026, 6, 9, tzinfo=timezone.utc), price=100.0,
+    )
+    assert bar is not None
+    assert float(bar.open) == 100 and float(bar.close) == 100

@@ -15,15 +15,15 @@ import structlog
 
 from core.cache import keys
 from core.domain.bucket_state import BucketState, current_bucket, seed_baseline, update_bucket
-from core.domain.derived_provisional import synthesize_provisional
+from core.domain.derived_provisional import synthesize_provisional, synthesize_daily_provisional
 from core.domain.market_calendar import is_trading_day
 from core.domain.market_sessions import is_market_session_open
 
 log = structlog.get_logger(__name__)
 
 _INTERVAL_MIN = {"5m": 5, "15m": 15, "30m": 30, "60m": 60, "4h": 240}
-# 周/月进行中根: 非固定分钟桶, 用 synthesize_provisional 从本周/本月日线 + 实时价合成。
-_DERIVED_IV = ("1wk", "1mo")
+# 日/周/月进行中根: 非固定分钟桶。1d 从今日 5m 聚合; 1wk/1mo 从本周/本月日线 resample。
+_DERIVED_IV = ("1d", "1wk", "1mo")
 # ticker 处理的全部周期(分钟桶 + 周月派生)
 _TICKER_IV = set(_INTERVAL_MIN) | set(_DERIVED_IV)
 TICK_INTERVAL_S = 10
@@ -116,17 +116,29 @@ class QuoteBarTicker:
         bjt_date = now.astimezone(ZoneInfo("Asia/Shanghai")).date()
         today_ts = datetime(bjt_date.year, bjt_date.month, bjt_date.day,
                             tzinfo=ZoneInfo("Asia/Shanghai")).astimezone(timezone.utc)
-        # 拉足够覆盖本月的日线(月线需整月, 取 40 天足够)
         from datetime import timedelta
-        try:
-            daily = self._repo.fetch_history(
-                "ashare", symbol, now - timedelta(days=40), now, interval="1d")
-        except Exception:  # noqa: BLE001
-            return
-        bar = synthesize_provisional(
-            daily, market="ashare", symbol=symbol, target_iv=interval,
-            today_ts=today_ts, price=price, volume=volume,
-        )
+        if interval == "1d":
+            # 日线进行中根: 今日已收线 5m 聚合 + 实时价 close
+            try:
+                today_5m = self._repo.fetch_history(
+                    "ashare", symbol, today_ts, now, interval="5m")
+            except Exception:  # noqa: BLE001
+                return
+            bar = synthesize_daily_provisional(
+                today_5m, market="ashare", symbol=symbol,
+                today_ts=today_ts, price=price,
+            )
+        else:
+            # 周/月进行中根: 本周/本月已收线日线 resample(W-FRI/ME)
+            try:
+                daily = self._repo.fetch_history(
+                    "ashare", symbol, now - timedelta(days=40), now, interval="1d")
+            except Exception:  # noqa: BLE001
+                return
+            bar = synthesize_provisional(
+                daily, market="ashare", symbol=symbol, target_iv=interval,
+                today_ts=today_ts, price=price, volume=volume,
+            )
         if bar is None:
             return
         payload = {

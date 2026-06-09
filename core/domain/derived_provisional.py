@@ -66,3 +66,34 @@ def synthesize_provisional(
         low=Decimal(str(r.l)), close=Decimal(str(r.c)),
         volume=int(r.v), interval=target_iv,
     )
+
+
+def synthesize_daily_provisional(
+    today_5m: list[Bar], *, market: str, symbol: str,
+    today_ts: datetime, price: float,
+) -> Bar | None:
+    """用今日已收线 5m bar + 实时价合成今日日线进行中根 (final 由调用方标 false)。
+
+    日线进行中根 ≠ resample(与周/月不同): 直接聚合今日 intraday —
+      open = 今日首根 5m 开盘
+      high/low = 今日 5m 极值, 再纳入实时价(创当日新高/新低时跟上)
+      close = 实时价(比 5m 末根更新)
+      volume = 今日 5m 累计
+    today_5m 为空(开盘第一根 5m 未收线)时, 用实时价单点起一根(O=H=L=C=price)。
+    """
+    if today_5m:
+        o = float(today_5m[0].open)
+        hi = max(float(b.high) for b in today_5m)
+        lo = min(float(b.low) for b in today_5m)
+        vol = sum(int(b.volume) for b in today_5m)
+        hi = max(hi, price)
+        lo = min(lo, price)
+    else:
+        o = hi = lo = price
+        vol = 0
+    return Bar(
+        market=market, symbol=symbol, ts=today_ts,
+        open=Decimal(str(o)), high=Decimal(str(hi)),
+        low=Decimal(str(lo)), close=Decimal(str(price)),
+        volume=int(vol), interval="1d",
+    )
