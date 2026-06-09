@@ -203,7 +203,8 @@ async def lifespan(app: FastAPI):
     _poller_delay = _tiered_int("BAR_POLLER_STARTUP_DELAY_S", test=45, prod=180)
     _poller_task = asyncio.create_task(
         run_bar_poller(bar_repo, redis_cache, registry.get("ashare"),
-                       startup_delay_s=_poller_delay),
+                       startup_delay_s=_poller_delay,
+                       watchlist=get_watchlist_service()),
         name="ashare.bar_poller",
     )
 

@@ -58,10 +58,12 @@ class BarPoller:
         repo: BarRepo,
         redis_cache: RedisCache,
         adapter,
+        watchlist=None,
     ) -> None:
         self._repo = repo
         self._redis = redis_cache
         self._adapter = adapter
+        self._watchlist = watchlist  # WatchlistService | None: 采集集 = CORE ∪ watchlist
         self._tasks: dict[str, asyncio.Task] = {}  # key = "symbol:interval"
         self._stopped = False
 
@@ -177,8 +179,18 @@ class BarPoller:
     # ------------------------------------------------------------------
 
     async def _scan_subscriptions(self) -> set[str]:
-        """采集集 = CORE 常驻(与前端订阅解耦)。仅 5m 直取, 15m/30m/60m/4h 由 5m 聚合。"""
-        return _build_core_active()
+        """采集集 = CORE ∪ watchlist (与 reconcile/settlement/cron 一致, core_symbols.py 注释定义)。
+        仅 5m 直取, 15m/30m/60m/4h 由 5m 聚合派生。每轮取最新 watchlist, 用户新加即纳入。
+        """
+        syms = set(CORE_SYMBOLS["ashare"])
+        if self._watchlist is not None:
+            try:
+                from core.domain.markets import infer_market
+                wl = await self._watchlist.dynamic_universe()
+                syms |= {s for s in wl if infer_market(s) == "ashare"}
+            except Exception as e:  # noqa: BLE001
+                log.warning("bar_poller.watchlist_load_failed", error=str(e))
+        return {f"{s}:5m" for s in syms}
 
     async def _scan_subscriptions_legacy(self) -> set[str]:
         """[废弃] 旧的订阅驱动扫描, 保留备查。"""
@@ -277,15 +289,17 @@ class BarPoller:
 # ------------------------------------------------------------------
 
 async def run_bar_poller(
-    repo: BarRepo, redis_cache: RedisCache, adapter, *, startup_delay_s: int = 0,
+    repo: BarRepo, redis_cache: RedisCache, adapter, *,
+    startup_delay_s: int = 0, watchlist=None,
 ) -> None:
     """collector lifespan 中作为 asyncio task 启动。
 
     startup_delay_s: 冷启动让路给 startup_reconcile —— reconcile 与 poller 都拉
     同一个 fetch_intraday('5')/同一 sina 接口, 并发会 double sina 压力触发限频(456)。
     延迟启动 poller, 让 reconcile 先把 5m 历史拉全, poller 再接管 live 收线轮询。
+    watchlist: WatchlistService, 采集集 = CORE ∪ watchlist (core_symbols.py 注释定义)。
     """
-    poller = BarPoller(repo, redis_cache, adapter)
+    poller = BarPoller(repo, redis_cache, adapter, watchlist=watchlist)
     try:
         if startup_delay_s > 0:
             log.info("bar_poller.startup_delay", seconds=startup_delay_s)
