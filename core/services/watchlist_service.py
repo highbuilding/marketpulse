@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+from core.domain.core_symbols import core_symbols
+from core.domain.markets import infer_market
 from core.domain.models import Watchlist
 from core.persistence.watchlist_repo import WatchlistRepo
 
 
 _DEFAULT_NAME = "我的关注"
+
+
+class SymbolNotCollectedError(ValueError):
+    """自选标的必须在采集集(CORE)内 —— watchlist ⊆ 采集集。
+
+    采集集是权威全集(bar_poller/reconcile/cron 采的); watchlist 是用户从中挑的子集。
+    加非采集集标的会导致'有现价(tick含全集?)无K线(poller只采CORE)'的非法状态。
+    """
 
 
 class WatchlistService:
@@ -30,6 +40,14 @@ class WatchlistService:
         await self.repo.archive_watchlist(wl_id)
 
     async def add_symbol(self, wl_id: int, symbol: str) -> None:
+        # watchlist ⊆ 采集集: 只能加 CORE 内标的(按其市场判定), 否则非法状态
+        # (有现价无K线)。crypto 等无 CORE 概念的市场不校验(core_symbols 返回其全集)。
+        symbol = symbol.strip().upper()
+        mkt = infer_market(symbol)
+        core = set(core_symbols(mkt))
+        if core and symbol not in core:
+            raise SymbolNotCollectedError(
+                f"{symbol} 不在采集集内, 无法加入自选(自选只能从采集列表选)")
         await self.repo.add_symbol(wl_id, symbol)
 
     async def remove_symbol(self, wl_id: int, symbol: str) -> None:

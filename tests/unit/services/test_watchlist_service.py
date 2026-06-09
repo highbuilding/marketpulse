@@ -36,3 +36,24 @@ async def test_dynamic_universe_unions_active_lists(svc):
     await svc.add_symbol(b, "000858.SZ")
     syms = await svc.dynamic_universe()
     assert sorted(syms) == ["000858.SZ", "600519.SH"]
+
+
+@pytest.mark.asyncio
+async def test_add_symbol_rejects_non_core(svc):
+    """watchlist ⊆ 采集集: 非 CORE 标的(如 603986.SH)拒绝加入。"""
+    from core.services.watchlist_service import SymbolNotCollectedError
+    a = await svc.create("A")
+    with pytest.raises(SymbolNotCollectedError):
+        await svc.add_symbol(a, "603986.SH")  # A股但非 CORE
+    # 拒绝后未入库
+    assert await svc.list_symbols(a) == []
+
+
+@pytest.mark.asyncio
+async def test_add_symbol_accepts_core(svc):
+    """CORE 内标的正常加入(各市场)。"""
+    a = await svc.create("A")
+    await svc.add_symbol(a, "600519.SH")   # A股 CORE
+    await svc.add_symbol(a, "AAPL")        # 美股 CORE
+    await svc.add_symbol(a, "BTC-USDT")    # crypto CORE
+    assert set(await svc.list_symbols(a)) == {"600519.SH", "AAPL", "BTC-USDT"}

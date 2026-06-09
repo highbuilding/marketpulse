@@ -110,7 +110,11 @@ async def add_symbol(wl_id: int, body: AddSymbolBody,
                      bg: BackgroundTasks,
                      svc: WatchlistService = Depends(get_watchlist_service),
                      redis_cache=Depends(get_redis_cache)) -> None:
-    await svc.add_symbol(wl_id, body.symbol)
+    from core.services.watchlist_service import SymbolNotCollectedError
+    try:
+        await svc.add_symbol(wl_id, body.symbol)
+    except SymbolNotCollectedError as e:
+        raise HTTPException(400, str(e)) from e
     # 后台发 refill, 让对应市场 collector 立即拉该标的历史 bar(api 无 DuckDB)。接口立即返回。
     bg.add_task(_refill_new_symbol, body.symbol, redis_cache, svc)
 
