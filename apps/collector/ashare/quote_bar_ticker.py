@@ -15,12 +15,17 @@ import structlog
 
 from core.cache import keys
 from core.domain.bucket_state import BucketState, current_bucket, seed_baseline, update_bucket
+from core.domain.derived_provisional import synthesize_provisional
 from core.domain.market_calendar import is_trading_day
 from core.domain.market_sessions import is_market_session_open
 
 log = structlog.get_logger(__name__)
 
 _INTERVAL_MIN = {"5m": 5, "15m": 15, "30m": 30, "60m": 60, "4h": 240}
+# 周/月进行中根: 非固定分钟桶, 用 synthesize_provisional 从本周/本月日线 + 实时价合成。
+_DERIVED_IV = ("1wk", "1mo")
+# ticker 处理的全部周期(分钟桶 + 周月派生)
+_TICKER_IV = set(_INTERVAL_MIN) | set(_DERIVED_IV)
 TICK_INTERVAL_S = 10
 
 
@@ -34,6 +39,9 @@ class QuoteBarTicker:
         self._stopped = False
 
     async def tick_once(self, symbol: str, interval: str, *, now: datetime) -> None:
+        if interval in _DERIVED_IV:
+            await self._tick_derived(symbol, interval, now=now)
+            return
         mins = _INTERVAL_MIN.get(interval)
         if mins is None:
             return
@@ -88,6 +96,60 @@ class QuoteBarTicker:
             log.warning("ticker.publish_failed",
                         symbol=symbol, interval=interval, error=str(e))
 
+    async def _tick_derived(self, symbol: str, interval: str, *, now: datetime) -> None:
+        """周/月进行中根: 本周/本月已收线日线 + 实时价合成, 推 final=false。
+
+        不维护桶状态(每次重算), 复用 daily_settlement 的 resample 口径(W-FRI/ME)。
+        """
+        if self._repo is None:
+            return
+        try:
+            q = await self._redis.get_msgpack(keys.cache_quote("ashare", symbol))
+        except Exception:  # noqa: BLE001
+            q = None
+        if not q or q.get("price") is None:
+            return
+        price = float(q.get("price"))
+        volume = int(q.get("volume") or 0)
+        # 今日交易日 ts(1d 口径: BJT 自然日 00:00 = UTC(D-1)16:00)。
+        from zoneinfo import ZoneInfo
+        bjt_date = now.astimezone(ZoneInfo("Asia/Shanghai")).date()
+        today_ts = datetime(bjt_date.year, bjt_date.month, bjt_date.day,
+                            tzinfo=ZoneInfo("Asia/Shanghai")).astimezone(timezone.utc)
+        # 拉足够覆盖本月的日线(月线需整月, 取 40 天足够)
+        from datetime import timedelta
+        try:
+            daily = self._repo.fetch_history(
+                "ashare", symbol, now - timedelta(days=40), now, interval="1d")
+        except Exception:  # noqa: BLE001
+            return
+        bar = synthesize_provisional(
+            daily, market="ashare", symbol=symbol, target_iv=interval,
+            today_ts=today_ts, price=price, volume=volume,
+        )
+        if bar is None:
+            return
+        payload = {
+            "market": "ashare", "symbol": symbol, "interval": interval,
+            "ts": bar.ts.isoformat(),
+            "open": float(bar.open), "high": float(bar.high),
+            "low": float(bar.low), "close": float(bar.close),
+            "volume": int(bar.volume), "final": False,
+        }
+        try:
+            await self._redis._r.xadd(  # noqa: SLF001
+                keys.BUS_BARS_UPDATED,
+                {"data": json.dumps(payload).encode()},
+                maxlen=10000, approximate=True,
+            )
+            await self._redis.set_msgpack(
+                keys.cache_bars_current("ashare", symbol, interval),
+                payload, ttl_s=86400,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("ticker.derived_publish_failed",
+                        symbol=symbol, interval=interval, error=str(e))
+
     async def _scan_subscribed(self) -> set[tuple[str, str]]:
         active: set[tuple[str, str]] = set()
         try:
@@ -98,7 +160,7 @@ class QuoteBarTicker:
                 for k in found:
                     key = k.decode() if isinstance(k, bytes) else k
                     parts = key.split(":")
-                    if len(parts) >= 5 and parts[4] in _INTERVAL_MIN:
+                    if len(parts) >= 5 and parts[4] in _TICKER_IV:
                         active.add((parts[3], parts[4]))
                 if cursor == 0:
                     break
