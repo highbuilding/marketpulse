@@ -125,6 +125,10 @@ export default function HomePage() {
       .then(r => r.json()).then(d => (d.bars ?? []) as BarDTO[]).catch(() => [] as BarDTO[])))
       .then(r => { const m: Record<string, BarDTO[]> = {}; indices.forEach((x, i) => { m[x.symbol] = r[i] ?? [] }); return m }),
     { refreshInterval: 60_000, revalidateOnFocus: false })
+  // 指数实时尾部: 与自选同机制(SSE batch), 订 1d(collector 推日线进行中根)。
+  // 根治"大盘指标无实时变化": 原来只有 60s 1d REST 轮询, 不接实时流。
+  const idxSymbols = useMemo(() => indices.map((i) => i.symbol), [indices])
+  const idxStream = useBatchStream(idxSymbols, '1d')
 
   // 自选价格: REST 初始 + batch SSE 实时推送
   // key 必须含 watchlist 内容: 否则清单从空(realWatchlist 未到)变满时 key 不变,
@@ -206,7 +210,16 @@ export default function HomePage() {
       {/* Index Cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12, marginBottom: 20 }}>
         {indices.map(idx => {
-          const bars = (idxBars ?? {})[idx.symbol] ?? []
+          // REST 1d 打底 + SSE 实时尾部覆盖(与自选 wlBars 同机制), 让大盘指标实时跳。
+          const rest = (idxBars ?? {})[idx.symbol] ?? []
+          const sse = idxStream[idx.symbol] ?? []
+          let bars = rest
+          if (sse.length > 0) {
+            const m = new Map<string, BarDTO>()
+            for (const b of rest) m.set(b.ts, b)
+            for (const b of sse) m.set(b.ts, b)
+            bars = Array.from(m.values()).sort((a, b) => a.ts.localeCompare(b.ts))
+          }
           const fb = pctChange(bars)
           // 指数与自选统一走 bar 数据源(1d bars/history): close=最新收线, pct=日涨跌。
           // 盘中 bars/history 末根即当日进行中根, 非盘中=今日收盘根, 天然满足实时/收盘快照。
