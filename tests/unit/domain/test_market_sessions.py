@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from core.domain.market_sessions import is_market_session_open
+from core.domain.market_sessions import is_after_market_close, is_market_session_open
 
 
 def _bjt(h: int, m: int = 0) -> datetime:
@@ -47,3 +47,21 @@ def test_crypto_always_open():
     # crypto 任意时刻都该 True (24/7)
     assert is_market_session_open("crypto", _bjt(3, 0)) is True
     assert is_market_session_open("crypto", _bjt(15, 0)) is True
+
+
+@pytest.mark.parametrize("h,m,expected", [
+    (10, 0, False),   # 盘中上午: 未过收盘
+    (11, 30, False),  # 上午收盘瞬间: 还没到当日最后收盘(15:00)
+    (12, 0, False),   # 午休: 关键! session_open=False 但未过当日收盘 → 不该触发结算
+    (14, 0, False),   # 盘中下午
+    (15, 0, False),   # 收盘瞬间(15:00): cur>last_close 才 True, 15:00 不算
+    (15, 1, True),    # 收盘后
+    (18, 0, True),    # 晚上
+])
+def test_ashare_after_market_close(h, m, expected):
+    # 根治 daily_settlement 午休误触发: is_after_market_close 区分午休 vs 真收盘
+    assert is_after_market_close("ashare", _bjt(h, m)) is expected
+
+
+def test_crypto_never_after_close():
+    assert is_after_market_close("crypto", _bjt(3, 0)) is False

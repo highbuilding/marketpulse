@@ -100,3 +100,19 @@ def is_market_session_open(market: Market, when: datetime | None = None) -> bool
         if s <= cur <= e:
             return True
     return False
+
+
+def is_after_market_close(market: Market, when: datetime | None = None) -> bool:
+    """是否已过当日最后一个 session 的收盘时刻 (本市场时区)。
+
+    与 is_market_session_open 的区别: 午休(A股 11:30-13:00)期间 session_open=False
+    但 is_after_market_close=False (还没到当日最后收盘 15:00)。
+    daily_settlement 用本函数判"真收盘", 避免把午休误当收盘触发结算。
+    crypto 无收盘 → 永远 False。
+    """
+    if market == "crypto" or not SESSIONS.get(market):
+        return False
+    tz = ZoneInfo(MARKET_TZ[market])
+    cur = (when or datetime.now(timezone.utc)).astimezone(tz).time()
+    last_close = max(_hhmm_to_time(e) for _, e in SESSIONS[market])
+    return cur > last_close

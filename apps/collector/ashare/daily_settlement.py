@@ -26,7 +26,7 @@ import structlog
 
 from apps.collector.jobs.aggregate_derived import aggregate_derived_for_symbol
 from core.domain.market_calendar import is_trading_day
-from core.domain.market_sessions import is_market_session_open
+from core.domain.market_sessions import is_after_market_close
 
 log = structlog.get_logger(__name__)
 
@@ -109,7 +109,7 @@ async def run_daily_settlement(
     进程不退出: 跨交易日复用, 每天收盘各结算一次。
     """
     poll_s = poll_s or _SETTLE_POLL_S
-    was_open = is_market_session_open("ashare")
+    was_closed = is_after_market_close("ashare")
     settled_date = None  # 已完成结算的交易日, 防同日重复
     log.info("daily_settlement.start", market="ashare",
              poll_s=poll_s, deadline_s=_SETTLE_DEADLINE_S)
@@ -118,12 +118,14 @@ async def run_daily_settlement(
         try:
             await asyncio.sleep(poll_s)
             now = datetime.now(timezone.utc)
-            is_open = is_market_session_open("ashare")
+            after_close = is_after_market_close("ashare")
             today = _bjt_today(now)
 
-            # 边沿检测: open→closed 且今日是交易日且今日尚未结算 → 触发结算
-            just_closed = was_open and not is_open
-            was_open = is_open
+            # 边沿检测: 未过收盘→已过当日最后收盘(A股15:00) 才触发结算。
+            # 用 is_after_market_close 而非 session_open: 后者午休(11:30-13:00)也=False,
+            # 会把午休误当收盘触发 → sina 日线未定稿全失败 + 占用当日名额 → 真收盘不再结算。
+            just_closed = (not was_closed) and after_close
+            was_closed = after_close
             if not just_closed:
                 continue
             if not is_trading_day("ashare") or settled_date == today:
