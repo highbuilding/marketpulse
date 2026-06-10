@@ -66,9 +66,44 @@ def _write_frame(stream, body: bytes) -> None:
     stream.flush()
 
 
+def _install_sina_kline_probe() -> None:
+    """诊断 hook(2026-06-10): 抓 sina KLineData 接口的原始坏响应。
+
+    根因调查: stock_zh_a_minute 解析 data_text.split("=(")[1] 偶发 IndexError,
+    即 sina 返回了非 JSP 内容(空/限流页/HTML), 但 data_text 是 akshare 内部局部变量,
+    异常抛出时已丢失 → 日志只看到 IndexError 看不到 sina 实际返回什么。
+
+    本 hook 只对含 'getKLineData' 的 URL 生效, 且仅在响应不含 '=(' (即将解析失败)时,
+    把 status + text[:300] 打到 stderr(worker stderr 进 collector 日志)。
+    其他请求零影响; 正常响应零开销(只多一次 substring 检查)。
+    """
+    import requests
+    _orig_get = requests.get
+
+    def _probed_get(url, *args, **kwargs):
+        resp = _orig_get(url, *args, **kwargs)
+        try:
+            if "getKLineData" in str(url):
+                text = resp.text
+                if "=(" not in text:  # akshare 即将 split("=(")[1] IndexError
+                    sym = (kwargs.get("params") or {}).get("symbol", "?")
+                    sys.stderr.write(
+                        f"[sina_kline_probe] BAD sina KLineData resp: symbol={sym} "
+                        f"status={resp.status_code} len={len(text)} "
+                        f"text[:300]={text[:300]!r}\n"
+                    )
+                    sys.stderr.flush()
+        except Exception:  # noqa: BLE001
+            pass  # 诊断 hook 绝不影响主流程
+        return resp
+
+    requests.get = _probed_get
+
+
 def _serve() -> int:
     """常驻循环: import akshare 一次, 持续从 stdin 处理请求。"""
     import akshare as ak  # noqa: PLC0415  (一次性, 之后所有请求复用)
+    _install_sina_kline_probe()  # 抓 sina KLineData 坏响应原文(诊断)
 
     stdin = sys.stdin.buffer
     stdout = sys.stdout.buffer
