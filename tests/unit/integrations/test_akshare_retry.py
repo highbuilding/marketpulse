@@ -69,3 +69,28 @@ async def test_non_transient_error_not_retried(monkeypatch):
     with pytest.raises(ValueError, match="invalid symbol"):
         await ak.ak_call("stock_zh_a_daily", caller="test")
     assert pool.calls == 1
+
+
+def _sina_bad_data() -> RuntimeError:
+    # sina 阵发返回坏数据 → akshare stock_zh_a_minute 解析 IndexError
+    return RuntimeError(
+        "stock_zh_a_minute failed in worker: IndexError: list index out of range"
+    )
+
+
+async def test_retry_sina_bad_data_indexerror(monkeypatch):
+    """sina 坏数据 IndexError 当瞬时错误重试: 前两次坏数据, 第三次成功。"""
+    pool = _FakePool([_sina_bad_data(), _sina_bad_data(), "OK_DATA"])
+    monkeypatch.setattr(ak, "get_worker_pool", lambda: pool)
+    result = await ak.ak_call("stock_zh_a_minute", caller="test")
+    assert result == "OK_DATA"
+    assert pool.calls == 3
+
+
+async def test_non_sina_indexerror_not_retried(monkeypatch):
+    """非 sina 来源的 IndexError(真代码 bug)不误重试, 第一次就抛。"""
+    pool = _FakePool([RuntimeError("foo IndexError: list index out of range"), "X"])
+    monkeypatch.setattr(ak, "get_worker_pool", lambda: pool)
+    with pytest.raises(RuntimeError, match="IndexError"):
+        await ak.ak_call("stock_zh_a_daily", caller="test")
+    assert pool.calls == 1

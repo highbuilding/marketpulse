@@ -26,10 +26,12 @@ from core.persistence.duckdb_repo import BarRepo
 
 log = structlog.get_logger(__name__)
 
-# 轮询间隔 (秒): 按 APP_ENV 分层。test(本地, 标的少)=10s;
-# prod(线上 ~300 标的)=90s 卡 sina 5/s 限频(雷区: 5m 每 5min 才收线, 90s 轮询不影响及时性)。
+# 轮询间隔 (秒): 按 APP_ENV 分层。test(本地, CORE 30 标的)=30s;
+# prod(线上 ~300 标的)=90s。卡 sina 服务端限流(雷区: 5m 每 5min 才收线, 30s 轮询
+# 不影响及时性, 但能大幅降请求量避免触发 sina 软限流→坏数据 IndexError→熔断连锁)。
+# 配合 _poll_loop 每轮 ±25% 抖动 sleep 持续削峰(防 N 个 loop 节拍漂移重聚成瞬时峰值)。
 # POLL_INTERVAL_S 环境变量可显式覆盖。
-POLL_INTERVAL_S = tiered_int("POLL_INTERVAL_S", test=10, prod=90)
+POLL_INTERVAL_S = tiered_int("POLL_INTERVAL_S", test=30, prod=90)
 
 # 订阅扫描间隔 (秒)
 SCAN_INTERVAL_S = 30
@@ -163,14 +165,17 @@ class BarPoller:
                 # us/bar_poller.py 的 is_trading_day + is_market_session_open。
                 if is_trading_day("ashare") and is_market_session_open("ashare"):
                     await self._poll_one(symbol, interval)
-                await asyncio.sleep(POLL_INTERVAL_S)
+                # 持续削峰: 每轮 sleep 加 ±25% 抖动, 让 N 个独立 loop 的节拍持续打散,
+                # 不因 _poll_one 耗时差异漂移重聚成瞬时并发峰值(撞 sina 服务端限流)。
+                # 固定 sleep 会让错峰随时间衰减 → 周期性脉冲; 抖动保持请求平缓。
+                await asyncio.sleep(POLL_INTERVAL_S * random.uniform(0.75, 1.25))
             except asyncio.CancelledError:
                 log.info("bar_poller.poll_stop", symbol=symbol, interval=interval)
                 return
             except Exception as e:  # noqa: BLE001
                 log.warning("bar_poller.poll_error",
                             symbol=symbol, interval=interval, error=str(e))
-                await asyncio.sleep(POLL_INTERVAL_S)
+                await asyncio.sleep(POLL_INTERVAL_S * random.uniform(0.75, 1.25))
 
     # ------------------------------------------------------------------
     # 订阅扫描 + 任务管理

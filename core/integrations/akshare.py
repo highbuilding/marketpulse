@@ -67,11 +67,23 @@ _TRANSIENT_NET_MARKERS = (
     "Temporary failure in name resolution",
 )
 
-
 def _is_transient_network_error(exc: BaseException) -> bool:
-    """异常是否为"重试一下可能就好"的瞬时网络错误。"""
+    """异常是否为"重试一下可能就好"的瞬时网络错误。
+
+    sina 阵发坏数据(2026-06-10 坐实): sina 服务端阵发返回非预期内容(限流页/空/HTML),
+    akshare stock_zh_a_minute 解析 data_text.split("=(")[1] 时 IndexError。与请求频率
+    无关(实测峰值 4/s 仍触发, 11:15-30 几乎没请求也失败=熔断拒了)。当瞬时坏数据重试,
+    重试仍失败才计熔断 → 避免阵发坏数据快速累积触发 breaker open 把好时段也拒了。
+    用 "解析函数名 + IndexError" 组合判定, 避免误伤真正的代码 IndexError。
+    """
     msg = str(exc)
-    return any(m in msg for m in _TRANSIENT_NET_MARKERS)
+    if any(m in msg for m in _TRANSIENT_NET_MARKERS):
+        return True
+    # sina 坏数据: stock_zh_a_minute 解析 IndexError(限流页/空响应)
+    if "stock_zh_a_minute" in msg and "list index out of range" in msg:
+        return True
+    return False
+
 
 # func_name -> source 映射(用于 breaker/ratelimit 分发)
 # 不完整时默认 source="sina"(akshare 大多走 sina 系)
