@@ -9,7 +9,7 @@ class FakeRepo:
     def __init__(self, bars):
         self._bars = bars
 
-    def fetch_history(self, market, symbol, start, end, interval):
+    def fetch_history(self, market, symbol, start, end, interval, *, closed_only=False):
         return self._bars
 
 

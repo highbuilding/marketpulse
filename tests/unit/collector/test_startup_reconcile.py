@@ -28,7 +28,7 @@ async def test_skips_fetch_when_data_current(monkeypatch):
     不算外部调用, 故此处只断言"不拉外部"。
     """
     repo = MagicMock()
-    repo.fetch_last_ts_map.side_effect = lambda m, iv, syms: {"AAPL": NOW - timedelta(minutes=5)}
+    repo.fetch_last_ts_map.side_effect = lambda m, iv, syms, **_: {"AAPL": NOW - timedelta(minutes=5)}
     kline, adapter = _mk_kline()
     agg = AsyncMock()
     monkeypatch.setattr("apps.collector.startup_reconcile.aggregate_derived_for_symbol", agg)
@@ -42,7 +42,7 @@ async def test_skips_fetch_when_data_current(monkeypatch):
 async def test_ashare_seed_only_5m_1d_direct_rest_aggregated(monkeypatch):
     """A股空库种子: 仅 5m + 1d 源头直取; 不走 TF 直拉; 末尾全量聚合派生周期。"""
     repo = MagicMock()
-    repo.fetch_last_ts_map.side_effect = lambda m, iv, syms: {}
+    repo.fetch_last_ts_map.side_effect = lambda m, iv, syms, **_: {}
     kline, adapter = _mk_kline()
     agg = AsyncMock()
     monkeypatch.setattr("apps.collector.startup_reconcile.aggregate_derived_for_symbol", agg)
@@ -70,7 +70,7 @@ async def test_us_seed_only_5m_1d_direct_rest_aggregated(monkeypatch):
     锚点不符看盘习惯且与聚合双写 → 改为从 5m 聚合。
     """
     repo = MagicMock()
-    repo.fetch_last_ts_map.side_effect = lambda m, iv, syms: {}
+    repo.fetch_last_ts_map.side_effect = lambda m, iv, syms, **_: {}
     kline, adapter = _mk_kline()
     agg = AsyncMock()
     monkeypatch.setattr("apps.collector.startup_reconcile.aggregate_derived_for_symbol", agg)
@@ -94,7 +94,7 @@ async def test_fetches_1d_only_when_intraday_current_but_daily_stale(monkeypatch
     """日线陈旧但 5m/TF 都新鲜: 只补 1d, 不重拉分钟/TF(聚合仍跑, 幂等)。"""
     repo = MagicMock()
 
-    def last_map(m, iv, syms):
+    def last_map(m, iv, syms, **_):
         if iv == "1d":
             return {"AAPL": NOW - timedelta(days=10)}
         return {"AAPL": NOW - timedelta(hours=1)}
@@ -112,7 +112,7 @@ async def test_fetches_1d_only_when_intraday_current_but_daily_stale(monkeypatch
 @pytest.mark.asyncio
 async def test_one_symbol_failure_does_not_abort(monkeypatch):
     repo = MagicMock()
-    repo.fetch_last_ts_map.side_effect = lambda m, iv, syms: {}
+    repo.fetch_last_ts_map.side_effect = lambda m, iv, syms, **_: {}
     kline, adapter = _mk_kline()
     kline.fetch_fresh_bars = AsyncMock(side_effect=RuntimeError("boom"))
     monkeypatch.setattr("apps.collector.startup_reconcile.aggregate_derived_for_symbol", AsyncMock())

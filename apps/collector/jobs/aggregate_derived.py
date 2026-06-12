@@ -45,7 +45,8 @@ async def _agg_one(
         start = _FULL_START
     else:
         start = now - timedelta(days=window_days)
-    raw = repo.fetch_history(market, symbol, start, now, interval=source_iv)
+    raw = repo.fetch_history(market, symbol, start, now, interval=source_iv,
+                             closed_only=True)
     if not raw:
         return 0
     agg = aggregate_intraday(raw, market, interval_minutes)  # type: ignore[arg-type]
@@ -75,7 +76,8 @@ async def _resample_one(
         start = _FULL_START
     else:
         start = now - timedelta(days=window_days)
-    daily = repo.fetch_history(market, symbol, start, now, interval="1d")
+    daily = repo.fetch_history(market, symbol, start, now, interval="1d",
+                               closed_only=True)
     if not daily:
         return 0
 
@@ -217,7 +219,8 @@ async def aggregate_and_publish(
         return
     for t in targets:
         try:
-            latest = repo.fetch_history_paged(market, symbol, t, before=None, limit=1)
+            latest = repo.fetch_history_paged(market, symbol, t, before=None, limit=1,
+                                              closed_only=True)
             if not latest:
                 continue
             bar = latest[-1]
@@ -253,8 +256,8 @@ async def sweep_derived(
     # 批量查询源/目标周期的最新/最早时间
     intervals = ("5m", "1d", "15m", "30m", "60m", "4h", "1wk", "1mo")
     try:
-        last = {iv: repo.fetch_last_ts_map(market, iv, symbols) for iv in intervals}
-        first = {iv: repo.fetch_first_ts_map(market, iv, symbols) for iv in intervals}
+        last = {iv: repo.fetch_last_ts_map(market, iv, symbols, closed_only=True) for iv in intervals}
+        first = {iv: repo.fetch_first_ts_map(market, iv, symbols, closed_only=True) for iv in intervals}
     except Exception:
         return
 

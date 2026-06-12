@@ -106,9 +106,9 @@ async def run_startup_reconcile(
     log.info("startup_reconcile.start", market=market, symbols=len(symbols),
              direct_intraday=direct_intraday, direct_tf=direct_tf)
     try:
-        last_1d = repo.fetch_last_ts_map(market, "1d", symbols)
-        last_5m = repo.fetch_last_ts_map(market, "5m", symbols)
-        last_tf = {iv: repo.fetch_last_ts_map(market, iv, symbols) for iv in direct_tf}
+        last_1d = repo.fetch_last_ts_map(market, "1d", symbols, closed_only=True)
+        last_5m = repo.fetch_last_ts_map(market, "5m", symbols, closed_only=True)
+        last_tf = {iv: repo.fetch_last_ts_map(market, iv, symbols, closed_only=True) for iv in direct_tf}
     except Exception as e:  # noqa: BLE001
         log.warning("startup_reconcile.last_ts_failed", market=market, error=str(e))
         last_1d, last_5m, last_tf = {}, {}, {iv: {} for iv in direct_tf}

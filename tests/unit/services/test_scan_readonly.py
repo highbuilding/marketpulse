@@ -11,7 +11,7 @@ class FakeRepo:
         self._bars = bars
         self.calls = []
 
-    def fetch_history(self, market, symbol, start, end, interval):
+    def fetch_history(self, market, symbol, start, end, interval, *, closed_only=False):
         self.calls.append((market, symbol, interval))
         return self._bars
 

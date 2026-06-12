@@ -38,7 +38,7 @@ class SignalScanService:
         days = max(lookback // BARS_PER_DAY.get(interval, 1) * 2, 30)
         start = end - timedelta(days=days)
         bars = self.kline.repo.fetch_history(
-            market, symbol, start, end, interval=interval,
+            market, symbol, start, end, interval=interval, closed_only=True,
         )
         if not bars:
             return 0
