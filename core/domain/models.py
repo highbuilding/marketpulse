@@ -35,6 +35,7 @@ class Bar:
     amount: float | None = None
     turnover: float | None = None
     outstanding_share: float | None = None
+    final: bool = True  # True=已收线(权威); False=进行中态(盘中入库, 收线后被覆盖翻 True)
     def __post_init__(self) -> None:
         if self.high < self.low:
             raise ValueError(f"high {self.high} < low {self.low}")

@@ -124,3 +124,64 @@ def test_paged_empty_symbol(tmp_path):
     repo.init()
     page = repo.fetch_history_paged("crypto", "NOPE-USDT", "1d", before=None, limit=10)
     assert page == []
+
+
+def _bar_final(market, symbol, day_offset, close, final):
+    ts = datetime(2026, 5, 1, tzinfo=timezone.utc) + timedelta(days=day_offset)
+    return Bar(
+        market=market, symbol=symbol, ts=ts,
+        open=Decimal("1"), high=Decimal("2"), low=Decimal("0.5"),
+        close=Decimal(str(close)), volume=100, interval="1d", final=final,
+    )
+
+
+def test_final_default_true_for_legacy_and_normal_bars(tmp_path):
+    """不传 final 的 Bar 默认 final=True; 存量/常规根都算收线。"""
+    repo = BarRepo(str(tmp_path / "bars.duckdb"))
+    repo.init()
+    repo.insert_bars([_bar("ashare", "600519.SH", 0, 100)])  # 不带 final
+    rows = repo.fetch_history("ashare", "600519.SH",
+                              start=datetime(2026, 5, 1, tzinfo=timezone.utc),
+                              end=datetime(2026, 5, 1, tzinfo=timezone.utc))
+    assert rows[0].final is True
+
+
+def test_closed_only_excludes_provisional(tmp_path):
+    """final=False(进行态)入库 → 默认读包含, closed_only=True 排除。"""
+    repo = BarRepo(str(tmp_path / "bars.duckdb"))
+    repo.init()
+    repo.insert_bars([_bar_final("ashare", "600519.SH", 0, 100, True)])
+    repo.insert_bars([_bar_final("ashare", "600519.SH", 1, 200, False)])  # 今日进行态
+    start = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 2, tzinfo=timezone.utc)
+    # 默认: 含进行态 (前端展示)
+    assert len(repo.fetch_history("ashare", "600519.SH", start=start, end=end)) == 2
+    # closed_only: 仅收线根
+    closed = repo.fetch_history("ashare", "600519.SH", start=start, end=end,
+                                closed_only=True)
+    assert len(closed) == 1
+    assert closed[0].close == Decimal("100")
+    # 末点 map 同样排除进行态
+    last_all = repo.fetch_last_ts_map("ashare", "1d", ["600519.SH"])
+    last_closed = repo.fetch_last_ts_map("ashare", "1d", ["600519.SH"], closed_only=True)
+    assert last_all["600519.SH"] > last_closed["600519.SH"]
+
+
+def test_settlement_overwrites_provisional_flips_final_true(tmp_path):
+    """收线: 同 ts 权威根 ON CONFLICT 覆盖进行态 → final 翻 True, close 更新。"""
+    repo = BarRepo(str(tmp_path / "bars.duckdb"))
+    repo.init()
+    repo.insert_bars([_bar_final("ashare", "600519.SH", 0, 100, False)])  # 盘中进行态
+    repo.insert_bars([_bar_final("ashare", "600519.SH", 0, 123, True)])   # 收线权威覆盖
+    rows = repo.fetch_history("ashare", "600519.SH",
+                              start=datetime(2026, 5, 1, tzinfo=timezone.utc),
+                              end=datetime(2026, 5, 1, tzinfo=timezone.utc))
+    assert len(rows) == 1
+    assert rows[0].close == Decimal("123")
+    assert rows[0].final is True
+    # closed_only 现在能看到它了 (已翻 True)
+    closed = repo.fetch_history("ashare", "600519.SH",
+                                start=datetime(2026, 5, 1, tzinfo=timezone.utc),
+                                end=datetime(2026, 5, 1, tzinfo=timezone.utc),
+                                closed_only=True)
+    assert len(closed) == 1

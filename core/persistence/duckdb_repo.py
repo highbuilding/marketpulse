@@ -56,11 +56,14 @@ class BarRepo:
             c.execute("ALTER TABLE bars ADD COLUMN IF NOT EXISTS amount DOUBLE")
             c.execute("ALTER TABLE bars ADD COLUMN IF NOT EXISTS turnover DOUBLE")
             c.execute("ALTER TABLE bars ADD COLUMN IF NOT EXISTS outstanding_share DOUBLE")
+            # final 标记: 存量行默认 TRUE(全部视为收线, 安全)。仅进行态日K入库写 FALSE,
+            # 收线后被权威数据 ON CONFLICT 覆盖翻 TRUE。信号/聚合/缺口检测查 closed_only。
+            c.execute("ALTER TABLE bars ADD COLUMN IF NOT EXISTS final BOOLEAN DEFAULT TRUE")
 
     # 列顺序与 bars 表 schema 严格一致, 供 DataFrame 批量 upsert 使用
     _COLS = (
         "market", "symbol", "ts", "interval", "open", "high", "low", "close",
-        "volume", "amount", "turnover", "outstanding_share",
+        "volume", "amount", "turnover", "outstanding_share", "final",
     )
 
     def insert_bars(self, bars: list[Bar]) -> None:
@@ -79,7 +82,7 @@ class BarRepo:
             rows = [(
                 b.market, b.symbol, b.ts.astimezone(timezone.utc).replace(tzinfo=None),
                 b.interval, b.open, b.high, b.low, b.close, b.volume,
-                b.amount, b.turnover, b.outstanding_share,
+                b.amount, b.turnover, b.outstanding_share, b.final,
             ) for b in bars]
             # 向量化批量 upsert: register DataFrame + INSERT ... SELECT ... ON CONFLICT.
             # 坑: 早期用 executemany 逐行 upsert, 回填全周期 5m (~77 万根/标的) 时
@@ -92,17 +95,18 @@ class BarRepo:
                     c.execute("""
                         INSERT INTO bars (
                             market, symbol, ts, interval, open, high, low, close,
-                            volume, amount, turnover, outstanding_share
+                            volume, amount, turnover, outstanding_share, final
                         )
                         SELECT
                             market, symbol, ts, interval, open, high, low, close,
-                            volume, amount, turnover, outstanding_share
+                            volume, amount, turnover, outstanding_share, final
                         FROM _incoming_bars
                         ON CONFLICT (market, symbol, interval, ts) DO UPDATE SET
                             open=excluded.open, high=excluded.high, low=excluded.low,
                             close=excluded.close, volume=excluded.volume,
                             amount=excluded.amount, turnover=excluded.turnover,
-                            outstanding_share=excluded.outstanding_share
+                            outstanding_share=excluded.outstanding_share,
+                            final=excluded.final
                     """)
                 finally:
                     c.unregister("_incoming_bars")
@@ -110,14 +114,18 @@ class BarRepo:
     def fetch_history(
         self, market: str, symbol: str,
         start: datetime, end: datetime, interval: str = "1d",
+        *, closed_only: bool = False,
     ) -> list[Bar]:
+        # closed_only=True: 仅收线根(信号/聚合/缺口检测用, 排除进行态日K)。
+        # 默认 False: 含进行态(前端历史展示)。
         with self._conn() as c:  # 读不持锁(读写分离)
-            cur = c.execute("""
+            cur = c.execute(f"""
                 SELECT ts, interval, open, high, low, close, volume,
-                       amount, turnover, outstanding_share
+                       amount, turnover, outstanding_share, final
                 FROM bars
                 WHERE market=? AND symbol=? AND interval=?
                   AND ts BETWEEN ? AND ?
+                  {"AND final = TRUE" if closed_only else ""}
                 ORDER BY ts
             """, (market, symbol, interval,
                    start.astimezone(timezone.utc).replace(tzinfo=None),
@@ -127,25 +135,27 @@ class BarRepo:
 
     def fetch_history_paged(
         self, market: str, symbol: str, interval: str,
-        *, before: datetime | None, limit: int,
+        *, before: datetime | None, limit: int, closed_only: bool = False,
     ) -> list[Bar]:
         """游标分页: 返回严格早于 before 的最近 limit 根, 升序。
 
         币安/TradingView 反向翻页口径 —— before=None 取最新一页,
         前端拿到首页最老一根的 ts 作为下一页的 before, 一直翻到上市首日。
         返回升序 (前端 lightweight-charts setData 要求升序)。
+        closed_only=True 时仅收线根(默认含进行态, 供前端展示)。
         """
         before_naive = (
             before.astimezone(timezone.utc).replace(tzinfo=None)
             if before is not None else None
         )
         with self._conn() as c:  # 读不持锁(读写分离)
-            cur = c.execute("""
+            cur = c.execute(f"""
                 SELECT ts, interval, open, high, low, close, volume,
-                       amount, turnover, outstanding_share
+                       amount, turnover, outstanding_share, final
                 FROM bars
                 WHERE market=? AND symbol=? AND interval=?
                   AND (CAST(? AS TIMESTAMP) IS NULL OR ts < CAST(? AS TIMESTAMP))
+                  {"AND final = TRUE" if closed_only else ""}
                 ORDER BY ts DESC
                 LIMIT ?
             """, (market, symbol, interval, before_naive, before_naive, limit))
@@ -155,10 +165,13 @@ class BarRepo:
 
     def fetch_last_ts_map(
         self, market: str, interval: str, symbols: list[str],
+        *, closed_only: bool = False,
     ) -> dict[str, datetime]:
         """返回 {symbol: max(ts)}，仅返回有数据的 symbol。
 
         用于 sweep_derived 批量子查询，复用 repo 连接避免 read_only 冲突。
+        closed_only=True 时仅按收线根算末点(缺口检测用, 避免进行态根让 reconcile
+        误判"已最新"不补)。
         """
         if not symbols:
             return {}
@@ -168,12 +181,14 @@ class BarRepo:
                 SELECT symbol, MAX(ts) FROM bars
                 WHERE market=? AND interval=?
                   AND symbol IN ({placeholders})
+                  {"AND final = TRUE" if closed_only else ""}
                 GROUP BY symbol
             """, [market, interval] + list(symbols)).fetchall()
         return {r[0]: r[1].replace(tzinfo=timezone.utc) for r in rows}
 
     def fetch_first_ts_map(
         self, market: str, interval: str, symbols: list[str],
+        *, closed_only: bool = False,
     ) -> dict[str, datetime]:
         """返回 {symbol: min(ts)}，用于检测派生周期是否漏了早期历史。"""
         if not symbols:
@@ -184,6 +199,7 @@ class BarRepo:
                 SELECT symbol, MIN(ts) FROM bars
                 WHERE market=? AND interval=?
                   AND symbol IN ({placeholders})
+                  {"AND final = TRUE" if closed_only else ""}
                 GROUP BY symbol
             """, [market, interval] + list(symbols)).fetchall()
         return {r[0]: r[1].replace(tzinfo=timezone.utc) for r in rows}
@@ -191,7 +207,7 @@ class BarRepo:
     @staticmethod
     def _rows_to_bars(market: str, symbol: str, rows: list) -> list[Bar]:
         out: list[Bar] = []
-        for ts, iv, o, h, low, cl, v, amount, turnover, outstanding_share in rows:
+        for ts, iv, o, h, low, cl, v, amount, turnover, outstanding_share, final in rows:
             out.append(Bar(
                 market=market, symbol=symbol,
                 ts=ts.replace(tzinfo=timezone.utc),
@@ -203,5 +219,6 @@ class BarRepo:
                 outstanding_share=(
                     float(outstanding_share) if outstanding_share is not None else None
                 ),
+                final=bool(final) if final is not None else True,
             ))
         return out
