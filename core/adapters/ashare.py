@@ -11,6 +11,7 @@ import requests
 import structlog
 
 from core.adapters.base import AdapterError, CircuitBreaker
+from core.domain.market_sessions import is_after_market_close
 from core.domain.models import Bar, HealthStatus, Quote
 from core.integrations.akshare import ak_call
 
@@ -245,7 +246,69 @@ class AShareAdapter:
             req_start=start.isoformat(), req_end=end.isoformat(),
             bars=len(out), latest_ts=latest_ts, latest_close=latest_close,
         )
+        # 东财兜底: sina 日线收盘后定稿慢(实测收盘 1h 仍未出当日根), 撞 daily_settlement
+        # 45min deadline → 当日 1d 缺失。若已过收盘且 sina 最新根未覆盖今日, 退东财
+        # (stock_zh_a_hist / stock_zh_index_daily_em, 实测当日即出全量)补今日缺口。
+        # 保留 sina 优先(CLAUDE.md 原则3), 仅 sina 慢时兜底; 东财失败返 sina 原结果。
+        if kind in ("stock", "index") and end >= start:
+            out = await self._em_daily_today_fallback(symbol, kind, out, end)
         return out
+
+    async def _em_daily_today_fallback(
+        self, symbol: str, kind: str, sina_bars: list[Bar], end: datetime,
+    ) -> list[Bar]:
+        """sina 日线未覆盖今日且已收盘 → 退东财补今日这根 (append 到 sina 结果)。
+
+        东财 ts 口径与 sina 完全一致 (BJT 自然日 00:00 = UTC(D-1)16:00, 雷区3),
+        保证 insert_bars 的 ON CONFLICT 正确覆盖而非产生重复根。
+        """
+        today = datetime.now(timezone.utc).astimezone(_CN_TZ).date()
+        # 已过收盘才兜底 (盘中 sina 没今日定稿根是正常的, 不该补)
+        if not is_after_market_close("ashare"):
+            return sina_bars
+        sina_last = sina_bars[-1].ts.astimezone(_CN_TZ).date() if sina_bars else None
+        if sina_last is not None and sina_last >= today:
+            return sina_bars  # sina 已覆盖今日, 无需兜底
+        try:
+            if kind == "index":
+                df = await ak_call(
+                    "stock_zh_index_daily_em", symbol=_to_sina_code(symbol),
+                    caller=f"ashare.fetch_history:{symbol}:index_em_fallback",
+                )
+                col_date, col_o, col_h, col_l, col_c, col_v = (
+                    "date", "open", "high", "low", "close", "volume")
+            else:
+                df = await ak_call(
+                    "stock_zh_a_hist", symbol=_denormalize(symbol),
+                    period="daily", adjust="qfq",
+                    caller=f"ashare.fetch_history:{symbol}:stock_em_fallback",
+                )
+                col_date, col_o, col_h, col_l, col_c, col_v = (
+                    "日期", "开盘", "最高", "最低", "收盘", "成交量")
+        except Exception as e:  # noqa: BLE001
+            log.warning("ashare.daily.em_fallback_failed", symbol=symbol, error=str(e))
+            return sina_bars
+        if df is None or df.empty or col_date not in df.columns:
+            return sina_bars
+        last = df.iloc[-1]
+        d = last[col_date]
+        d = d if hasattr(d, "year") else datetime.fromisoformat(str(d)).date()
+        if d < today:
+            return sina_bars  # 东财也未出今日 → 留待次日
+        ts = datetime.combine(d, datetime.min.time(),
+                              tzinfo=_CN_TZ).astimezone(timezone.utc)
+        em_bar = Bar(
+            market="ashare", symbol=symbol, ts=ts,
+            open=Decimal(str(last[col_o])), high=Decimal(str(last[col_h])),
+            low=Decimal(str(last[col_l])), close=Decimal(str(last[col_c])),
+            volume=int(float(last[col_v])), interval="1d",
+            amount=_num(last, "成交额", "amount"),
+            turnover=_num(last, "换手率", "turnover"),
+        )
+        log.info("ashare.daily.em_fallback_ok", symbol=symbol, kind=kind,
+                 ts=ts.isoformat(), close=float(em_bar.close))
+        # append 今日东财根 (sina 不含今日, 不会重复)
+        return [*sina_bars, em_bar]
 
     async def _supplement_stock_daily_metrics(
         self, symbol: str, start_date: str, end_date: str, daily_df: pd.DataFrame,

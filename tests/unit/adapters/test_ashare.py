@@ -228,7 +228,10 @@ async def test_fetch_history_stock_supplements_amount_and_turnover_from_hist():
         "stock_zh_a_daily": daily_df,
         "stock_zh_a_hist": hist_df,
     })
-    with patch("core.adapters.ashare.ak_call", fake):
+    # patch 掉收盘判定: 东财兜底是正交新行为(收盘后 sina 未覆盖今日才触发),
+    # 本测试只验 sina 主路径 + 指标补充, 故强制非收盘态避免时变条件干扰。
+    with patch("core.adapters.ashare.ak_call", fake), \
+            patch("core.adapters.ashare.is_after_market_close", return_value=False):
         bars = await adapter.fetch_history(
             "600004.SH",
             datetime(2026, 5, 1, tzinfo=timezone.utc),
@@ -263,7 +266,8 @@ async def test_fetch_history_etf_routes_to_fund_etf_hist_sina():
 async def test_fetch_history_index_routes_to_stock_zh_index_daily():
     adapter = AShareAdapter()
     fake = _ak_dispatch({"stock_zh_index_daily": _INDEX_DAILY_DF})
-    with patch("core.adapters.ashare.ak_call", fake):
+    with patch("core.adapters.ashare.ak_call", fake), \
+            patch("core.adapters.ashare.is_after_market_close", return_value=False):
         bars = await adapter.fetch_history(
             "000001.SH",  # 上证指数
             datetime(2020, 1, 1, tzinfo=timezone.utc),
@@ -297,3 +301,65 @@ async def test_fetch_history_etf_filters_by_date_range():
     assert len(bars) == 2
     assert bars[0].close == Decimal("2")
     assert bars[1].close == Decimal("5")
+
+
+# ── 东财兜底: sina 日线收盘后定稿慢, 退东财补今日缺口(改动2) ──
+
+@pytest.mark.asyncio
+async def test_daily_em_fallback_stock_appends_today_when_sina_stale():
+    """收盘后 sina 个股日线未覆盖今日 → 退东财 stock_zh_a_hist 补今日这根。"""
+    from datetime import date as _date
+    from zoneinfo import ZoneInfo
+    _CN = ZoneInfo("Asia/Shanghai")
+    today = datetime.now(timezone.utc).astimezone(_CN).date()
+    # sina 只返回到 today-3 (未定稿今日)
+    stale = today - pd.Timedelta(days=3).to_pytimedelta()
+    sina_df = pd.DataFrame([
+        {"date": stale, "open": 10.0, "high": 10.5, "low": 9.5,
+         "close": 10.2, "volume": 1_000_000, "amount": 1e7, "turnover": 1.0},
+    ])
+    em_df = pd.DataFrame([
+        {"日期": stale.isoformat(), "开盘": 10.0, "最高": 10.5, "最低": 9.5,
+         "收盘": 10.2, "成交量": 1_000_000, "成交额": 1e7, "换手率": 1.0},
+        {"日期": today.isoformat(), "开盘": 11.0, "最高": 12.0, "最低": 10.8,
+         "收盘": 11.9, "成交量": 2_000_000, "成交额": 2e7, "换手率": 2.0},
+    ])
+    adapter = AShareAdapter()
+    fake = _ak_dispatch({"stock_zh_a_daily": sina_df, "stock_zh_a_hist": em_df})
+    with patch("core.adapters.ashare.ak_call", fake), \
+            patch("core.adapters.ashare.is_after_market_close", return_value=True):
+        bars = await adapter.fetch_history(
+            "600004.SH",
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            datetime.now(timezone.utc),
+        )
+    # 末根 = 东财补的今日根, ts 口径 = BJT 自然日 → UTC, close=11.9
+    assert bars[-1].close == Decimal("11.9")
+    assert bars[-1].ts.astimezone(_CN).date() == today
+    # 东财端点被调用过
+    assert "stock_zh_a_hist" in [c.args[0] for c in fake.call_args_list]
+
+
+@pytest.mark.asyncio
+async def test_daily_em_fallback_skipped_when_not_after_close():
+    """盘中(未过收盘) sina 未覆盖今日是正常的 → 不触发东财兜底。"""
+    from zoneinfo import ZoneInfo
+    _CN = ZoneInfo("Asia/Shanghai")
+    today = datetime.now(timezone.utc).astimezone(_CN).date()
+    stale = today - pd.Timedelta(days=3).to_pytimedelta()
+    sina_df = pd.DataFrame([
+        {"date": stale, "open": 10.0, "high": 10.5, "low": 9.5,
+         "close": 10.2, "volume": 1_000_000, "amount": 1e7, "turnover": 1.0},
+    ])
+    adapter = AShareAdapter()
+    # 东财端点未 mock: 若被调用会 raise(_ak_dispatch 语义), 断言它没被调
+    fake = _ak_dispatch({"stock_zh_a_daily": sina_df})
+    with patch("core.adapters.ashare.ak_call", fake), \
+            patch("core.adapters.ashare.is_after_market_close", return_value=False):
+        bars = await adapter.fetch_history(
+            "600004.SH",
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            datetime.now(timezone.utc),
+        )
+    assert "stock_zh_a_hist" not in [c.args[0] for c in fake.call_args_list]
+    assert bars[-1].close == Decimal("10.2")
