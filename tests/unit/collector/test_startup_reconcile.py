@@ -119,3 +119,52 @@ async def test_one_symbol_failure_does_not_abort(monkeypatch):
     monkeypatch.setattr("apps.collector.startup_reconcile.asyncio.sleep", AsyncMock())
     # 不抛: 单标的失败被吞
     await run_startup_reconcile("us", repo, kline, ["AAPL", "MSFT"], now=NOW)
+
+
+@pytest.mark.asyncio
+async def test_ashare_fetches_1d_when_not_covering_today_after_close(monkeypatch):
+    """A股已收盘 + 日线末点=昨日(距今<2天) → 仍补 1d(根治: 不靠绝对2天阈值,
+    改'已收盘但末点未覆盖今日交易日即缺口')。海康类标的当日缺口的根因修复。"""
+    repo = MagicMock()
+    # 末点 = 昨日 BJT(距今约1天, 旧逻辑 <2天会跳过), 5m 新鲜
+    yesterday = NOW - timedelta(days=1)
+
+    def last_map(m, iv, syms, **_):
+        if iv == "1d":
+            return {"600519.SH": yesterday}
+        return {"600519.SH": NOW - timedelta(hours=1)}
+
+    repo.fetch_last_ts_map.side_effect = last_map
+    kline, adapter = _mk_kline()
+    monkeypatch.setattr("apps.collector.startup_reconcile.aggregate_derived_for_symbol", AsyncMock())
+    monkeypatch.setattr("apps.collector.startup_reconcile.asyncio.sleep", AsyncMock())
+    # 已收盘
+    monkeypatch.setattr("apps.collector.startup_reconcile.is_after_market_close",
+                        lambda m, when=None: True, raising=False)
+    await run_startup_reconcile("ashare", repo, kline, ["600519.SH"], now=NOW)
+    intervals = [c.kwargs["interval"] for c in kline.fetch_fresh_bars.await_args_list]
+    assert "1d" in intervals  # 必须补 1d(旧逻辑会跳过)
+
+
+@pytest.mark.asyncio
+async def test_ashare_skips_1d_intraday_when_not_after_close(monkeypatch):
+    """盘中(未收盘) + 日线末点=昨日 → 不补 1d(盘中今日收线根本未定稿, 末点未覆盖
+    今日是正常的, 不该当缺口拉)。避免盘中重启误触发。"""
+    repo = MagicMock()
+    yesterday = NOW - timedelta(days=1)
+
+    def last_map(m, iv, syms, **_):
+        if iv == "1d":
+            return {"600519.SH": yesterday}
+        return {"600519.SH": NOW - timedelta(hours=1)}
+
+    repo.fetch_last_ts_map.side_effect = last_map
+    kline, adapter = _mk_kline()
+    monkeypatch.setattr("apps.collector.startup_reconcile.aggregate_derived_for_symbol", AsyncMock())
+    monkeypatch.setattr("apps.collector.startup_reconcile.asyncio.sleep", AsyncMock())
+    # 未收盘
+    monkeypatch.setattr("apps.collector.startup_reconcile.is_after_market_close",
+                        lambda m, when=None: False, raising=False)
+    await run_startup_reconcile("ashare", repo, kline, ["600519.SH"], now=NOW)
+    intervals = [c.kwargs["interval"] for c in kline.fetch_fresh_bars.await_args_list]
+    assert "1d" not in intervals  # 盘中末点=昨日 <2天 且未收盘 → 不补

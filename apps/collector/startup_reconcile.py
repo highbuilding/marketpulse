@@ -31,12 +31,16 @@ from __future__ import annotations
 import asyncio
 import os
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import structlog
 
 from apps.collector.jobs.aggregate_derived import aggregate_derived_for_symbol
+from core.domain.market_sessions import is_after_market_close
 
 log = structlog.get_logger(__name__)
+
+_BJT = ZoneInfo("Asia/Shanghai")
 
 # ── 种子直取/聚合配置(按 market 分野)──
 # direct_intraday: 走 kline.fetch_fresh_bars 的分钟周期(sina/Alpaca intraday)
@@ -83,6 +87,34 @@ def _stale(last: datetime | None, now: datetime, thresh: timedelta) -> bool:
     return (now - last) > thresh
 
 
+def _daily_gap(market: str, last: datetime | None, now: datetime) -> bool:
+    """日线是否需回补(market 感知)。
+
+    A股根治(2026-06-12): 不靠绝对 _DAILY_STALE(2天)阈值 —— 那只为"长时间宕机补
+    历史断档"设计, 对"今天这根没入库"(末点距今才几小时~1天)够不到。改为:
+      已过收盘(is_after_market_close) 且 末点未覆盖今日交易日(雷区3: ts 换 BJT 日)
+      → 当日缺口, 补。
+    根因: settlement 撞 sina 定稿慢 deadline 全失败时, 末点距今<2天的标的(如海康)
+    会被旧 _DAILY_STALE 判"够新"跳过, 当日 1d 永久缺失到次日。本判据 + 东财兜底
+    (fetch_history 内)双保险根治。盘中(未收盘)末点未覆盖今日是正常的, 不触发。
+
+    其他市场(美股, session 不同): 保留原绝对 2 天阈值。
+    """
+    if market != "ashare":
+        return _stale(last, now, _DAILY_STALE)
+    # A股: 先看绝对阈值(覆盖长时间宕机), 再看"已收盘但缺当日"
+    if _stale(last, now, _DAILY_STALE):
+        return True
+    if not is_after_market_close("ashare", now):
+        return False
+    if last is None:
+        return True
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    bjt_today = now.astimezone(_BJT).date()
+    return last.astimezone(_BJT).date() < bjt_today  # 末点未覆盖今日交易日 → 缺口
+
+
 async def run_startup_reconcile(
     market: str, repo, kline, symbols: list[str], *, now: datetime | None = None,
 ) -> None:
@@ -122,7 +154,7 @@ async def run_startup_reconcile(
             #    独立 try/except: 日线瞬时失败(经代理 SSL 抖动等)不再冒泡中断
             #    本标的的分钟/聚合步。ak_call 已有网络瞬时重试; 这里再收集失败标的
             #    末尾补一轮, 双保险根治"冷启动撞抖动 → 一批标的卡旧数据到次日"。
-            if _stale(last_1d.get(sym), now, _DAILY_STALE):
+            if _daily_gap(market, last_1d.get(sym), now):
                 try:
                     await kline.fetch_fresh_bars(
                         sym, interval="1d", start=start_deep, end=now)
