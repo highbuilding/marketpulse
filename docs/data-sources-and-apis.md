@@ -16,8 +16,8 @@
 | source | 令牌桶 rate/burst | 覆盖的接口 | 限频中间件 |
 |---|---|---|---|
 | **sina** | 5/s, burst 20 | stock_zh_a_minute、stock_zh_a_daily、stock_zh_index_daily、fund_etf_*_sina、stock_zh_a_spot | ✅ ak_call |
-| **em**(东财) | 10/s, burst 50 | stock_zh_a_spot_em、stock_*_fund_flow*、stock_hsgt_*、stock_board_*_name_em、stock_cyq_em、stock_hk_spot_em | ✅ ak_call |
-| **ths**(同花顺) | 3/s, burst 10 | stock_board_*_cons_ths | ✅ ak_call |
+| **em**(东财) | 10/s, burst 50 | stock_zh_a_spot_em、stock_*_fund_flow*、stock_hsgt_*、stock_board_*_name_em、stock_board_*_cons_em、stock_cyq_em、stock_hk_spot_em | ✅ ak_call |
+| **ths**(同花顺) | 3/s, burst 10 | stock_board_*_cons_ths(仅低频校准备选) | ✅ ak_call |
 | sina quote(hq.sinajs.cn) | 无中间件 | A股实时报价 HTTP 直连 | ❌ 自带 session |
 | Alpaca | SDK 自限(~200/min) | 美股全部 | ❌ CircuitBreaker(adapter 内) |
 | Binance | 无中间件 | crypto REST + WS | ❌ 走代理 |
@@ -62,8 +62,10 @@
 | `stock_individual_fund_flow` | `fund_flow.pull_symbol` | 个股资金流 | em |
 | `stock_board_industry_name_em` | `market_query.sectors_ashare` | 行业板块列表 | em |
 | `stock_board_concept_name_em` | `market_query.sectors_ashare` | 概念板块列表 | em |
-| `stock_board_industry_cons_ths` | `market_query.sector_constituents` | 行业成分股 | ths |
-| `stock_board_concept_cons_ths` | `market_query.sector_constituents` | 概念成分股 | ths |
+| `stock_board_industry_cons_em` | `market_query.sector_constituents` | 行业成分股 | em |
+| `stock_board_concept_cons_em` | `market_query.sector_constituents` | 概念成分股 | em |
+
+> 2026-06-14 验证:强制直连(`NO_PROXY='*'`)下,东财 `push2` 系板块/概念列表和全 A `clist/get` 均出现 `RemoteDisconnected`;sina quote 同环境 0.19s 正常。因此板块/概念/题材宇宙不能作为盘中实时依赖,应使用本地预固化 seed 作为 SSoT,东财/同花顺仅用于收盘后或手动低频校准。详见 `docs/2026-06-14-ashare-theme-data-source-feasibility.md`。
 
 ---
 

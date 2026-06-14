@@ -177,8 +177,9 @@ tests/unit/themes/test_radar_service.py
 数据来源:
 
 ```text
-MarketQueryService.sectors_ashare()
-MarketQueryService.sector_constituents_ashare(sector_code)
+本地预固化题材宇宙 / 成分股 seed(SSoT)
+MarketQueryService.sectors_ashare() 仅低频校准 / 手动刷新
+MarketQueryService.sector_constituents_ashare(sector_code) 仅低频校准 / 手动刷新
 Redis quote cache
 可选: 已有 bars/current tail 用于是否站上分时均线
 ```
@@ -186,14 +187,15 @@ Redis quote cache
 扫描策略:
 
 ```text
-每 1-3 分钟拉行业/概念列表
+每 1-3 分钟读取本地 seed + 实时 quote/bars 计算题材指标
 候选题材集合:
   涨幅 Top 20
   成交额 Top 20
   跌幅 Bottom 10
   最近 30 分钟活跃题材
   自选股/持仓所属题材
-只对候选题材拉成分股
+只对候选题材读取本地成分股,不盘中在线拉成分股
+收盘后或手动任务尝试用东财/同花顺低频校准 seed;失败只 warning,继续使用上一版
 ```
 
 输出:
@@ -228,6 +230,7 @@ pytest tests/unit/themes/test_radar_service.py -q
 
 - 可以生成 A 股 theme snapshots。
 - 每个候选题材有成分股角色。
+- 东财/同花顺板块接口失败时仍可基于本地 seed 生成 snapshots。
 - 非 A 股 provider 返回 unsupported，不触发外部调用。
 
 ### Phase 4: ThemeState + MarketEvent
