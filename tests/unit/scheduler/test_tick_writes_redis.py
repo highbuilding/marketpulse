@@ -1,6 +1,7 @@
 import pytest
 import fakeredis.aioredis
 from datetime import datetime, timezone
+import json
 
 from core.cache import keys
 from core.cache.redis_client import RedisCache
@@ -29,6 +30,14 @@ async def test_write_quote_to_redis_msgpack_payload(cache):
     assert payload["volume"] == 100
     assert payload["ts"] == "2026-05-27T01:00:00+00:00"
     assert payload["market"] == "ashare"
+
+    entries = await cache._r.xrange(keys.BUS_QUOTE_TICK)  # noqa: SLF001
+    assert len(entries) == 1
+    raw = entries[0][1][b"data"]
+    event = json.loads(raw)
+    assert event["market"] == "ashare"
+    assert event["symbol"] == "600519.SH"
+    assert event["amount"] is None
 
 
 async def test_write_quote_to_redis_swallows_errors(cache, monkeypatch):
