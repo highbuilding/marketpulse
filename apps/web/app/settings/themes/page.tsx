@@ -263,20 +263,31 @@ export default function ThemeSettingsPage() {
             </label>
           </div>
           <div style={st.themeList}>
-            {themes.map((theme) => (
-              <button
-                key={theme.theme_code}
-                style={{
-                  ...st.themeItem,
-                  ...(theme.theme_code === selectedCode ? st.themeItemActive : {}),
-                  opacity: theme.enabled ? 1 : 0.55,
-                }}
-                onClick={() => void selectTheme(theme.theme_code)}
-              >
-                <span style={st.themeName}>{theme.theme_name}</span>
-                <span style={st.themeMeta}>{theme.priority} · {classLabel(theme.classification)} · {theme.member_count}只</span>
-              </button>
-            ))}
+            {themes.map((theme) => {
+              const active = theme.theme_code === (selected?.theme_code ?? selectedCode)
+              return (
+                <button
+                  key={theme.theme_code}
+                  type="button"
+                  data-theme-row={theme.theme_code}
+                  aria-pressed={active}
+                  style={{
+                    ...st.themeItem,
+                    ...(active ? st.themeItemActive : {}),
+                    ...(!theme.enabled && !active ? st.themeItemDisabled : {}),
+                  }}
+                  onClick={() => void selectTheme(theme.theme_code)}
+                >
+                  <span style={{ ...st.themeName, ...(active ? st.themeNameActive : {}) }}>
+                    {theme.theme_name}
+                    {!theme.enabled && <span style={st.disabledTag}>停用</span>}
+                  </span>
+                  <span style={{ ...st.themeMeta, ...(active ? st.themeMetaActive : {}) }}>
+                    {theme.priority} · {classLabel(theme.classification)} · {theme.member_count}只
+                  </span>
+                </button>
+              )
+            })}
           </div>
         </section>
 
@@ -371,10 +382,14 @@ const st: Record<string, CSSProperties> = {
   filters: { padding: '10px 12px', borderBottom: '1px solid var(--border)' },
   check: { display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text2)', fontSize: 12 },
   themeList: { display: 'flex', flexDirection: 'column', gap: 4, padding: 8, maxHeight: 680, overflow: 'auto' },
-  themeItem: { textAlign: 'left', border: '1px solid transparent', background: 'transparent', color: 'var(--text)', borderRadius: 6, padding: '9px 10px', cursor: 'pointer' },
-  themeItemActive: { background: 'var(--bg3)', borderColor: 'var(--border)' },
+  themeItem: { textAlign: 'left', border: '1px solid transparent', borderLeft: '3px solid transparent', background: 'transparent', color: 'var(--text)', borderRadius: 6, padding: '9px 10px', cursor: 'pointer' },
+  themeItemActive: { background: 'rgba(37,99,235,0.10)', borderColor: 'rgba(37,99,235,0.28)', borderLeftColor: 'var(--accent)' },
+  themeItemDisabled: { opacity: 0.55 },
   themeName: { display: 'block', fontSize: 13, fontWeight: 600 },
+  themeNameActive: { color: 'var(--accent)' },
   themeMeta: { display: 'block', marginTop: 3, fontSize: 11, color: 'var(--text3)' },
+  themeMetaActive: { color: 'var(--text2)' },
+  disabledTag: { marginLeft: 6, color: '#dc2626', fontSize: 11, fontWeight: 500 },
   headerBtn: { marginLeft: 'auto', background: 'transparent', color: 'var(--accent)', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 9px', cursor: 'pointer', fontSize: 12 },
   source: { marginLeft: 8, color: 'var(--text3)', fontSize: 11, fontWeight: 400 },
   formGrid: { display: 'grid', gridTemplateColumns: '1.2fr 1.2fr 0.9fr 0.6fr', gap: 8 },
