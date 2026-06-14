@@ -6,7 +6,9 @@ __pycache__/
 .ruff_cache/
 *.egg-info/
 data/*.duckdb
+data/*.duckdb.bak*
 data/*.db
+data/*.db.bak*
 data/*.db-journal
 data/*.db-wal
 data/*.db-shm

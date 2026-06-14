@@ -183,6 +183,44 @@ CREATE INDEX IF NOT EXISTS idx_positions_market_status
   ON positions(market, status, updated_at DESC);
 
 -- 题材/板块快照: collector 写, API/Web 只读。
+-- 题材静态维护表: 内置 seed + 用户手工调整后的 SSoT。
+-- theme_snapshots/theme_memberships 只放盘中动态计算结果, 不承担静态成分股事实源。
+CREATE TABLE IF NOT EXISTS theme_universe (
+  market TEXT NOT NULL,
+  theme_code TEXT NOT NULL,
+  theme_name TEXT NOT NULL,
+  classification TEXT NOT NULL,   -- 'index_weight' | 'industry' | 'concept' | 'theme' | 'watch'
+  priority TEXT NOT NULL DEFAULT 'P2',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  source TEXT NOT NULL DEFAULT 'manual',
+  seed_version TEXT,
+  note TEXT,
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (market, theme_code)
+);
+CREATE INDEX IF NOT EXISTS idx_theme_universe_market_priority
+  ON theme_universe(market, enabled, priority, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS theme_constituents (
+  market TEXT NOT NULL,
+  theme_code TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  name TEXT,
+  role_hint TEXT,
+  weight REAL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  source TEXT NOT NULL DEFAULT 'manual',
+  seed_version TEXT,
+  note TEXT,
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (market, theme_code, symbol),
+  FOREIGN KEY (market, theme_code) REFERENCES theme_universe(market, theme_code) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_theme_constituents_symbol
+  ON theme_constituents(market, symbol, enabled);
+
 CREATE TABLE IF NOT EXISTS theme_snapshots (
   market TEXT NOT NULL,
   theme_code TEXT NOT NULL,

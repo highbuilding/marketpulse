@@ -209,6 +209,40 @@ class ThemeMembership:
 
 
 @dataclass(frozen=True, slots=True)
+class ThemeDefinition:
+    """用户可维护的题材/板块静态定义。"""
+    market: str
+    theme_code: str
+    theme_name: str
+    classification: str
+    priority: str = "P2"
+    enabled: bool = True
+    source: str = "manual"
+    seed_version: str | None = None
+    note: str | None = None
+    member_count: int = 0
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ThemeConstituent:
+    """用户可维护的题材静态成分股。"""
+    market: str
+    theme_code: str
+    symbol: str
+    name: str | None = None
+    role_hint: str | None = None
+    weight: float | None = None
+    enabled: bool = True
+    source: str = "manual"
+    seed_version: str | None = None
+    note: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class MarketEvent:
     """程序生成的事实事件。"""
     market: str

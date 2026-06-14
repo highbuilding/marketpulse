@@ -1,0 +1,214 @@
+{
+  "version": "2026-06-14",
+  "market": "ashare",
+  "themes": [
+    {
+      "theme_code": "index_weight:brokerage",
+      "theme_name": "证券",
+      "classification": "index_weight",
+      "priority": "P0",
+      "note": "指数风险偏好和放量行情观察锚点",
+      "members": [
+        {"symbol": "300059.SZ", "name": "东方财富", "role_hint": "mid_core", "weight": 10},
+        {"symbol": "600030.SH", "name": "中信证券", "role_hint": "mid_core", "weight": 9},
+        {"symbol": "601688.SH", "name": "华泰证券", "role_hint": "core", "weight": 7},
+        {"symbol": "601211.SH", "name": "国泰君安", "role_hint": "core", "weight": 6},
+        {"symbol": "600958.SH", "name": "东方证券", "role_hint": "follower", "weight": 5}
+      ]
+    },
+    {
+      "theme_code": "index_weight:bank",
+      "theme_name": "银行",
+      "classification": "index_weight",
+      "priority": "P0",
+      "note": "大盘权重和高股息风格观察锚点",
+      "members": [
+        {"symbol": "600036.SH", "name": "招商银行", "role_hint": "mid_core", "weight": 10},
+        {"symbol": "601398.SH", "name": "工商银行", "role_hint": "mid_core", "weight": 9},
+        {"symbol": "601288.SH", "name": "农业银行", "role_hint": "core", "weight": 8},
+        {"symbol": "601166.SH", "name": "兴业银行", "role_hint": "core", "weight": 7},
+        {"symbol": "601328.SH", "name": "交通银行", "role_hint": "core", "weight": 6}
+      ]
+    },
+    {
+      "theme_code": "index_weight:baijiu",
+      "theme_name": "白酒消费",
+      "classification": "index_weight",
+      "priority": "P0",
+      "note": "消费权重和沪深300风格观察锚点",
+      "members": [
+        {"symbol": "600519.SH", "name": "贵州茅台", "role_hint": "mid_core", "weight": 10},
+        {"symbol": "000858.SZ", "name": "五粮液", "role_hint": "mid_core", "weight": 9},
+        {"symbol": "000568.SZ", "name": "泸州老窖", "role_hint": "core", "weight": 8},
+        {"symbol": "600809.SH", "name": "山西汾酒", "role_hint": "core", "weight": 7},
+        {"symbol": "002304.SZ", "name": "洋河股份", "role_hint": "core", "weight": 6}
+      ]
+    },
+    {
+      "theme_code": "index_weight:semiconductor",
+      "theme_name": "半导体",
+      "classification": "index_weight",
+      "priority": "P0",
+      "note": "科技成长权重和科创风格观察锚点",
+      "members": [
+        {"symbol": "688981.SH", "name": "中芯国际", "role_hint": "mid_core", "weight": 10},
+        {"symbol": "603501.SH", "name": "韦尔股份", "role_hint": "core", "weight": 8},
+        {"symbol": "688012.SH", "name": "中微公司", "role_hint": "core", "weight": 8},
+        {"symbol": "002371.SZ", "name": "北方华创", "role_hint": "core", "weight": 8},
+        {"symbol": "688256.SH", "name": "寒武纪", "role_hint": "core", "weight": 7}
+      ]
+    },
+    {
+      "theme_code": "index_weight:insurance",
+      "theme_name": "保险",
+      "classification": "index_weight",
+      "priority": "P0",
+      "note": "金融权重和指数弹性观察锚点",
+      "members": [
+        {"symbol": "601318.SH", "name": "中国平安", "role_hint": "mid_core", "weight": 10},
+        {"symbol": "601628.SH", "name": "中国人寿", "role_hint": "core", "weight": 8},
+        {"symbol": "601601.SH", "name": "中国太保", "role_hint": "core", "weight": 8},
+        {"symbol": "601336.SH", "name": "新华保险", "role_hint": "follower", "weight": 6},
+        {"symbol": "601319.SH", "name": "中国人保", "role_hint": "follower", "weight": 6}
+      ]
+    },
+    {
+      "theme_code": "index_weight:energy_dividend",
+      "theme_name": "能源高股息",
+      "classification": "index_weight",
+      "priority": "P0",
+      "note": "大盘权重、红利风格和资源价格观察锚点",
+      "members": [
+        {"symbol": "601088.SH", "name": "中国神华", "role_hint": "mid_core", "weight": 10},
+        {"symbol": "601857.SH", "name": "中国石油", "role_hint": "mid_core", "weight": 9},
+        {"symbol": "600938.SH", "name": "中国海油", "role_hint": "core", "weight": 8},
+        {"symbol": "600028.SH", "name": "中国石化", "role_hint": "core", "weight": 7},
+        {"symbol": "601225.SH", "name": "陕西煤业", "role_hint": "core", "weight": 7}
+      ]
+    },
+    {
+      "theme_code": "index_weight:power_equipment",
+      "theme_name": "新能源权重",
+      "classification": "index_weight",
+      "priority": "P0",
+      "note": "创业板和新能源成长权重观察锚点",
+      "members": [
+        {"symbol": "300750.SZ", "name": "宁德时代", "role_hint": "mid_core", "weight": 10},
+        {"symbol": "002594.SZ", "name": "比亚迪", "role_hint": "mid_core", "weight": 9},
+        {"symbol": "300274.SZ", "name": "阳光电源", "role_hint": "core", "weight": 8},
+        {"symbol": "601012.SH", "name": "隆基绿能", "role_hint": "core", "weight": 7},
+        {"symbol": "300014.SZ", "name": "亿纬锂能", "role_hint": "core", "weight": 7}
+      ]
+    },
+    {
+      "theme_code": "index_weight:nonferrous",
+      "theme_name": "有色资源",
+      "classification": "index_weight",
+      "priority": "P0",
+      "note": "周期资源、贵金属和风险偏好观察锚点",
+      "members": [
+        {"symbol": "601899.SH", "name": "紫金矿业", "role_hint": "mid_core", "weight": 10},
+        {"symbol": "603993.SH", "name": "洛阳钼业", "role_hint": "core", "weight": 8},
+        {"symbol": "600547.SH", "name": "山东黄金", "role_hint": "core", "weight": 8},
+        {"symbol": "600111.SH", "name": "北方稀土", "role_hint": "core", "weight": 7},
+        {"symbol": "002466.SZ", "name": "天齐锂业", "role_hint": "follower", "weight": 6}
+      ]
+    },
+    {
+      "theme_code": "theme:ai_compute",
+      "theme_name": "AI算力",
+      "classification": "theme",
+      "priority": "P1",
+      "note": "当前主线候选,覆盖光模块/服务器/算力硬件",
+      "members": [
+        {"symbol": "300308.SZ", "name": "中际旭创", "role_hint": "leader", "weight": 10},
+        {"symbol": "300502.SZ", "name": "新易盛", "role_hint": "core", "weight": 9},
+        {"symbol": "300394.SZ", "name": "天孚通信", "role_hint": "core", "weight": 8},
+        {"symbol": "000977.SZ", "name": "浪潮信息", "role_hint": "mid_core", "weight": 8},
+        {"symbol": "601138.SH", "name": "工业富联", "role_hint": "mid_core", "weight": 7}
+      ]
+    },
+    {
+      "theme_code": "theme:robotics",
+      "theme_name": "机器人",
+      "classification": "theme",
+      "priority": "P1",
+      "note": "当前主线候选,覆盖人形机器人/减速器/执行器",
+      "members": [
+        {"symbol": "300024.SZ", "name": "机器人", "role_hint": "core", "weight": 9},
+        {"symbol": "002031.SZ", "name": "巨轮智能", "role_hint": "follower", "weight": 7},
+        {"symbol": "002472.SZ", "name": "双环传动", "role_hint": "core", "weight": 8},
+        {"symbol": "603728.SH", "name": "鸣志电器", "role_hint": "core", "weight": 8},
+        {"symbol": "300124.SZ", "name": "汇川技术", "role_hint": "mid_core", "weight": 8}
+      ]
+    },
+    {
+      "theme_code": "theme:low_altitude",
+      "theme_name": "低空经济",
+      "classification": "theme",
+      "priority": "P1",
+      "note": "当前主线候选,覆盖 eVTOL/空管/通航",
+      "members": [
+        {"symbol": "600316.SH", "name": "洪都航空", "role_hint": "core", "weight": 8},
+        {"symbol": "002085.SZ", "name": "万丰奥威", "role_hint": "leader", "weight": 10},
+        {"symbol": "300207.SZ", "name": "欣旺达", "role_hint": "mid_core", "weight": 7},
+        {"symbol": "002097.SZ", "name": "山河智能", "role_hint": "follower", "weight": 6},
+        {"symbol": "300456.SZ", "name": "赛微电子", "role_hint": "core", "weight": 7}
+      ]
+    },
+    {
+      "theme_code": "theme:solid_state_battery",
+      "theme_name": "固态电池",
+      "classification": "theme",
+      "priority": "P1",
+      "note": "新能源分支主线候选",
+      "members": [
+        {"symbol": "300750.SZ", "name": "宁德时代", "role_hint": "mid_core", "weight": 10},
+        {"symbol": "002594.SZ", "name": "比亚迪", "role_hint": "mid_core", "weight": 9},
+        {"symbol": "002074.SZ", "name": "国轩高科", "role_hint": "core", "weight": 7},
+        {"symbol": "300073.SZ", "name": "当升科技", "role_hint": "core", "weight": 7},
+        {"symbol": "688005.SH", "name": "容百科技", "role_hint": "follower", "weight": 6}
+      ]
+    },
+    {
+      "theme_code": "theme:consumer_electronics",
+      "theme_name": "消费电子",
+      "classification": "theme",
+      "priority": "P1",
+      "note": "端侧AI、果链和硬件复苏观察主线",
+      "members": [
+        {"symbol": "002475.SZ", "name": "立讯精密", "role_hint": "mid_core", "weight": 10},
+        {"symbol": "002241.SZ", "name": "歌尔股份", "role_hint": "core", "weight": 8},
+        {"symbol": "300433.SZ", "name": "蓝思科技", "role_hint": "core", "weight": 8},
+        {"symbol": "002600.SZ", "name": "领益智造", "role_hint": "core", "weight": 7},
+        {"symbol": "601138.SH", "name": "工业富联", "role_hint": "mid_core", "weight": 7}
+      ]
+    },
+    {
+      "theme_code": "industry:military",
+      "theme_name": "军工",
+      "classification": "industry",
+      "priority": "P2",
+      "note": "指数影响与事件驱动观察板块",
+      "members": [
+        {"symbol": "600760.SH", "name": "中航沈飞", "role_hint": "mid_core", "weight": 9},
+        {"symbol": "000768.SZ", "name": "中航西飞", "role_hint": "core", "weight": 8},
+        {"symbol": "600893.SH", "name": "航发动力", "role_hint": "core", "weight": 8},
+        {"symbol": "002179.SZ", "name": "中航光电", "role_hint": "core", "weight": 7}
+      ]
+    },
+    {
+      "theme_code": "industry:medicine",
+      "theme_name": "医药",
+      "classification": "industry",
+      "priority": "P2",
+      "note": "防御与创新药风格观察板块",
+      "members": [
+        {"symbol": "600276.SH", "name": "恒瑞医药", "role_hint": "mid_core", "weight": 10},
+        {"symbol": "300760.SZ", "name": "迈瑞医疗", "role_hint": "mid_core", "weight": 9},
+        {"symbol": "603259.SH", "name": "药明康德", "role_hint": "core", "weight": 8},
+        {"symbol": "000538.SZ", "name": "云南白药", "role_hint": "core", "weight": 6}
+      ]
+    }
+  ]
+}

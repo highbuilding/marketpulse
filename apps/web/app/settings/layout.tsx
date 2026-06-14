@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation'
 
 const TABS = [
   { href: '/settings/notifications', label: '信号通知' },
+  { href: '/settings/themes',        label: '题材库' },
   { href: '/settings/preferences',   label: '偏好' },
   { href: '/settings/about',         label: '关于' },
 ]
@@ -11,7 +12,7 @@ const TABS = [
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   return (
-    <div style={{ padding: 24, maxWidth: 860, margin: '0 auto' }}>
+    <div style={{ padding: 24, maxWidth: 1180, margin: '0 auto' }}>
       <h1 style={{ fontSize: 20, marginBottom: 14 }}>⚙️ 设置</h1>
       <div style={{ display: 'flex', gap: 6, marginBottom: 18, borderBottom: '1px solid var(--border)' }}>
         {TABS.map((t) => {

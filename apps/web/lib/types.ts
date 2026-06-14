@@ -124,6 +124,39 @@ export interface Position {
   updated_at: string | null
 }
 
+export type ThemePriority = 'P0' | 'P1' | 'P2' | 'P3'
+export type ThemeClassification = 'index_weight' | 'industry' | 'concept' | 'theme' | 'watch'
+
+export interface ThemeDefinition {
+  market: Market
+  theme_code: string
+  theme_name: string
+  classification: ThemeClassification
+  priority: ThemePriority
+  enabled: boolean
+  source: string
+  seed_version: string | null
+  note: string | null
+  member_count: number
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface ThemeConstituent {
+  market: Market
+  theme_code: string
+  symbol: string
+  name: string | null
+  role_hint: string | null
+  weight: number | null
+  enabled: boolean
+  source: string
+  seed_version: string | null
+  note: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
 export interface SymbolProfile {
   symbol: string
   name: string | null

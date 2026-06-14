@@ -15,6 +15,7 @@ from core.persistence.position_repo import PositionRepo
 from core.persistence.signal_repo import SignalRepo
 from core.persistence.sqlite_repo import StateRepo
 from core.persistence.symbol_directory_repo import SymbolDirectoryRepo
+from core.persistence.theme_repo import ThemeRepo
 from core.persistence.watchlist_repo import WatchlistRepo
 from core.positions.service import PositionService
 from core.services.fund_flow_service import FundFlowService
@@ -142,6 +143,11 @@ def get_position_repo() -> PositionRepo:
 @lru_cache(maxsize=1)
 def get_position_service() -> PositionService:
     return PositionService(get_position_repo())
+
+
+@lru_cache(maxsize=1)
+def get_theme_repo() -> ThemeRepo:
+    return ThemeRepo(str(_DATA / "state.db"))
 
 
 @lru_cache(maxsize=1)

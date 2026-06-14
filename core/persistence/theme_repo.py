@@ -7,7 +7,13 @@ from typing import Any
 
 import aiosqlite
 
-from core.domain.models import ThemeMembership, ThemeSnapshot, ThemeState
+from core.domain.models import (
+    ThemeConstituent,
+    ThemeDefinition,
+    ThemeMembership,
+    ThemeSnapshot,
+    ThemeState,
+)
 
 
 def _dt(value: str | None) -> datetime | None:
@@ -94,6 +100,285 @@ class ThemeRepo:
             )
             await db.commit()
         return len(snapshots)
+
+    def _row_to_definition(self, row: aiosqlite.Row) -> ThemeDefinition:
+        return ThemeDefinition(
+            market=row["market"],
+            theme_code=row["theme_code"],
+            theme_name=row["theme_name"],
+            classification=row["classification"],
+            priority=row["priority"],
+            enabled=bool(row["enabled"]),
+            source=row["source"],
+            seed_version=row["seed_version"],
+            note=row["note"],
+            member_count=int(row["member_count"] or 0),
+            created_at=_dt(row["created_at"]),
+            updated_at=_dt(row["updated_at"]),
+        )
+
+    def _row_to_constituent(self, row: aiosqlite.Row) -> ThemeConstituent:
+        return ThemeConstituent(
+            market=row["market"],
+            theme_code=row["theme_code"],
+            symbol=row["symbol"],
+            name=row["name"],
+            role_hint=row["role_hint"],
+            weight=row["weight"],
+            enabled=bool(row["enabled"]),
+            source=row["source"],
+            seed_version=row["seed_version"],
+            note=row["note"],
+            created_at=_dt(row["created_at"]),
+            updated_at=_dt(row["updated_at"]),
+        )
+
+    async def seed_definitions(
+        self,
+        definitions: list[ThemeDefinition],
+        constituents: list[ThemeConstituent],
+    ) -> tuple[int, int]:
+        """幂等导入内置 seed。
+
+        只插入缺失项, 不覆盖用户后续对 enabled/priority/name/members 的手工调整。
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        theme_rows = [
+            (
+                d.market,
+                d.theme_code,
+                d.theme_name,
+                d.classification,
+                d.priority,
+                int(d.enabled),
+                d.source,
+                d.seed_version,
+                d.note,
+                now,
+                now,
+            )
+            for d in definitions
+        ]
+        member_rows = [
+            (
+                c.market,
+                c.theme_code,
+                c.symbol,
+                c.name,
+                c.role_hint,
+                c.weight,
+                int(c.enabled),
+                c.source,
+                c.seed_version,
+                c.note,
+                now,
+                now,
+            )
+            for c in constituents
+        ]
+        async with self._connect() as db:
+            before = db.total_changes
+            await db.executemany(
+                """INSERT INTO theme_universe (
+                     market, theme_code, theme_name, classification, priority,
+                     enabled, source, seed_version, note, created_at, updated_at
+                   )
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(market, theme_code) DO NOTHING""",
+                theme_rows,
+            )
+            after_themes = db.total_changes
+            await db.executemany(
+                """INSERT INTO theme_constituents (
+                     market, theme_code, symbol, name, role_hint, weight, enabled,
+                     source, seed_version, note, created_at, updated_at
+                   )
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(market, theme_code, symbol) DO NOTHING""",
+                member_rows,
+            )
+            await db.commit()
+            after_members = db.total_changes
+        return after_themes - before, after_members - after_themes
+
+    async def upsert_definition(self, definition: ThemeDefinition) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        async with self._connect() as db:
+            await db.execute(
+                """INSERT INTO theme_universe (
+                     market, theme_code, theme_name, classification, priority,
+                     enabled, source, seed_version, note, created_at, updated_at
+                   )
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(market, theme_code) DO UPDATE SET
+                     theme_name=excluded.theme_name,
+                     classification=excluded.classification,
+                     priority=excluded.priority,
+                     enabled=excluded.enabled,
+                     note=excluded.note,
+                     updated_at=excluded.updated_at""",
+                (
+                    definition.market,
+                    definition.theme_code,
+                    definition.theme_name,
+                    definition.classification,
+                    definition.priority,
+                    int(definition.enabled),
+                    definition.source,
+                    definition.seed_version,
+                    definition.note,
+                    definition.created_at.astimezone(timezone.utc).isoformat()
+                    if definition.created_at else now,
+                    now,
+                ),
+            )
+            await db.commit()
+
+    async def list_definitions(
+        self,
+        market: str,
+        *,
+        include_disabled: bool = True,
+    ) -> list[ThemeDefinition]:
+        where = ["u.market = ?"]
+        args: list[object] = [market]
+        if not include_disabled:
+            where.append("u.enabled = 1")
+        async with self._connect() as db:
+            cur = await db.execute(
+                f"""SELECT u.market, u.theme_code, u.theme_name, u.classification,
+                           u.priority, u.enabled, u.source, u.seed_version, u.note,
+                           u.created_at, u.updated_at,
+                           COALESCE(SUM(CASE WHEN c.enabled = 1 THEN 1 ELSE 0 END), 0) AS member_count
+                    FROM theme_universe u
+                    LEFT JOIN theme_constituents c
+                      ON c.market = u.market AND c.theme_code = u.theme_code
+                    WHERE {' AND '.join(where)}
+                    GROUP BY u.market, u.theme_code
+                    ORDER BY
+                      CASE u.priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 ELSE 3 END,
+                      u.enabled DESC,
+                      u.updated_at DESC""",
+                args,
+            )
+            rows = await cur.fetchall()
+        return [self._row_to_definition(r) for r in rows]
+
+    async def get_definition(self, market: str, theme_code: str) -> ThemeDefinition | None:
+        async with self._connect() as db:
+            cur = await db.execute(
+                """SELECT u.market, u.theme_code, u.theme_name, u.classification,
+                          u.priority, u.enabled, u.source, u.seed_version, u.note,
+                          u.created_at, u.updated_at,
+                          COALESCE(SUM(CASE WHEN c.enabled = 1 THEN 1 ELSE 0 END), 0) AS member_count
+                   FROM theme_universe u
+                   LEFT JOIN theme_constituents c
+                     ON c.market = u.market AND c.theme_code = u.theme_code
+                   WHERE u.market = ? AND u.theme_code = ?
+                   GROUP BY u.market, u.theme_code""",
+                (market, theme_code),
+            )
+            row = await cur.fetchone()
+        return self._row_to_definition(row) if row else None
+
+    async def delete_definition(self, market: str, theme_code: str) -> None:
+        definition = await self.get_definition(market, theme_code)
+        if definition is None:
+            return
+        async with self._connect() as db:
+            if definition.source == "seed":
+                now = datetime.now(timezone.utc).isoformat()
+                await db.execute(
+                    """UPDATE theme_universe
+                       SET enabled = 0, updated_at = ?
+                       WHERE market = ? AND theme_code = ?""",
+                    (now, market, theme_code),
+                )
+            else:
+                await db.execute(
+                    "DELETE FROM theme_universe WHERE market = ? AND theme_code = ?",
+                    (market, theme_code),
+                )
+            await db.commit()
+
+    async def upsert_constituent(self, constituent: ThemeConstituent) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        async with self._connect() as db:
+            await db.execute(
+                """INSERT INTO theme_constituents (
+                     market, theme_code, symbol, name, role_hint, weight, enabled,
+                     source, seed_version, note, created_at, updated_at
+                   )
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(market, theme_code, symbol) DO UPDATE SET
+                     name=excluded.name,
+                     role_hint=excluded.role_hint,
+                     weight=excluded.weight,
+                     enabled=excluded.enabled,
+                     note=excluded.note,
+                     updated_at=excluded.updated_at""",
+                (
+                    constituent.market,
+                    constituent.theme_code,
+                    constituent.symbol,
+                    constituent.name,
+                    constituent.role_hint,
+                    constituent.weight,
+                    int(constituent.enabled),
+                    constituent.source,
+                    constituent.seed_version,
+                    constituent.note,
+                    constituent.created_at.astimezone(timezone.utc).isoformat()
+                    if constituent.created_at else now,
+                    now,
+                ),
+            )
+            await db.commit()
+
+    async def list_static_constituents(
+        self,
+        market: str,
+        theme_code: str,
+        *,
+        include_disabled: bool = True,
+    ) -> list[ThemeConstituent]:
+        where = ["market = ?", "theme_code = ?"]
+        args: list[object] = [market, theme_code]
+        if not include_disabled:
+            where.append("enabled = 1")
+        async with self._connect() as db:
+            cur = await db.execute(
+                f"""SELECT market, theme_code, symbol, name, role_hint, weight,
+                           enabled, source, seed_version, note, created_at, updated_at
+                    FROM theme_constituents
+                    WHERE {' AND '.join(where)}
+                    ORDER BY enabled DESC, COALESCE(weight, 0) DESC, updated_at DESC""",
+                args,
+            )
+            rows = await cur.fetchall()
+        return [self._row_to_constituent(r) for r in rows]
+
+    async def delete_constituent(self, market: str, theme_code: str, symbol: str) -> None:
+        rows = await self.list_static_constituents(market, theme_code, include_disabled=True)
+        existing = next((r for r in rows if r.symbol == symbol), None)
+        if existing is None:
+            return
+        async with self._connect() as db:
+            if existing.source == "seed":
+                now = datetime.now(timezone.utc).isoformat()
+                await db.execute(
+                    """UPDATE theme_constituents
+                       SET enabled = 0, updated_at = ?
+                       WHERE market = ? AND theme_code = ? AND symbol = ?""",
+                    (now, market, theme_code, symbol),
+                )
+            else:
+                await db.execute(
+                    """DELETE FROM theme_constituents
+                       WHERE market = ? AND theme_code = ? AND symbol = ?""",
+                    (market, theme_code, symbol),
+                )
+            await db.commit()
 
     async def list_recent_snapshots(
         self, market: str, *, limit: int = 50,
