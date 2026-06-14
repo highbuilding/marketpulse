@@ -264,7 +264,7 @@ export default function ThemeSettingsPage() {
           </div>
           <div style={st.themeList}>
             {themes.map((theme) => {
-              const active = theme.theme_code === (selected?.theme_code ?? selectedCode)
+              const active = theme.theme_code === selectedCode
               return (
                 <button
                   key={theme.theme_code}
@@ -382,7 +382,21 @@ const st: Record<string, CSSProperties> = {
   filters: { padding: '10px 12px', borderBottom: '1px solid var(--border)' },
   check: { display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text2)', fontSize: 12 },
   themeList: { display: 'flex', flexDirection: 'column', gap: 4, padding: 8, maxHeight: 680, overflow: 'auto' },
-  themeItem: { textAlign: 'left', border: '1px solid transparent', borderLeft: '3px solid transparent', background: 'transparent', color: 'var(--text)', borderRadius: 6, padding: '9px 10px', cursor: 'pointer' },
+  themeItem: {
+    textAlign: 'left',
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'transparent',
+    borderLeftWidth: 3,
+    borderLeftColor: 'transparent',
+    outline: 'none',
+    boxShadow: 'none',
+    background: 'transparent',
+    color: 'var(--text)',
+    borderRadius: 6,
+    padding: '9px 10px',
+    cursor: 'pointer',
+  },
   themeItemActive: { background: 'rgba(37,99,235,0.10)', borderColor: 'rgba(37,99,235,0.28)', borderLeftColor: 'var(--accent)' },
   themeItemDisabled: { opacity: 0.55 },
   themeName: { display: 'block', fontSize: 13, fontWeight: 600 },
