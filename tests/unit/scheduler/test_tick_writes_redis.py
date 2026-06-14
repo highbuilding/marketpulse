@@ -6,9 +6,9 @@ import json
 from core.cache import keys
 from core.cache.quote_cache import QuoteCache
 from core.cache.redis_client import RedisCache
-from core.domain.models import Quote, ThemeConstituent, ThemeDefinition
+from core.domain.models import CollectorSymbol, Quote
+from core.persistence.collector_symbol_repo import CollectorSymbolRepo
 from core.persistence.sqlite_repo import StateRepo
-from core.persistence.theme_repo import ThemeRepo
 from core.scheduler.jobs import tick_snapshot_once, write_quote_to_redis
 
 
@@ -54,32 +54,20 @@ async def test_write_quote_to_redis_swallows_errors(cache, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_tick_snapshot_includes_enabled_theme_constituents(tmp_path, monkeypatch):
+async def test_tick_snapshot_reads_enabled_collector_symbols(tmp_path, monkeypatch):
     await StateRepo(str(tmp_path / "state.db")).init()
-    theme_repo = ThemeRepo(str(tmp_path / "state.db"))
-    await theme_repo.seed_definitions(
-        [
-            ThemeDefinition(
-                market="ashare",
-                theme_code="theme:test",
-                theme_name="测试题材",
-                classification="theme",
-                priority="P0",
-                source="seed",
-            ),
-        ],
-        [
-            ThemeConstituent(
-                market="ashare",
-                theme_code="theme:test",
-                symbol="300001.SZ",
-                name="测试成分",
-                role_hint="core",
-                weight=10,
-                source="seed",
-            ),
-        ],
-    )
+    collector_repo = CollectorSymbolRepo(str(tmp_path / "state.db"))
+    await collector_repo.seed_symbols([
+        CollectorSymbol(
+            market="ashare",
+            symbol="300001.SZ",
+            name="测试成分",
+            source="manual",
+            collect_snapshot=True,
+            collect_5m=True,
+            collect_signals=True,
+        ),
+    ])
     monkeypatch.setattr("core.domain.market_calendar.is_trading_day", lambda _market: True)
     monkeypatch.setattr("core.domain.market_sessions.is_market_session_open", lambda _market: True)
 
@@ -125,7 +113,7 @@ async def test_tick_snapshot_includes_enabled_theme_constituents(tmp_path, monke
         Registry(),
         cache,
         watchlist,
-        theme_repo=theme_repo,
+        collector_symbols=collector_repo,
     )
 
     assert "300001.SZ" in adapter.symbols

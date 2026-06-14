@@ -10,8 +10,8 @@ from core.cache.redis_client import RedisCache
 from core.cache import keys as cache_keys
 from core.domain.markets import infer_market
 from core.domain.models import Bar
+from core.persistence.collector_symbol_repo import CollectorSymbolRepo
 from core.persistence.duckdb_repo import BarRepo
-from core.persistence.theme_repo import ThemeRepo
 from core.services.watchlist_service import WatchlistService
 
 log = structlog.get_logger(__name__)
@@ -57,7 +57,7 @@ async def tick_snapshot_once(
     cache: QuoteCache,
     watchlist: WatchlistService,
     redis_cache: RedisCache | None = None,
-    theme_repo: ThemeRepo | None = None,
+    collector_symbols: CollectorSymbolRepo | None = None,
 ) -> None:
     # 非交易日跳过 — sina/em/yfinance 在节假日返回历史/空数据,无意义打接口
     # 交易日还要落在本市场 session 内 (避免夜里整宿打源)
@@ -72,25 +72,17 @@ async def tick_snapshot_once(
         return
 
     adapter = registry.get(market)
-    base = set(registry.universe(market)) | set(registry.index_symbols(market))
-    # 核心标的(CORE)无条件带上 — 首页默认列表的 quote 不依赖是否加入 watchlist(审计 B1/B2)
-    from core.domain.core_symbols import core_symbols
-    base |= set(core_symbols(market))
-    # 关注列表里属于本 market 的标的也带上, 让用户加的任意 symbol 都能拿到 quote
-    try:
-        wl_symbols = await watchlist.dynamic_universe()
-        base |= {s for s in wl_symbols if infer_market(s) == market}
-    except Exception as e:  # noqa: BLE001
-        log.warning("tick.watchlist_load_failed", market=market, error=str(e))
-    if theme_repo is not None and market == "ashare":
+    base: set[str]
+    if collector_symbols is not None and market == "ashare":
         try:
-            definitions = await theme_repo.list_definitions(market, include_disabled=False)
-            for d in definitions:
-                rows = await theme_repo.list_static_constituents(
-                    market, d.theme_code, include_disabled=False)
-                base |= {c.symbol for c in rows if infer_market(c.symbol) == market}
+            base = set(await collector_symbols.active_symbols(market, capability="snapshot"))
         except Exception as e:  # noqa: BLE001
-            log.warning("tick.theme_universe_load_failed", market=market, error=str(e))
+            log.warning("tick.collector_symbols_load_failed", market=market, error=str(e))
+            base = set(registry.universe(market)) | set(registry.index_symbols(market))
+    else:
+        base = set(registry.universe(market)) | set(registry.index_symbols(market))
+    _ = watchlist
+    base = {s for s in base if infer_market(s) == market}
     symbols = list(base)
     if not symbols:
         return

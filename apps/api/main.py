@@ -25,7 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from apps.api.deps import get_state_repo
 from apps.api.auth import AuthMiddleware, router as auth_router
 from apps.api.routes import (
-    ai_market, cd_signals, health, market_extras, north_flow,
+    ai_market, cd_signals, collector_symbols, health, market_extras, north_flow,
     live_messages, notifications, positions, sse_bars, sse_intraday,
     sse_live_messages, sse_signals, symbols, themes, watchlists,
 )
@@ -49,11 +49,18 @@ async def lifespan(app: FastAPI):
     await state_repo.init()
 
     try:
-        from apps.api.deps import get_theme_repo
+        from apps.api.deps import get_collector_symbol_repo, get_symbol_directory_service, get_theme_repo
         from core.themes.seed_loader import bootstrap_ashare_seed
         inserted_themes, inserted_members = await bootstrap_ashare_seed(get_theme_repo())
         log.info("theme_seed.bootstrap_done",
                  themes=inserted_themes, constituents=inserted_members)
+        from core.collector_symbols.seed_loader import bootstrap_ashare_collector_symbols
+        inserted_collectors = await bootstrap_ashare_collector_symbols(
+            get_collector_symbol_repo(),
+            theme_repo=get_theme_repo(),
+            directory=get_symbol_directory_service(),
+        )
+        log.info("collector_symbols.bootstrap_done", inserted=inserted_collectors)
     except Exception as e:  # noqa: BLE001
         log.warning("theme_seed.bootstrap_failed", error=str(e))
 
@@ -106,6 +113,7 @@ app.include_router(cd_signals.router)
 app.include_router(notifications.router)
 app.include_router(positions.router)
 app.include_router(themes.router)
+app.include_router(collector_symbols.router)
 app.include_router(live_messages.router)
 app.include_router(sse_bars.router)
 app.include_router(sse_signals.router)

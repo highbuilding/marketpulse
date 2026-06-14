@@ -10,8 +10,8 @@ from apscheduler.triggers.interval import IntervalTrigger
 from core.adapters.registry import AdapterRegistry
 from core.cache.quote_cache import QuoteCache
 from core.cache.redis_client import RedisCache
+from core.persistence.collector_symbol_repo import CollectorSymbolRepo
 from core.persistence.duckdb_repo import BarRepo
-from core.persistence.theme_repo import ThemeRepo
 from core.scheduler.fundamentals_jobs import (
     pull_north_flow_job, pull_watchlist_symbol_flow_job,
     purge_fund_flow_job,
@@ -50,13 +50,13 @@ def build_scheduler(
     watchlist: WatchlistService,
     redis_cache: RedisCache | None = None,
     redis_bars=None,  # RedisBarsCache | None
-    theme_repo: ThemeRepo | None = None,
+    collector_symbols: CollectorSymbolRepo | None = None,
 ) -> AsyncIOScheduler:
     sched = AsyncIOScheduler(timezone="UTC")
     for market in registry.markets():
         sched.add_job(
             _leader_gated(tick_snapshot_once), IntervalTrigger(seconds=10),
-            args=(market, registry, cache, watchlist, redis_cache, theme_repo),
+            args=(market, registry, cache, watchlist, redis_cache, collector_symbols),
             id=f"tick:{market}", max_instances=1, coalesce=True,
             misfire_grace_time=30,
         )

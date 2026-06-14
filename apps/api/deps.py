@@ -9,6 +9,7 @@ from core.cache.quote_cache import QuoteCache
 from core.notifications import EmailChannel, WeChatChannel
 from core.persistence.duckdb_repo import BarRepo
 from core.persistence.chip_repo import ChipRepo
+from core.persistence.collector_symbol_repo import CollectorSymbolRepo
 from core.persistence.fund_flow_repo import FundFlowRepo
 from core.persistence.live_message_repo import LiveMessageRepo
 from core.persistence.notification_repo import NotificationRepo
@@ -134,7 +135,7 @@ def get_watchlist_repo() -> WatchlistRepo:
 
 @lru_cache(maxsize=1)
 def get_watchlist_service() -> WatchlistService:
-    return WatchlistService(get_watchlist_repo())
+    return WatchlistService(get_watchlist_repo(), get_collector_symbol_repo())
 
 
 @lru_cache(maxsize=1)
@@ -150,6 +151,11 @@ def get_position_service() -> PositionService:
 @lru_cache(maxsize=1)
 def get_theme_repo() -> ThemeRepo:
     return ThemeRepo(str(_DATA / "state.db"))
+
+
+@lru_cache(maxsize=1)
+def get_collector_symbol_repo() -> CollectorSymbolRepo:
+    return CollectorSymbolRepo(str(_DATA / "state.db"))
 
 
 @lru_cache(maxsize=1)

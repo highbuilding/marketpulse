@@ -157,6 +157,37 @@ export interface ThemeConstituent {
   updated_at: string | null
 }
 
+export interface CollectorSymbol {
+  market: Market
+  symbol: string
+  name: string | null
+  enabled: boolean
+  source: string
+  collect_snapshot: boolean
+  collect_5m: boolean
+  collect_signals: boolean
+  note: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface CollectorSymbolsResponse {
+  symbols: CollectorSymbol[]
+  total: number
+  enabled: number
+  snapshot_count: number
+  kline_5m_count: number
+  signals_count: number
+}
+
+export interface CollectorSymbolMutationResponse {
+  symbol: string
+  action: string
+  collector_confirmed: boolean
+  collector_message: string | null
+  refill_queued: boolean
+}
+
 export interface SymbolProfile {
   symbol: string
   name: string | null

@@ -1,0 +1,1 @@
+"""Collector symbol SSoT helpers."""

@@ -10,18 +10,20 @@ SSE 订阅 → Redis state:subscribe:ashare:{symbol}:{interval} → bar_poller �
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import random
+import time
 from datetime import datetime, timezone
 
 import structlog
 
 from core.cache import keys
 from core.cache.redis_client import RedisCache
-from core.domain.core_symbols import CORE_SYMBOLS
 from core.domain.market_calendar import is_trading_day
 from core.domain.market_sessions import is_market_session_open
 from core.domain.runtime_env import tiered_int
+from core.persistence.collector_symbol_repo import CollectorSymbolRepo
 from core.persistence.duckdb_repo import BarRepo
 
 log = structlog.get_logger(__name__)
@@ -33,8 +35,10 @@ log = structlog.get_logger(__name__)
 # POLL_INTERVAL_S 环境变量可显式覆盖。
 POLL_INTERVAL_S = tiered_int("POLL_INTERVAL_S", test=30, prod=90)
 
-# 订阅扫描间隔 (秒)
-SCAN_INTERVAL_S = 30
+# 调度扫描间隔 (秒): 300 个标的按 5 秒 slot 分摊到 5 分钟窗口。
+SCAN_INTERVAL_S = 5
+WINDOW_S = 300
+MAX_CONCURRENCY = tiered_int("BAR_POLLER_MAX_CONCURRENCY", test=3, prod=3)
 
 # 支持从 sina 拉的周期 → ak_call period 参数
 INTERVAL_TO_PERIOD = {"5m": "5", "15m": "15", "30m": "30"}
@@ -47,9 +51,9 @@ _DEFAULT_SYMBOLS = (
 _DEFAULT_INTERVALS = ("5m", "15m", "30m")
 
 
-def _build_core_active() -> set[str]:
-    """CORE 标的常驻轮询集: 仅直取 5m(15m/30m/60m/4h 由 5m 聚合派生)。"""
-    return {f"{s}:5m" for s in CORE_SYMBOLS["ashare"]}
+def _slot_for_symbol(symbol: str) -> int:
+    bucket = int(hashlib.sha1(symbol.encode("utf-8")).hexdigest()[:8], 16) % (WINDOW_S // SCAN_INTERVAL_S)
+    return bucket * SCAN_INTERVAL_S
 
 
 class BarPoller:
@@ -60,11 +64,14 @@ class BarPoller:
         repo: BarRepo,
         redis_cache: RedisCache,
         adapter,
+        collector_symbols: CollectorSymbolRepo,
     ) -> None:
         self._repo = repo
         self._redis = redis_cache
         self._adapter = adapter
-        self._tasks: dict[str, asyncio.Task] = {}  # key = "symbol:interval"
+        self._collector_symbols = collector_symbols
+        self._last_polled_window: dict[str, int] = {}
+        self._sem = asyncio.Semaphore(MAX_CONCURRENCY)
         self._stopped = False
 
     def _task_key(self, symbol: str, interval: str) -> str:
@@ -147,43 +154,14 @@ class BarPoller:
                 targets=("15m", "30m", "60m", "4h"), now=now,
             )
 
-    async def _poll_loop(self, symbol: str, interval: str) -> None:
-        """单标的轮询循环. 被 cancel 时干净退出."""
-        key = self._task_key(symbol, interval)
-        log.info("bar_poller.poll_start", symbol=symbol, interval=interval)
-        # 启动错峰: 首轮随机延迟 0~interval, 把 N 个并发 loop 的请求摊到整个周期,
-        # 避免所有标的节拍对齐 → 脉冲式打 sina 令牌桶 → 尾部标的 acquire 超时丢数据。
-        try:
-            await asyncio.sleep(random.uniform(0, POLL_INTERVAL_S))
-        except asyncio.CancelledError:
-            return
-        while not self._stopped:
-            try:
-                # 双门控: 交易日 + 交易时段。盘前/盘后/午休停 live 轮询 —— 非交易时段
-                # sina 5m 不会变(还是上一收盘值), 空转纯浪费且吃满 CPU, 会饿死同进程
-                # 的 DuckDB 历史查询(/internal/bars/history)→ api 转发超时。对齐美股
-                # us/bar_poller.py 的 is_trading_day + is_market_session_open。
-                if is_trading_day("ashare") and is_market_session_open("ashare"):
-                    await self._poll_one(symbol, interval)
-                # 持续削峰: 每轮 sleep 加 ±25% 抖动, 让 N 个独立 loop 的节拍持续打散,
-                # 不因 _poll_one 耗时差异漂移重聚成瞬时并发峰值(撞 sina 服务端限流)。
-                # 固定 sleep 会让错峰随时间衰减 → 周期性脉冲; 抖动保持请求平缓。
-                await asyncio.sleep(POLL_INTERVAL_S * random.uniform(0.75, 1.25))
-            except asyncio.CancelledError:
-                log.info("bar_poller.poll_stop", symbol=symbol, interval=interval)
-                return
-            except Exception as e:  # noqa: BLE001
-                log.warning("bar_poller.poll_error",
-                            symbol=symbol, interval=interval, error=str(e))
-                await asyncio.sleep(POLL_INTERVAL_S * random.uniform(0.75, 1.25))
-
     # ------------------------------------------------------------------
     # 订阅扫描 + 任务管理
     # ------------------------------------------------------------------
 
     async def _scan_subscriptions(self) -> set[str]:
-        """采集集 = CORE 常驻(与前端订阅解耦)。仅 5m 直取, 15m/30m/60m/4h 由 5m 聚合。"""
-        return _build_core_active()
+        """采集集 = collector_symbols。仅 5m 直取,15m/30m/60m/4h 由 5m 聚合。"""
+        symbols = await self._collector_symbols.active_symbols("ashare", capability="5m")
+        return {self._task_key(symbol, "5m") for symbol in symbols}
 
     async def _scan_subscriptions_legacy(self) -> set[str]:
         """[废弃] 旧的订阅驱动扫描, 保留备查。"""
@@ -218,30 +196,25 @@ class BarPoller:
 
         return active
 
-    async def _sync_tasks(self, active: set[str]) -> None:
-        """同步轮询任务: 启动新的, 停止过期的."""
-        # 启动新任务
-        for tk in active:
-            if tk not in self._tasks or self._tasks[tk].done():
-                symbol, interval = tk.split(":", 1)
-                self._tasks[tk] = asyncio.create_task(
-                    self._poll_loop(symbol, interval),
-                    name=f"bar_poll:{tk}",
-                )
+    def _due_tasks(self, active: set[str], *, now_s: int) -> list[str]:
+        phase = now_s % WINDOW_S
+        window_id = now_s // WINDOW_S
+        due: list[str] = []
+        for tk in sorted(active):
+            symbol, _interval = tk.split(":", 1)
+            slot = _slot_for_symbol(symbol)
+            if not (slot <= phase < slot + SCAN_INTERVAL_S):
+                continue
+            if self._last_polled_window.get(tk) == window_id:
+                continue
+            self._last_polled_window[tk] = window_id
+            due.append(tk)
+        return due
 
-        # 停止过期任务 (排除默认大盘)
-        for tk, task in list(self._tasks.items()):
-            if tk not in active and not self._is_default(tk):
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
-                del self._tasks[tk]
-
-    def _is_default(self, task_key: str) -> bool:
+    async def _poll_due(self, task_key: str) -> None:
         symbol, interval = task_key.split(":", 1)
-        return symbol in CORE_SYMBOLS["ashare"] and interval == "5m"
+        async with self._sem:
+            await self._poll_one(symbol, interval)
 
     # ------------------------------------------------------------------
     # 主循环
@@ -250,14 +223,19 @@ class BarPoller:
     async def run(self) -> None:
         """主调度循环: 定期扫描订阅, 同步任务."""
         log.info("bar_poller.start",
-                 default_symbols=list(_DEFAULT_SYMBOLS),
-                 default_intervals=list(_DEFAULT_INTERVALS),
-                 poll_interval_s=POLL_INTERVAL_S)
+                 mode="collector_symbols_slot_scheduler",
+                 scan_interval_s=SCAN_INTERVAL_S,
+                 window_s=WINDOW_S,
+                 max_concurrency=MAX_CONCURRENCY)
         while not self._stopped:
             try:
                 active = await self._scan_subscriptions()
-                await self._sync_tasks(active)
-                await asyncio.sleep(SCAN_INTERVAL_S)
+                if is_trading_day("ashare") and is_market_session_open("ashare"):
+                    due = self._due_tasks(active, now_s=int(time.time()))
+                    if due:
+                        log.debug("bar_poller.due", count=len(due), active=len(active))
+                        await asyncio.gather(*(self._poll_due(tk) for tk in due))
+                await asyncio.sleep(SCAN_INTERVAL_S * random.uniform(0.85, 1.15))
             except asyncio.CancelledError:
                 return
             except Exception as e:  # noqa: BLE001
@@ -267,13 +245,7 @@ class BarPoller:
     async def shutdown(self) -> None:
         """停止所有轮询任务."""
         self._stopped = True
-        for tk, task in list(self._tasks.items()):
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
-        self._tasks.clear()
+        self._last_polled_window.clear()
         log.info("bar_poller.shutdown")
 
 
@@ -282,7 +254,12 @@ class BarPoller:
 # ------------------------------------------------------------------
 
 async def run_bar_poller(
-    repo: BarRepo, redis_cache: RedisCache, adapter, *, startup_delay_s: int = 0,
+    repo: BarRepo,
+    redis_cache: RedisCache,
+    adapter,
+    collector_symbols: CollectorSymbolRepo,
+    *,
+    startup_delay_s: int = 0,
 ) -> None:
     """collector lifespan 中作为 asyncio task 启动。
 
@@ -290,7 +267,7 @@ async def run_bar_poller(
     同一个 fetch_intraday('5')/同一 sina 接口, 并发会 double sina 压力触发限频(456)。
     延迟启动 poller, 让 reconcile 先把 5m 历史拉全, poller 再接管 live 收线轮询。
     """
-    poller = BarPoller(repo, redis_cache, adapter)
+    poller = BarPoller(repo, redis_cache, adapter, collector_symbols)
     try:
         if startup_delay_s > 0:
             log.info("bar_poller.startup_delay", seconds=startup_delay_s)

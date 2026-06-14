@@ -130,7 +130,7 @@ async def lifespan(app: FastAPI):
 
     # === 通用 SQLite 初始化 (state / watchlist / directory; 多进程共享, 幂等) ===
     from apps.api.deps import (
-        get_state_repo, get_watchlist_service,
+        get_collector_symbol_repo, get_state_repo, get_watchlist_service,
         get_symbol_directory_service,
     )
     state_repo = get_state_repo()
@@ -138,6 +138,16 @@ async def lifespan(app: FastAPI):
     await get_watchlist_service().bootstrap_default()
     dir_svc = get_symbol_directory_service()
     await dir_svc.bootstrap_seeds()
+    try:
+        from apps.api.deps import get_theme_repo
+        from core.collector_symbols.seed_loader import bootstrap_ashare_collector_symbols
+        await bootstrap_ashare_collector_symbols(
+            get_collector_symbol_repo(),
+            theme_repo=get_theme_repo(),
+            directory=dir_svc,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("collector_symbols.bootstrap_failed", error=str(e))
     if not os.getenv("MARKETPULSE_SKIP_DIR_BOOTSTRAP"):
         existing = await dir_svc.count()
         if existing < 100:
@@ -162,11 +172,11 @@ async def lifespan(app: FastAPI):
     from apps.api.deps import (
         get_ai_market_service, get_chip_service, get_fund_flow_service,
         get_market_query_service, get_notification_service, get_signal_scan_service,
-        get_theme_repo,
     )
     sched = build_scheduler(
         registry, cache, bar_repo, get_watchlist_service(),
-        redis_cache=redis_cache, redis_bars=redis_bars, theme_repo=get_theme_repo(),
+        redis_cache=redis_cache, redis_bars=redis_bars,
+        collector_symbols=get_collector_symbol_repo(),
     )
     attach_fundamentals_jobs(
         sched, fund_flow=get_fund_flow_service(),
@@ -197,6 +207,17 @@ async def lifespan(app: FastAPI):
         ),
         name="ashare.live_message_consumer",
     )
+    from apps.collector.jobs.collector_symbol_consumer import run_collector_symbol_consumer
+    collector_symbol_consumer_task = asyncio.create_task(
+        run_collector_symbol_consumer(
+            _redis_for_mw,
+            cache=redis_cache,
+            repo=get_collector_symbol_repo(),
+            consumer_id=f"collector-symbols-ashare-{os.getpid()}",
+            market="ashare",
+        ),
+        name="ashare.collector_symbol_consumer",
+    )
     attach_market_top_job(sched,
                           market_query=get_market_query_service(),
                           cache=redis_cache)
@@ -216,7 +237,7 @@ async def lifespan(app: FastAPI):
     _poller_delay = _tiered_int("BAR_POLLER_STARTUP_DELAY_S", test=45, prod=180)
     _poller_task = asyncio.create_task(
         run_bar_poller(bar_repo, redis_cache, registry.get("ashare"),
-                       startup_delay_s=_poller_delay),
+                       get_collector_symbol_repo(), startup_delay_s=_poller_delay),
         name="ashare.bar_poller",
     )
 
@@ -234,13 +255,13 @@ async def lifespan(app: FastAPI):
         name="ashare.intraday_line_writer",
     )
 
-    # === 标的集 (CORE ∪ watchlist): 供 startup_reconcile + daily_settlement 用 ===
+    # === 标的集 (collector_symbols): 供 startup_reconcile + daily_settlement 用 ===
     from datetime import datetime, timedelta, timezone
-    from core.domain.core_symbols import core_symbols as _core_symbols
     from core.domain.markets import infer_market as _infer_market
-    _wl_syms = await get_watchlist_service().dynamic_universe()
-    _sweep_syms = sorted({s for s in (set(_wl_syms) | set(_core_symbols("ashare")))
-                          if _infer_market(s) == "ashare"})
+    _sweep_syms = sorted({
+        s for s in await get_collector_symbol_repo().active_symbols("ashare", capability="5m")
+        if _infer_market(s) == "ashare"
+    })
     log.info("ashare.symbols_ready", market="ashare", count=len(_sweep_syms))
     # 移除 (2026-06-08): ashare:sweep_derived 120min 聚合 cron。按"K线采集链改事件驱动,
     # 消除 cron"重构 —— 派生聚合改由三路事件/启动路径覆盖, 不再 cron 兜底:
@@ -261,9 +282,10 @@ async def lifespan(app: FastAPI):
     from apps.collector.ashare.daily_settlement import run_daily_settlement
 
     async def _settle_symbols_provider() -> list[str]:
-        _wl = await get_watchlist_service().dynamic_universe()
-        return sorted({s for s in (set(_wl) | set(_core_symbols("ashare")))
-                       if _infer_market(s) == "ashare"})
+        return sorted({
+            s for s in await get_collector_symbol_repo().active_symbols("ashare", capability="5m")
+            if _infer_market(s) == "ashare"
+        })
 
     _settlement_task = asyncio.create_task(
         run_daily_settlement(kline, bar_repo, _settle_symbols_provider),
@@ -309,15 +331,18 @@ async def lifespan(app: FastAPI):
     # CD 信号补扫兜底: 30min 对全标的全信号周期跑 scan_symbol_readonly, 捞回漏事件。
     # 完整性兜底(事件可能被 maxlen 挤出 / aggregate 失败); 同只读路径, 幂等不引偏移。
     from apps.collector.jobs.signal_sweep_worker import sweep_symbols_for_market
-    from core.domain.core_symbols import core_symbols as _core_syms_fn
     from core.domain.markets import infer_market as _infer_mkt
 
     async def _signal_sweep():
         for _mkt in ("ashare", "us", "crypto"):
             try:
-                _wl = await get_watchlist_service().dynamic_universe()
-                _syms = sorted({s for s in (set(_wl) | set(_core_syms_fn(_mkt)))
-                                if _infer_mkt(s) == _mkt})
+                if _mkt == "ashare":
+                    _syms = await get_collector_symbol_repo().active_symbols("ashare", capability="signals")
+                else:
+                    from core.domain.core_symbols import core_symbols as _core_syms_fn
+                    _wl = await get_watchlist_service().dynamic_universe()
+                    _syms = sorted({s for s in (set(_wl) | set(_core_syms_fn(_mkt)))
+                                    if _infer_mkt(s) == _mkt})
                 await sweep_symbols_for_market(_scan_svc, _syms, market=_mkt)
             except Exception as e:  # noqa: BLE001
                 log.warning("signal_sweep.market_failed", market=_mkt, error=str(e))
@@ -348,6 +373,11 @@ async def lifespan(app: FastAPI):
         live_message_consumer_task.cancel()
         try:
             await live_message_consumer_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        collector_symbol_consumer_task.cancel()
+        try:
+            await collector_symbol_consumer_task
         except (asyncio.CancelledError, Exception):
             pass
         _poller_task.cancel()

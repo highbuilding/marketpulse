@@ -379,12 +379,18 @@ async def bars(
 
 async def _publish_refill_request(redis_cache, symbol: str, interval: str, days: int,
                                   *, watchlist=None) -> None:
-    """发 bus:bars.refill_request。白名单(CORE∪watchlist)+ inflight 去重。"""
+    """发 bus:bars.refill_request。白名单(采集清单∪CORE∪watchlist)+ inflight 去重。"""
     import json
     from core.cache import keys as ck
     market = infer_market(symbol) or "unknown"
     # ① 白名单检查:只允许 CORE symbols ∪ watchlist.dynamic_universe()
     allowed = set(core_symbols(market))
+    if market == "ashare":
+        try:
+            from apps.api.deps import get_collector_symbol_repo
+            allowed |= set(await get_collector_symbol_repo().active_symbols("ashare", capability="5m"))
+        except Exception:  # noqa: BLE001
+            pass
     if watchlist is not None:
         try:
             allowed |= set(await watchlist.dynamic_universe())

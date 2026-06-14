@@ -243,6 +243,22 @@ class ThemeConstituent:
 
 
 @dataclass(frozen=True, slots=True)
+class CollectorSymbol:
+    """采集标的清单: collector 读取的唯一采集范围。"""
+    market: str
+    symbol: str
+    name: str | None = None
+    enabled: bool = True
+    source: str = "manual"
+    collect_snapshot: bool = True
+    collect_5m: bool = True
+    collect_signals: bool = True
+    note: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class LiveMessage:
     """实盘消息事实源。Redis 负责实时分发,SQLite 负责复盘。"""
     id: str

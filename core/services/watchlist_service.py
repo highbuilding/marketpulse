@@ -3,6 +3,7 @@ from __future__ import annotations
 from core.domain.core_symbols import core_symbols
 from core.domain.markets import infer_market
 from core.domain.models import Watchlist
+from core.persistence.collector_symbol_repo import CollectorSymbolRepo
 from core.persistence.watchlist_repo import WatchlistRepo
 
 
@@ -18,8 +19,9 @@ class SymbolNotCollectedError(ValueError):
 
 
 class WatchlistService:
-    def __init__(self, repo: WatchlistRepo) -> None:
+    def __init__(self, repo: WatchlistRepo, collector_symbols: CollectorSymbolRepo | None = None) -> None:
         self.repo = repo
+        self.collector_symbols = collector_symbols
 
     async def bootstrap_default(self) -> None:
         existing = await self.repo.list_watchlists(include_archived=True)
@@ -40,10 +42,16 @@ class WatchlistService:
         await self.repo.archive_watchlist(wl_id)
 
     async def add_symbol(self, wl_id: int, symbol: str) -> None:
-        # watchlist ⊆ 采集集: 只能加 CORE 内标的(按其市场判定), 否则非法状态
-        # (有现价无K线)。crypto 等无 CORE 概念的市场不校验(core_symbols 返回其全集)。
+        # watchlist ⊆ 采集集: A 股从 collector_symbols 校验; 其他市场保留 CORE 旧口径。
         symbol = symbol.strip().upper()
         mkt = infer_market(symbol)
+        if self.collector_symbols is not None and mkt == "ashare":
+            row = await self.collector_symbols.get("ashare", symbol)
+            if row is None or not row.enabled:
+                raise SymbolNotCollectedError(
+                    f"{symbol} 不在采集清单内, 请先加入采集标的")
+            await self.repo.add_symbol(wl_id, symbol)
+            return
         core = set(core_symbols(mkt))
         if core and symbol not in core:
             raise SymbolNotCollectedError(

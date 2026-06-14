@@ -221,6 +221,25 @@ CREATE TABLE IF NOT EXISTS theme_constituents (
 CREATE INDEX IF NOT EXISTS idx_theme_constituents_symbol
   ON theme_constituents(market, symbol, enabled);
 
+-- 采集标的清单: A 股采集任务唯一事实源。
+-- 题材库/自选股只能从这里选择, 不反向决定采集范围。
+CREATE TABLE IF NOT EXISTS collector_symbols (
+  market TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  name TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  source TEXT NOT NULL DEFAULT 'manual', -- 'core' | 'seed' | 'manual'
+  collect_snapshot INTEGER NOT NULL DEFAULT 1,
+  collect_5m INTEGER NOT NULL DEFAULT 1,
+  collect_signals INTEGER NOT NULL DEFAULT 1,
+  note TEXT,
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (market, symbol)
+);
+CREATE INDEX IF NOT EXISTS idx_collector_symbols_market_enabled
+  ON collector_symbols(market, enabled, collect_snapshot, collect_5m, updated_at DESC);
+
 -- 实盘消息事实源: Redis Stream 只做实时分发,这里用于复盘和 AI 上下文。
 CREATE TABLE IF NOT EXISTS live_messages (
   id TEXT PRIMARY KEY,

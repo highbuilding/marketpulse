@@ -23,6 +23,7 @@ BUS_LIVE_MESSAGE = "bus:live.message"
 BUS_SOURCE_STATUS = "bus:source.status"
 BUS_BARS_REFILL_REQUEST = "bus:bars.refill_request"
 BUS_INTRADAY_UPDATED = "bus:intraday.updated"
+BUS_COLLECTOR_SYMBOLS_CHANGED = "bus:collector.symbols.changed"
 
 
 # === cache: 热缓存层 ===
@@ -105,6 +106,10 @@ def state_outlet(outlet_id: str) -> str:
 
 def state_inflight(key: str) -> str:
     return f"state:inflight:{key}"
+
+
+def state_collector_symbol_ack(market: str, request_id: str) -> str:
+    return f"state:collector_symbol_ack:{market}:{request_id}"
 
 
 def state_bar_subscription(market: str, symbol: str, interval: str) -> str:
