@@ -6,9 +6,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
-from apps.api.deps import get_live_message_repo
+from apps.api.deps import get_live_message_repo, get_theme_repo, get_watchlist_service
 from core.domain.models import LiveMessage
 from core.persistence.live_message_repo import LiveMessageRepo
+from core.persistence.theme_repo import ThemeRepo
+from core.services.watchlist_service import WatchlistService
 
 
 router = APIRouter(prefix="/api/live-messages", tags=["live-messages"])
@@ -35,6 +37,16 @@ class LiveMessageDTO(BaseModel):
 
 class LiveMessagesResp(BaseModel):
     messages: list[LiveMessageDTO]
+
+
+class LiveMessageStatusResp(BaseModel):
+    market: str
+    enabled_themes: int
+    enabled_constituents: int
+    watchlist_symbols: int
+    latest_message_ts: str | None
+    latest_message_title: str | None
+    rule_version: str
 
 
 def _dto(m: LiveMessage) -> LiveMessageDTO:
@@ -100,3 +112,34 @@ async def live_messages_ai_context(
     rows = await repo.list_window(market, start=start, end=end, limit=limit)
     return LiveMessagesResp(messages=[_dto(m) for m in rows])
 
+
+@router.get("/status", response_model=LiveMessageStatusResp)
+async def live_messages_status(
+    market: str = Query("ashare"),
+    repo: LiveMessageRepo = Depends(get_live_message_repo),
+    theme_repo: ThemeRepo = Depends(get_theme_repo),
+    watchlist: WatchlistService = Depends(get_watchlist_service),
+) -> LiveMessageStatusResp:
+    definitions = await theme_repo.list_definitions(market, include_disabled=False)
+    constituent_count = 0
+    for d in definitions:
+        constituent_count += len(await theme_repo.list_static_constituents(
+            market, d.theme_code, include_disabled=False))
+    try:
+        watch_symbols = [
+            s for s in await watchlist.dynamic_universe()
+            if market == "ashare" and (s.endswith(".SH") or s.endswith(".SZ"))
+        ]
+    except Exception:  # noqa: BLE001
+        watch_symbols = []
+    latest = await repo.list_recent(market, limit=1)
+    latest_msg = latest[0] if latest else None
+    return LiveMessageStatusResp(
+        market=market,
+        enabled_themes=len(definitions),
+        enabled_constituents=constituent_count,
+        watchlist_symbols=len(watch_symbols),
+        latest_message_ts=latest_msg.ts.isoformat() if latest_msg else None,
+        latest_message_title=latest_msg.title if latest_msg else None,
+        rule_version=latest_msg.rule_version if latest_msg else "v2",
+    )

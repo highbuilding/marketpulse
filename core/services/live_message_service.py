@@ -13,7 +13,7 @@ from core.services.watchlist_service import WatchlistService
 
 log = structlog.get_logger(__name__)
 
-RULE_VERSION = "v1"
+RULE_VERSION = "v2"
 _CTX_TTL = timedelta(seconds=60)
 _DEDUP_TTL = timedelta(minutes=5)
 
@@ -35,6 +35,32 @@ class _ThemeContext:
     symbols: set[str] = field(default_factory=set)
 
 
+@dataclass
+class _ThemeEval:
+    ctx: _ThemeContext
+    known: list[_QuoteState]
+    up: list[_QuoteState]
+    down: list[_QuoteState]
+    core: list[_QuoteState]
+    core_up: list[_QuoteState]
+    follower_up: list[_QuoteState]
+    leader: _QuoteState
+    laggard: _QuoteState
+    second: _QuoteState | None
+    avg_change_pct: float
+
+
+@dataclass
+class _ThemeRuntimeState:
+    leader: str | None = None
+    leader_change_pct: float | None = None
+    up_count: int = 0
+    peak_up_count: int = 0
+    core_up_count: int = 0
+    state: str = "neutral"
+    updated_at: datetime | None = None
+
+
 class LiveMessageService:
     def __init__(self, theme_repo: ThemeRepo, watchlist: WatchlistService) -> None:
         self.theme_repo = theme_repo
@@ -45,6 +71,7 @@ class LiveMessageService:
         self._watch_symbols: set[str] = set()
         self._quotes: dict[str, _QuoteState] = {}
         self._last_emit: dict[str, datetime] = {}
+        self._theme_states: dict[str, _ThemeRuntimeState] = {}
 
     async def handle_quote_tick(
         self,
@@ -74,6 +101,7 @@ class LiveMessageService:
         messages: list[LiveMessage] = []
         messages.extend(self._watchlist_messages(quote, prev, source_event_id))
         messages.extend(self._theme_messages(market, quote, source_event_id))
+        messages.extend(self._watchlist_theme_risk_messages(market, quote, source_event_id))
         return self._dedupe(messages, now=ts)
 
     async def handle_signal_new(
@@ -199,15 +227,14 @@ class LiveMessageService:
             ctx = self._themes.get(theme_code)
             if not ctx:
                 continue
-            states = [self._quotes.get(s) for s in ctx.symbols]
-            known = [s for s in states if s is not None]
-            if len(known) < min(3, len(ctx.symbols)):
+            ev = self._evaluate_theme(ctx)
+            if ev is None:
                 continue
-            up = [s for s in known if s.change_pct > 0]
-            down = [s for s in known if s.change_pct < 0]
-            leader = max(known, key=lambda s: s.change_pct)
-            laggard = min(known, key=lambda s: s.change_pct)
-            if len(up) >= 3 and leader.change_pct >= 1.0:
+            prev = self._theme_states.get(theme_code, _ThemeRuntimeState())
+            current_state = "strength" if len(ev.up) >= 3 and ev.leader.change_pct >= 1.0 else (
+                "weakness" if len(ev.down) >= 3 and ev.laggard.change_pct <= -1.0 else "neutral"
+            )
+            if current_state == "strength":
                 messages.append(self._message(
                     market=market,
                     ts=quote.ts,
@@ -215,18 +242,18 @@ class LiveMessageService:
                     category="theme",
                     title=f"{ctx.definition.theme_name}走强",
                     body=(
-                        f"{len(ctx.symbols)}只成分股中{len(up)}只上涨,"
-                        f"{leader.symbol} 领涨 {leader.change_pct:.2f}%。"
+                        f"{len(ctx.symbols)}只成分股中{len(ev.up)}只上涨,"
+                        f"{ev.leader.symbol} 领涨 {ev.leader.change_pct:.2f}%。"
                     ),
                     source_event="bus:quote.tick",
                     source_event_id=source_event_id,
                     dedupe_key=f"theme:{theme_code}:strength",
                     theme_code=theme_code,
-                    symbol=leader.symbol,
-                    symbols=[s.symbol for s in sorted(known, key=lambda x: x.change_pct, reverse=True)[:5]],
-                    payload=_theme_payload(ctx, known, leader, laggard),
+                    symbol=ev.leader.symbol,
+                    symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
+                    payload=_theme_payload(ev),
                 ))
-            if len(down) >= 3 and laggard.change_pct <= -1.0:
+            if current_state == "weakness":
                 messages.append(self._message(
                     market=market,
                     ts=quote.ts,
@@ -234,17 +261,140 @@ class LiveMessageService:
                     category="theme",
                     title=f"{ctx.definition.theme_name}转弱",
                     body=(
-                        f"{len(ctx.symbols)}只成分股中{len(down)}只下跌,"
-                        f"{laggard.symbol} 跌幅 {laggard.change_pct:.2f}%。"
+                        f"{len(ctx.symbols)}只成分股中{len(ev.down)}只下跌,"
+                        f"{ev.laggard.symbol} 跌幅 {ev.laggard.change_pct:.2f}%。"
                     ),
                     source_event="bus:quote.tick",
                     source_event_id=source_event_id,
                     dedupe_key=f"theme:{theme_code}:weakness",
                     theme_code=theme_code,
-                    symbol=laggard.symbol,
-                    symbols=[s.symbol for s in sorted(known, key=lambda x: x.change_pct)[:5]],
-                    payload=_theme_payload(ctx, known, leader, laggard),
+                    symbol=ev.laggard.symbol,
+                    symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct)[:5]],
+                    payload=_theme_payload(ev),
                 ))
+            messages.extend(self._theme_quality_messages(market, quote.ts, ev, prev, source_event_id))
+            self._theme_states[theme_code] = _ThemeRuntimeState(
+                leader=ev.leader.symbol,
+                leader_change_pct=ev.leader.change_pct,
+                up_count=len(ev.up),
+                peak_up_count=max(prev.peak_up_count, len(ev.up)),
+                core_up_count=len(ev.core_up),
+                state=current_state,
+                updated_at=quote.ts,
+            )
+        return messages
+
+    def _evaluate_theme(self, ctx: _ThemeContext) -> _ThemeEval | None:
+        known = [q for q in (self._quotes.get(s) for s in ctx.symbols) if q is not None]
+        if len(known) < min(3, len(ctx.symbols)):
+            return None
+        up = [s for s in known if s.change_pct > 0]
+        down = [s for s in known if s.change_pct < 0]
+        ordered = sorted(known, key=lambda s: s.change_pct, reverse=True)
+        leader = ordered[0]
+        laggard = ordered[-1]
+        second = ordered[1] if len(ordered) > 1 else None
+        core_symbols = {
+            c.symbol for c in ctx.constituents
+            if (c.role_hint or "") in {"leader", "core", "mid_core"} or (c.weight or 0) >= 8
+        }
+        follower_symbols = {
+            c.symbol for c in ctx.constituents
+            if (c.role_hint or "") in {"follower", "laggard", "watch"} and c.symbol not in core_symbols
+        }
+        core = [s for s in known if s.symbol in core_symbols]
+        core_up = [s for s in core if s.change_pct > 0]
+        follower_up = [s for s in known if s.symbol in follower_symbols and s.change_pct > 0]
+        avg = sum(s.change_pct for s in known) / len(known)
+        return _ThemeEval(ctx, known, up, down, core, core_up, follower_up, leader, laggard, second, avg)
+
+    def _theme_quality_messages(
+        self,
+        market: str,
+        ts: datetime,
+        ev: _ThemeEval,
+        prev: _ThemeRuntimeState,
+        source_event_id: str | None,
+    ) -> list[LiveMessage]:
+        messages: list[LiveMessage] = []
+        theme_code = ev.ctx.definition.theme_code
+        theme_name = ev.ctx.definition.theme_name
+        leader_core = any(c.symbol == ev.leader.symbol for c in ev.ctx.constituents
+                          if (c.role_hint or "") in {"leader", "core", "mid_core"} or (c.weight or 0) >= 8)
+        if prev.leader and prev.leader != ev.leader.symbol and leader_core \
+                and ev.leader.change_pct >= 2.0 \
+                and (prev.leader_change_pct is None or ev.leader.change_pct - prev.leader_change_pct >= 1.0):
+            messages.append(self._message(
+                market=market, ts=ts, level="watch", category="theme",
+                title=f"{theme_name}核心股切换",
+                body=f"{ev.leader.symbol} 接过领涨,当前 {ev.leader.change_pct:.2f}%,上一领涨 {prev.leader}。",
+                source_event="bus:quote.tick", source_event_id=source_event_id,
+                dedupe_key=f"theme:{theme_code}:leader_switch",
+                theme_code=theme_code, symbol=ev.leader.symbol,
+                symbols=[ev.leader.symbol, prev.leader],
+                payload=_theme_payload(ev) | {"prev_leader": prev.leader, "prev_leader_change_pct": prev.leader_change_pct},
+            ))
+        if len(ev.up) >= 3 and len(ev.core_up) < 2:
+            messages.append(self._message(
+                market=market, ts=ts, level="warning", category="risk",
+                title=f"{theme_name}走强质量一般",
+                body=f"题材有 {len(ev.up)} 只上涨,但核心股上涨仅 {len(ev.core_up)} 只。",
+                source_event="bus:quote.tick", source_event_id=source_event_id,
+                dedupe_key=f"risk:{theme_code}:core_unsynced",
+                theme_code=theme_code, symbol=ev.leader.symbol,
+                symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
+                payload=_theme_payload(ev),
+            ))
+        if ev.leader.change_pct >= 4.0 and (len(ev.up) < 3 or (ev.second and ev.leader.change_pct - ev.second.change_pct >= 2.0)):
+            messages.append(self._message(
+                market=market, ts=ts, level="warning", category="risk",
+                title=f"{theme_name}异动偏单点",
+                body=f"{ev.leader.symbol} 领涨 {ev.leader.change_pct:.2f}%,但成分股扩散不足。",
+                source_event="bus:quote.tick", source_event_id=source_event_id,
+                dedupe_key=f"risk:{theme_code}:single_leader",
+                theme_code=theme_code, symbol=ev.leader.symbol,
+                symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
+                payload=_theme_payload(ev),
+            ))
+        peak_up_count = max(prev.peak_up_count, prev.up_count)
+        if prev.state == "strength" and peak_up_count - len(ev.up) >= 2:
+            messages.append(self._message(
+                market=market, ts=ts, level="warning", category="risk",
+                title=f"{theme_name}强度回落",
+                body=f"上涨家数从盘中高点 {peak_up_count} 降至 {len(ev.up)},领涨 {ev.leader.symbol} 当前 {ev.leader.change_pct:.2f}%。",
+                source_event="bus:quote.tick", source_event_id=source_event_id,
+                dedupe_key=f"risk:{theme_code}:strength_fade",
+                theme_code=theme_code, symbol=ev.leader.symbol,
+                symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
+                payload=_theme_payload(ev) | {"prev_up_count": prev.up_count, "peak_up_count": peak_up_count, "prev_state": prev.state},
+            ))
+        return messages
+
+    def _watchlist_theme_risk_messages(
+        self,
+        market: str,
+        quote: _QuoteState,
+        source_event_id: str | None,
+    ) -> list[LiveMessage]:
+        if quote.symbol not in self._watch_symbols or quote.change_pct > -1.0:
+            return []
+        messages: list[LiveMessage] = []
+        for theme_code in self._symbol_themes.get(quote.symbol, []):
+            ctx = self._themes.get(theme_code)
+            if not ctx:
+                continue
+            ev = self._evaluate_theme(ctx)
+            if ev is None or len(ev.up) < 3:
+                continue
+            messages.append(self._message(
+                market=market, ts=quote.ts, level="warning", category="risk",
+                title=f"自选股 {quote.symbol} 逆{ctx.definition.theme_name}走弱",
+                body=f"{ctx.definition.theme_name}有 {len(ev.up)} 只上涨,但该自选股 {quote.change_pct:.2f}%。",
+                source_event="bus:quote.tick", source_event_id=source_event_id,
+                dedupe_key=f"risk:watchlist:{quote.symbol}:against_theme",
+                theme_code=theme_code, symbol=quote.symbol, symbols=[quote.symbol],
+                payload=_theme_payload(ev) | {"watch_symbol": quote.symbol, "watch_change_pct": quote.change_pct},
+            ))
         return messages
 
     def _dedupe(self, messages: list[LiveMessage], *, now: datetime) -> list[LiveMessage]:
@@ -345,24 +495,23 @@ def _quote_payload(quote: _QuoteState, prev: _QuoteState | None) -> dict[str, An
     }
 
 
-def _theme_payload(
-    ctx: _ThemeContext,
-    states: list[_QuoteState],
-    leader: _QuoteState,
-    laggard: _QuoteState,
-) -> dict[str, Any]:
+def _theme_payload(ev: _ThemeEval) -> dict[str, Any]:
     return {
-        "theme_code": ctx.definition.theme_code,
-        "theme_name": ctx.definition.theme_name,
-        "member_count": len(ctx.symbols),
-        "known_count": len(states),
-        "up_count": sum(1 for s in states if s.change_pct > 0),
-        "down_count": sum(1 for s in states if s.change_pct < 0),
-        "leader": {"symbol": leader.symbol, "change_pct": leader.change_pct},
-        "laggard": {"symbol": laggard.symbol, "change_pct": laggard.change_pct},
+        "theme_code": ev.ctx.definition.theme_code,
+        "theme_name": ev.ctx.definition.theme_name,
+        "member_count": len(ev.ctx.symbols),
+        "known_count": len(ev.known),
+        "up_count": len(ev.up),
+        "down_count": len(ev.down),
+        "core_count": len(ev.core),
+        "core_up_count": len(ev.core_up),
+        "follower_up_count": len(ev.follower_up),
+        "avg_change_pct": ev.avg_change_pct,
+        "leader": {"symbol": ev.leader.symbol, "change_pct": ev.leader.change_pct},
+        "laggard": {"symbol": ev.laggard.symbol, "change_pct": ev.laggard.change_pct},
+        "second": {"symbol": ev.second.symbol, "change_pct": ev.second.change_pct} if ev.second else None,
         "members": [
             {"symbol": s.symbol, "change_pct": s.change_pct, "price": s.price}
-            for s in sorted(states, key=lambda x: x.change_pct, reverse=True)
+            for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)
         ],
     }
-

@@ -11,6 +11,7 @@ from core.cache import keys as cache_keys
 from core.domain.markets import infer_market
 from core.domain.models import Bar
 from core.persistence.duckdb_repo import BarRepo
+from core.persistence.theme_repo import ThemeRepo
 from core.services.watchlist_service import WatchlistService
 
 log = structlog.get_logger(__name__)
@@ -56,6 +57,7 @@ async def tick_snapshot_once(
     cache: QuoteCache,
     watchlist: WatchlistService,
     redis_cache: RedisCache | None = None,
+    theme_repo: ThemeRepo | None = None,
 ) -> None:
     # 非交易日跳过 — sina/em/yfinance 在节假日返回历史/空数据,无意义打接口
     # 交易日还要落在本市场 session 内 (避免夜里整宿打源)
@@ -80,6 +82,15 @@ async def tick_snapshot_once(
         base |= {s for s in wl_symbols if infer_market(s) == market}
     except Exception as e:  # noqa: BLE001
         log.warning("tick.watchlist_load_failed", market=market, error=str(e))
+    if theme_repo is not None and market == "ashare":
+        try:
+            definitions = await theme_repo.list_definitions(market, include_disabled=False)
+            for d in definitions:
+                rows = await theme_repo.list_static_constituents(
+                    market, d.theme_code, include_disabled=False)
+                base |= {c.symbol for c in rows if infer_market(c.symbol) == market}
+        except Exception as e:  # noqa: BLE001
+            log.warning("tick.theme_universe_load_failed", market=market, error=str(e))
     symbols = list(base)
     if not symbols:
         return

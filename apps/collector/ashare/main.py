@@ -162,10 +162,11 @@ async def lifespan(app: FastAPI):
     from apps.api.deps import (
         get_ai_market_service, get_chip_service, get_fund_flow_service,
         get_market_query_service, get_notification_service, get_signal_scan_service,
+        get_theme_repo,
     )
     sched = build_scheduler(
         registry, cache, bar_repo, get_watchlist_service(),
-        redis_cache=redis_cache, redis_bars=redis_bars,
+        redis_cache=redis_cache, redis_bars=redis_bars, theme_repo=get_theme_repo(),
     )
     attach_fundamentals_jobs(
         sched, fund_flow=get_fund_flow_service(),

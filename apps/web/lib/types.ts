@@ -303,3 +303,13 @@ export interface LiveMessage {
   rule_version: string
   created_at: string | null
 }
+
+export interface LiveMessageStatus {
+  market: Market
+  enabled_themes: number
+  enabled_constituents: number
+  watchlist_symbols: number
+  latest_message_ts: string | null
+  latest_message_title: string | null
+  rule_version: string
+}

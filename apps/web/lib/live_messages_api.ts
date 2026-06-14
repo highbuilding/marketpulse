@@ -1,4 +1,4 @@
-import type { LiveMessage, Market } from './types'
+import type { LiveMessage, LiveMessageStatus, Market } from './types'
 
 export async function fetchLiveMessages(
   market: Market,
@@ -20,3 +20,9 @@ export async function fetchLiveMessageAiContext(
   return res.json()
 }
 
+export async function fetchLiveMessageStatus(market: Market): Promise<LiveMessageStatus> {
+  const params = new URLSearchParams({ market })
+  const res = await fetch(`/api/live-messages/status?${params.toString()}`, { cache: 'no-store' })
+  if (!res.ok) throw new Error(`/api/live-messages/status -> ${res.status}`)
+  return res.json()
+}

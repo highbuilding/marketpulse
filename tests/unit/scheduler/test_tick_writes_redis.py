@@ -4,9 +4,12 @@ from datetime import datetime, timezone
 import json
 
 from core.cache import keys
+from core.cache.quote_cache import QuoteCache
 from core.cache.redis_client import RedisCache
-from core.domain.models import Quote
-from core.scheduler.jobs import write_quote_to_redis
+from core.domain.models import Quote, ThemeConstituent, ThemeDefinition
+from core.persistence.sqlite_repo import StateRepo
+from core.persistence.theme_repo import ThemeRepo
+from core.scheduler.jobs import tick_snapshot_once, write_quote_to_redis
 
 
 @pytest.fixture
@@ -48,3 +51,82 @@ async def test_write_quote_to_redis_swallows_errors(cache, monkeypatch):
               volume=0, ts=datetime.now(timezone.utc), source="test")
     # 不应抛
     await write_quote_to_redis(q, cache=cache)
+
+
+@pytest.mark.asyncio
+async def test_tick_snapshot_includes_enabled_theme_constituents(tmp_path, monkeypatch):
+    await StateRepo(str(tmp_path / "state.db")).init()
+    theme_repo = ThemeRepo(str(tmp_path / "state.db"))
+    await theme_repo.seed_definitions(
+        [
+            ThemeDefinition(
+                market="ashare",
+                theme_code="theme:test",
+                theme_name="测试题材",
+                classification="theme",
+                priority="P0",
+                source="seed",
+            ),
+        ],
+        [
+            ThemeConstituent(
+                market="ashare",
+                theme_code="theme:test",
+                symbol="300001.SZ",
+                name="测试成分",
+                role_hint="core",
+                weight=10,
+                source="seed",
+            ),
+        ],
+    )
+    monkeypatch.setattr("core.domain.market_calendar.is_trading_day", lambda _market: True)
+    monkeypatch.setattr("core.domain.market_sessions.is_market_session_open", lambda _market: True)
+
+    class Adapter:
+        def __init__(self):
+            self.symbols: list[str] = []
+
+        async def fetch_snapshot(self, symbols):
+            self.symbols = symbols
+            return [
+                Quote(
+                    market="ashare",
+                    symbol="300001.SZ",
+                    price=10,
+                    change_pct=1.0,
+                    volume=100,
+                    ts=datetime(2026, 6, 15, 1, 30, tzinfo=timezone.utc),
+                    source="test",
+                ),
+            ]
+
+    adapter = Adapter()
+
+    class Registry:
+        def get(self, _market):
+            return adapter
+
+        def universe(self, _market):
+            return []
+
+        def index_symbols(self, _market):
+            return []
+
+    class Watchlist:
+        async def dynamic_universe(self):
+            return []
+
+    watchlist = Watchlist()
+    cache = QuoteCache()
+
+    await tick_snapshot_once(
+        "ashare",
+        Registry(),
+        cache,
+        watchlist,
+        theme_repo=theme_repo,
+    )
+
+    assert "300001.SZ" in adapter.symbols
+    assert cache.get("ashare", "300001.SZ") is not None
