@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import structlog
 
 from core.adapters.registry import AdapterRegistry
@@ -31,11 +33,18 @@ async def write_quote_to_redis(q, *, cache: RedisCache, ttl_s: int = 24 * 3600) 
             "price": float(q.price),
             "change_pct": q.change_pct,
             "volume": q.volume,
+            "amount": q.amount,
             "ts": q.ts.isoformat(),
         }
         await cache.set_msgpack(
             cache_keys.cache_quote(q.market, q.symbol),
             payload, ttl_s=ttl_s,
+        )
+        await cache._r.xadd(  # noqa: SLF001
+            cache_keys.BUS_QUOTE_TICK,
+            {"data": json.dumps(payload, ensure_ascii=False).encode()},
+            maxlen=20000,
+            approximate=True,
         )
     except Exception as e:  # noqa: BLE001
         log.warning("quote.redis_write_failed", symbol=q.symbol, error=str(e))

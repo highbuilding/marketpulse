@@ -19,6 +19,7 @@ _VALID_NS = {NS_CACHE, NS_STATE, NS_BUS, NS_RATELIMIT}
 BUS_QUOTE_TICK = "bus:quote.tick"
 BUS_BARS_UPDATED = "bus:bars.updated"
 BUS_SIGNAL_NEW = "bus:signal.new"
+BUS_LIVE_MESSAGE = "bus:live.message"
 BUS_SOURCE_STATUS = "bus:source.status"
 BUS_BARS_REFILL_REQUEST = "bus:bars.refill_request"
 BUS_INTRADAY_UPDATED = "bus:intraday.updated"
@@ -43,6 +44,10 @@ def cache_market_top(market: str) -> str:
 
 def cache_market_ai_packet(market: str) -> str:
     return f"cache:market:{market}:ai_packet"
+
+
+def cache_live_messages(market: str) -> str:
+    return f"cache:live_messages:{market}"
 
 
 def cache_chip_summary(symbol: str, *, days: int) -> str:

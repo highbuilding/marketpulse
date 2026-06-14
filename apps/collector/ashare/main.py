@@ -184,6 +184,18 @@ async def lifespan(app: FastAPI):
         ),
         name="ashare.signal_scan_consumer",
     )
+    from apps.collector.jobs.live_message_consumer import run_live_message_consumer
+    from apps.api.deps import get_live_message_repo, get_live_message_service
+    live_message_consumer_task = asyncio.create_task(
+        run_live_message_consumer(
+            _redis_for_mw,
+            consumer_id=f"live-ashare-{os.getpid()}",
+            service=get_live_message_service(),
+            repo=get_live_message_repo(),
+            market="ashare",
+        ),
+        name="ashare.live_message_consumer",
+    )
     attach_market_top_job(sched,
                           market_query=get_market_query_service(),
                           cache=redis_cache)
@@ -327,6 +339,16 @@ async def lifespan(app: FastAPI):
         except (asyncio.CancelledError, Exception):
             pass
         await leader.release()
+        scan_consumer_task.cancel()
+        try:
+            await scan_consumer_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        live_message_consumer_task.cancel()
+        try:
+            await live_message_consumer_task
+        except (asyncio.CancelledError, Exception):
+            pass
         _poller_task.cancel()
         try:
             await _poller_task

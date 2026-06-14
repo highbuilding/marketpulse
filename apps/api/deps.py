@@ -10,6 +10,7 @@ from core.notifications import EmailChannel, WeChatChannel
 from core.persistence.duckdb_repo import BarRepo
 from core.persistence.chip_repo import ChipRepo
 from core.persistence.fund_flow_repo import FundFlowRepo
+from core.persistence.live_message_repo import LiveMessageRepo
 from core.persistence.notification_repo import NotificationRepo
 from core.persistence.position_repo import PositionRepo
 from core.persistence.signal_repo import SignalRepo
@@ -22,6 +23,7 @@ from core.services.fund_flow_service import FundFlowService
 from core.services.chip_service import ChipService
 from core.services.ai_market_service import AIMarketService
 from core.services.kline_service import KLineService
+from core.services.live_message_service import LiveMessageService
 from core.services.market_query import MarketQueryService
 from core.services.notification_service import NotificationService
 from core.services.signal_service import SignalScanService
@@ -148,6 +150,16 @@ def get_position_service() -> PositionService:
 @lru_cache(maxsize=1)
 def get_theme_repo() -> ThemeRepo:
     return ThemeRepo(str(_DATA / "state.db"))
+
+
+@lru_cache(maxsize=1)
+def get_live_message_repo() -> LiveMessageRepo:
+    return LiveMessageRepo(str(_DATA / "state.db"))
+
+
+@lru_cache(maxsize=1)
+def get_live_message_service() -> LiveMessageService:
+    return LiveMessageService(get_theme_repo(), get_watchlist_service())
 
 
 @lru_cache(maxsize=1)

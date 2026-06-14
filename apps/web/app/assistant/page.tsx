@@ -1,7 +1,9 @@
 'use client'
 
 import { type CSSProperties } from 'react'
+import useSWR from 'swr'
 
+import { fetchLiveMessageAiContext } from '@/lib/live_messages_api'
 import { useMarket } from '@/lib/market-context'
 
 /**
@@ -11,6 +13,12 @@ import { useMarket } from '@/lib/market-context'
 export default function AssistantPage() {
   const { market, marketLabel } = useMarket()
   const isAshare = market === 'ashare'
+  const { data, isLoading } = useSWR(
+    isAshare ? ['live-message-ai-context', market] : null,
+    () => fetchLiveMessageAiContext(market, 30),
+    { refreshInterval: 60_000 },
+  )
+  const messages = data?.messages ?? []
 
   if (!isAshare) {
     return (
@@ -44,16 +52,30 @@ export default function AssistantPage() {
         <div style={styles.panel}>
           <h2 style={styles.panelTitle}>AI 结论</h2>
           <p style={styles.panelDesc}>
-            等 Phase 6 接入后，这里展示盘面状态、开单观察、风险和持仓建议。
+            第一版先沉淀可复盘的实盘消息事实源,AI 结论会基于右侧上下文生成。
           </p>
-          <div style={styles.emptyState}>等待 AITradeOpinionService 接入</div>
+          <div style={styles.emptyState}>等待 AI 摘要生成服务接入</div>
         </div>
         <div style={styles.panel}>
-          <h2 style={styles.panelTitle}>通知候选</h2>
+          <h2 style={styles.panelTitle}>实盘上下文</h2>
           <p style={styles.panelDesc}>
-            系统会先生成可通知结论和冷却状态，外部渠道暂不发送。
+            最近 30 分钟由行情事件、题材库、自选股和 CD 信号生成的可复盘消息。
           </p>
-          <div style={styles.emptyState}>等待通知能力骨架接入</div>
+          <div style={styles.messageList}>
+            {isLoading && messages.length === 0 && <div style={styles.emptyState}>加载中</div>}
+            {!isLoading && messages.length === 0 && <div style={styles.emptyState}>暂无实盘消息</div>}
+            {messages.slice(0, 8).map((m) => (
+              <article key={m.id} style={styles.message}>
+                <div style={styles.messageTop}>
+                  <span>{new Date(m.ts).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}</span>
+                  <span>{m.category}</span>
+                  <span>{m.level}</span>
+                </div>
+                <b>{m.title}</b>
+                <p>{m.body}</p>
+              </article>
+            ))}
+          </div>
         </div>
       </section>
     </main>
@@ -71,4 +93,7 @@ const styles: Record<string, CSSProperties> = {
   panelTitle: { margin: 0, fontSize: 16, fontWeight: 700 },
   panelDesc: { margin: '6px 0 0', color: 'var(--text3)', fontSize: 13, lineHeight: 1.5 },
   emptyState: { marginTop: 12, border: '1px dashed var(--border)', borderRadius: 8, padding: 16, color: 'var(--text3)', fontSize: 13, textAlign: 'center' },
+  messageList: { display: 'grid', gap: 8, marginTop: 12 },
+  message: { border: '1px solid var(--border)', borderRadius: 8, padding: 10, background: 'var(--bg)' },
+  messageTop: { display: 'flex', gap: 8, color: 'var(--text3)', fontSize: 11, marginBottom: 4 },
 }

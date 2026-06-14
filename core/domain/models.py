@@ -243,6 +243,27 @@ class ThemeConstituent:
 
 
 @dataclass(frozen=True, slots=True)
+class LiveMessage:
+    """实盘消息事实源。Redis 负责实时分发,SQLite 负责复盘。"""
+    id: str
+    market: str
+    ts: datetime
+    level: Literal["info", "watch", "warning", "critical"]
+    category: Literal["index", "theme", "watchlist", "signal", "risk", "system"]
+    title: str
+    body: str
+    source_event: str
+    dedupe_key: str
+    theme_code: str | None = None
+    symbol: str | None = None
+    symbols: list[str] | None = None
+    source_event_id: str | None = None
+    payload: dict[str, Any] | None = None
+    rule_version: str = "v1"
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class MarketEvent:
     """程序生成的事实事件。"""
     market: str

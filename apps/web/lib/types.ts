@@ -281,3 +281,25 @@ export interface ResponseMeta {
   fresh_at?: string
   missing_sections?: string[]
 }
+
+export type LiveMessageLevel = 'info' | 'watch' | 'warning' | 'critical'
+export type LiveMessageCategory = 'index' | 'theme' | 'watchlist' | 'signal' | 'risk' | 'system'
+
+export interface LiveMessage {
+  id: string
+  market: Market
+  ts: string
+  level: LiveMessageLevel
+  category: LiveMessageCategory
+  title: string
+  body: string
+  theme_code: string | null
+  symbol: string | null
+  symbols: string[]
+  source_event: string
+  source_event_id: string | null
+  dedupe_key: string
+  payload: Record<string, unknown>
+  rule_version: string
+  created_at: string | null
+}

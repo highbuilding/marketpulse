@@ -221,6 +221,36 @@ CREATE TABLE IF NOT EXISTS theme_constituents (
 CREATE INDEX IF NOT EXISTS idx_theme_constituents_symbol
   ON theme_constituents(market, symbol, enabled);
 
+-- 实盘消息事实源: Redis Stream 只做实时分发,这里用于复盘和 AI 上下文。
+CREATE TABLE IF NOT EXISTS live_messages (
+  id TEXT PRIMARY KEY,
+  market TEXT NOT NULL,
+  ts TIMESTAMP NOT NULL,
+  level TEXT NOT NULL,
+  category TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  theme_code TEXT,
+  symbol TEXT,
+  symbols_json TEXT NOT NULL DEFAULT '[]',
+  source_event TEXT NOT NULL,
+  source_event_id TEXT,
+  dedupe_key TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  rule_version TEXT NOT NULL DEFAULT 'v1',
+  created_at TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_live_messages_market_ts
+  ON live_messages(market, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_live_messages_category_ts
+  ON live_messages(market, category, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_live_messages_theme_ts
+  ON live_messages(market, theme_code, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_live_messages_symbol_ts
+  ON live_messages(market, symbol, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_live_messages_dedupe_ts
+  ON live_messages(market, dedupe_key, ts DESC);
+
 CREATE TABLE IF NOT EXISTS theme_snapshots (
   market TEXT NOT NULL,
   theme_code TEXT NOT NULL,

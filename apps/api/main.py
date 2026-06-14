@@ -26,8 +26,8 @@ from apps.api.deps import get_state_repo
 from apps.api.auth import AuthMiddleware, router as auth_router
 from apps.api.routes import (
     ai_market, cd_signals, health, market_extras, north_flow,
-    notifications, positions, sse_bars, sse_intraday, sse_signals, symbols, themes,
-    watchlists,
+    live_messages, notifications, positions, sse_bars, sse_intraday,
+    sse_live_messages, sse_signals, symbols, themes, watchlists,
 )
 from apps.api.ws import ticks
 
@@ -65,10 +65,12 @@ async def lifespan(app: FastAPI):
     app.state.bars_hub = StreamHub(_rc, _keys.BUS_BARS_UPDATED, bars_key)
     app.state.intraday_hub = StreamHub(_rc, _keys.BUS_INTRADAY_UPDATED, intraday_key)
     app.state.signal_hub = StreamHub(_rc, _keys.BUS_SIGNAL_NEW, lambda _m: "*")
+    app.state.live_message_hub = StreamHub(_rc, _keys.BUS_LIVE_MESSAGE, lambda m: m.get("market"))
     _hub_tasks = [
         asyncio.create_task(app.state.bars_hub.run(), name="sse_bars_hub"),
         asyncio.create_task(app.state.intraday_hub.run(), name="sse_intraday_hub"),
         asyncio.create_task(app.state.signal_hub.run(), name="sse_signal_hub"),
+        asyncio.create_task(app.state.live_message_hub.run(), name="sse_live_message_hub"),
     ]
     log.info("sse_hubs.started")
 
@@ -77,6 +79,7 @@ async def lifespan(app: FastAPI):
     app.state.bars_hub.stop()
     app.state.intraday_hub.stop()
     app.state.signal_hub.stop()
+    app.state.live_message_hub.stop()
     for _t in _hub_tasks:
         _t.cancel()
     await asyncio.gather(*_hub_tasks, return_exceptions=True)
@@ -103,7 +106,9 @@ app.include_router(cd_signals.router)
 app.include_router(notifications.router)
 app.include_router(positions.router)
 app.include_router(themes.router)
+app.include_router(live_messages.router)
 app.include_router(sse_bars.router)
 app.include_router(sse_signals.router)
 app.include_router(sse_intraday.router)
+app.include_router(sse_live_messages.router)
 app.include_router(ticks.router)
