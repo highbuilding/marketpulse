@@ -23,7 +23,11 @@ def _bar(ts, interval="5m", symbol="600519.SH"):
 def _make_poller(repo, redis, fetched_bars):
     adapter = MagicMock()
     adapter.fetch_intraday = AsyncMock(return_value=fetched_bars)
-    return BarPoller(repo, redis, adapter)
+    collector_symbols = MagicMock()
+    collector_symbols.active_symbols = AsyncMock(return_value=["600519.SH"])
+    redis.get_msgpack = AsyncMock(return_value=[])
+    redis.set_msgpack = AsyncMock()
+    return BarPoller(repo, redis, adapter, collector_symbols)
 
 
 @pytest.mark.asyncio
@@ -48,6 +52,7 @@ async def test_poll_one_only_inserts_fresh(monkeypatch):
     inserted = repo.insert_bars.call_args[0][0]
     assert len(inserted) == 1
     assert inserted[0].ts == datetime(2026, 6, 1, 1, 45, tzinfo=timezone.utc)
+    redis.set_msgpack.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -66,6 +71,7 @@ async def test_poll_one_skips_when_all_stored(monkeypatch):
 
     repo.insert_bars.assert_not_called()
     assert redis._r.xadd.await_count == 0
+    redis.set_msgpack.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -84,6 +90,7 @@ async def test_poll_one_empty_db_inserts_all_closed(monkeypatch):
 
     repo.insert_bars.assert_called_once()
     assert len(repo.insert_bars.call_args[0][0]) == 2
+    redis.set_msgpack.assert_awaited_once()
     payload = json.loads(redis._r.xadd.await_args[0][1]["data"].decode())
     assert payload["final"] is True
 

@@ -48,6 +48,28 @@ class CollectorSymbolsResp(BaseModel):
     signals_count: int
 
 
+class CollectorSymbolStatusDTO(CollectorSymbolDTO):
+    snapshot_ts: str | None = None
+    snapshot_age_seconds: int | None = None
+    kline_5m_ts: str | None = None
+    kline_5m_age_seconds: int | None = None
+    health: str
+    health_reason: str
+
+
+class CollectorSymbolsStatusResp(BaseModel):
+    symbols: list[CollectorSymbolStatusDTO]
+    total: int
+    enabled: int
+    ok: int
+    warming: int
+    stale: int
+    disabled: int
+    snapshot_count: int
+    kline_5m_count: int
+    signals_count: int
+
+
 class CollectorSymbolBody(BaseModel):
     market: str = "ashare"
     symbol: str = Field(..., min_length=1)
@@ -102,6 +124,59 @@ async def _symbol_name(directory: SymbolDirectoryService, symbol: str) -> str | 
         return await directory.get_name(symbol)
     except Exception:  # noqa: BLE001
         return None
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value)).astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def _age(now: datetime, ts: datetime | None) -> int | None:
+    if ts is None:
+        return None
+    return max(0, int((now - ts).total_seconds()))
+
+
+def _latest_bar_ts(payload: Any) -> datetime | None:
+    if not isinstance(payload, list) or not payload:
+        return None
+    for item in reversed(payload):
+        if isinstance(item, dict):
+            ts = _parse_iso(item.get("ts"))
+            if ts is not None:
+                return ts
+    return None
+
+
+def _health(
+    row: CollectorSymbol,
+    *,
+    snapshot_age: int | None,
+    kline_age: int | None,
+) -> tuple[str, str]:
+    if not row.enabled:
+        return "disabled", "标的已停用"
+    missing: list[str] = []
+    stale: list[str] = []
+    if row.collect_snapshot:
+        if snapshot_age is None:
+            missing.append("快照")
+        elif snapshot_age > 180:
+            stale.append("快照")
+    if row.collect_5m:
+        if kline_age is None:
+            missing.append("5m")
+        elif kline_age > 15 * 60:
+            stale.append("5m")
+    if stale:
+        return "stale", f"{'、'.join(stale)}已过期"
+    if missing:
+        return "warming", f"等待{'、'.join(missing)}数据"
+    return "ok", "采集正常"
 
 
 async def _notify_collector(
@@ -170,6 +245,67 @@ async def list_collector_symbols(
         symbols=[_dto(r) for r in rows],
         total=len(rows),
         enabled=len(enabled),
+        snapshot_count=sum(1 for r in enabled if r.collect_snapshot),
+        kline_5m_count=sum(1 for r in enabled if r.collect_5m),
+        signals_count=sum(1 for r in enabled if r.collect_signals),
+    )
+
+
+@router.get("/status", response_model=CollectorSymbolsStatusResp)
+async def list_collector_symbol_status(
+    market: str = Query("ashare"),
+    include_disabled: bool = Query(True),
+    repo: CollectorSymbolRepo = Depends(get_collector_symbol_repo),
+    redis_cache: RedisCache = Depends(get_redis_cache),
+) -> CollectorSymbolsStatusResp:
+    """采集清单状态视图。
+
+    数据流: SQLite 清单是范围事实源; Redis quote/tail 是采集进程最新产物。
+    这里仅做聚合展示,不反向驱动采集任务。
+    """
+    _ensure_ashare(market)
+    now = datetime.now(timezone.utc)
+    rows = await repo.list(market, include_disabled=include_disabled)
+    out: list[CollectorSymbolStatusDTO] = []
+    counts = {"ok": 0, "warming": 0, "stale": 0, "disabled": 0}
+    for row in rows:
+        quote_ts: datetime | None = None
+        bar_ts: datetime | None = None
+        if row.collect_snapshot:
+            try:
+                quote = await redis_cache.get_msgpack(keys.cache_quote(market, row.symbol))
+                if isinstance(quote, dict):
+                    quote_ts = _parse_iso(quote.get("ts"))
+            except Exception:  # noqa: BLE001
+                quote_ts = None
+        if row.collect_5m:
+            try:
+                tail = await redis_cache.get_msgpack(keys.cache_bars_tail(market, row.symbol, "5m"))
+                bar_ts = _latest_bar_ts(tail)
+            except Exception:  # noqa: BLE001
+                bar_ts = None
+        snapshot_age = _age(now, quote_ts)
+        kline_age = _age(now, bar_ts)
+        health, reason = _health(row, snapshot_age=snapshot_age, kline_age=kline_age)
+        counts[health] += 1
+        out.append(CollectorSymbolStatusDTO(
+            **_dto(row).model_dump(),
+            snapshot_ts=quote_ts.isoformat() if quote_ts else None,
+            snapshot_age_seconds=snapshot_age,
+            kline_5m_ts=bar_ts.isoformat() if bar_ts else None,
+            kline_5m_age_seconds=kline_age,
+            health=health,
+            health_reason=reason,
+        ))
+    enabled = [r for r in rows if r.enabled]
+    return CollectorSymbolsStatusResp(
+        symbols=out,
+        total=len(rows),
+        enabled=len(enabled),
+        ok=counts["ok"],
+        warming=counts["warming"],
+        stale=counts["stale"],
+        disabled=counts["disabled"],
         snapshot_count=sum(1 for r in enabled if r.collect_snapshot),
         kline_5m_count=sum(1 for r in enabled if r.collect_5m),
         signals_count=sum(1 for r in enabled if r.collect_signals),

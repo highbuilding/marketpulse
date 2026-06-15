@@ -5,11 +5,11 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { SymbolSearch } from '@/components/SymbolSearch'
 import {
   deleteCollectorSymbol,
-  listCollectorSymbols,
+  listCollectorSymbolStatus,
   upsertCollectorSymbol,
 } from '@/lib/collector_symbols_api'
 import { useMarket } from '@/lib/market-context'
-import type { CollectorSymbol, CollectorSymbolsResponse, ThemeClassification, ThemeConstituent, ThemeDefinition, ThemePriority } from '@/lib/types'
+import type { CollectorSymbolStatus, CollectorSymbolsStatusResponse, ThemeClassification, ThemeConstituent, ThemeDefinition, ThemePriority } from '@/lib/types'
 import {
   createTheme,
   deleteConstituent,
@@ -78,6 +78,27 @@ function classLabel(value: string): string {
   return classifications.find((c) => c.value === value)?.label ?? value
 }
 
+function formatTs(value: string | null): string {
+  if (!value) return '--'
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return '--'
+  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+function healthColor(health: CollectorSymbolStatus['health']): string {
+  if (health === 'ok') return '#059669'
+  if (health === 'warming') return '#b45309'
+  if (health === 'stale') return '#dc2626'
+  return 'var(--text3)'
+}
+
+function healthLabel(health: CollectorSymbolStatus['health']): string {
+  if (health === 'ok') return '正常'
+  if (health === 'warming') return '预热'
+  if (health === 'stale') return '过期'
+  return '停用'
+}
+
 export default function ThemeSettingsPage() {
   const { market, marketLabel } = useMarket()
   const isAshare = market === 'ashare'
@@ -88,7 +109,7 @@ export default function ThemeSettingsPage() {
   const [themeForm, setThemeForm] = useState<ThemeForm>(emptyTheme)
   const [memberForm, setMemberForm] = useState<MemberForm>(emptyMember)
   const [collectorForm, setCollectorForm] = useState<CollectorForm>(emptyCollector)
-  const [collectorData, setCollectorData] = useState<CollectorSymbolsResponse | null>(null)
+  const [collectorData, setCollectorData] = useState<CollectorSymbolsStatusResponse | null>(null)
   const [includeDisabled, setIncludeDisabled] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -130,7 +151,7 @@ export default function ThemeSettingsPage() {
       setCollectorData(null)
       return
     }
-    setCollectorData(await listCollectorSymbols(market, includeDisabled))
+    setCollectorData(await listCollectorSymbolStatus(market, includeDisabled))
   }
 
   useEffect(() => {
@@ -278,7 +299,7 @@ export default function ThemeSettingsPage() {
     } finally { setCollectorBusy(false) }
   }
 
-  const removeCollectorSymbol = async (row: CollectorSymbol) => {
+  const removeCollectorSymbol = async (row: CollectorSymbolStatus) => {
     const action = row.source === 'manual' ? '删除' : '停用'
     if (!window.confirm(`${action}采集标的 ${row.name || row.symbol}?`)) return
     setCollectorBusy(true); setError(null); setNotice(null)
@@ -443,9 +464,15 @@ export default function ThemeSettingsPage() {
           <div style={st.collectorBody}>
             <div style={st.collectorStats}>
               <span>启用 {collectorData?.enabled ?? 0}</span>
+              <span>正常 {collectorData?.ok ?? 0}</span>
+              <span>预热 {collectorData?.warming ?? 0}</span>
+              <span>过期 {collectorData?.stale ?? 0}</span>
+            </div>
+            <div style={st.collectorStats}>
               <span>快照 {collectorData?.snapshot_count ?? 0}</span>
               <span>5m+ {collectorData?.kline_5m_count ?? 0}</span>
               <span>信号 {collectorData?.signals_count ?? 0}</span>
+              <span>总计 {collectorData?.total ?? 0}</span>
             </div>
             <div style={{ position: 'relative', zIndex: 15, marginBottom: 8 }}>
               {collectorForm.symbol ? (
@@ -472,6 +499,10 @@ export default function ThemeSettingsPage() {
                     <div style={st.code}>{row.symbol}</div>
                   </div>
                   <div style={st.collectorFlags}>
+                    <span style={{ color: healthColor(row.health), fontWeight: 700 }}>{healthLabel(row.health)}</span>
+                    <span>{row.health_reason}</span>
+                    <span>快照 {formatTs(row.snapshot_ts)}</span>
+                    <span>5m {formatTs(row.kline_5m_ts)}</span>
                     <span>{row.source === 'core' ? '核心' : row.source === 'seed' ? '内置' : '手动'}</span>
                     {row.collect_snapshot && <span>快照</span>}
                     {row.collect_5m && <span>5m+</span>}

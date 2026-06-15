@@ -171,10 +171,34 @@ export interface CollectorSymbol {
   updated_at: string | null
 }
 
+export type CollectorSymbolHealth = 'ok' | 'warming' | 'stale' | 'disabled'
+
+export interface CollectorSymbolStatus extends CollectorSymbol {
+  snapshot_ts: string | null
+  snapshot_age_seconds: number | null
+  kline_5m_ts: string | null
+  kline_5m_age_seconds: number | null
+  health: CollectorSymbolHealth
+  health_reason: string
+}
+
 export interface CollectorSymbolsResponse {
   symbols: CollectorSymbol[]
   total: number
   enabled: number
+  snapshot_count: number
+  kline_5m_count: number
+  signals_count: number
+}
+
+export interface CollectorSymbolsStatusResponse {
+  symbols: CollectorSymbolStatus[]
+  total: number
+  enabled: number
+  ok: number
+  warming: number
+  stale: number
+  disabled: number
   snapshot_count: number
   kline_5m_count: number
   signals_count: number

@@ -7,7 +7,7 @@ from typing import Any
 
 import structlog
 
-from core.domain.models import LiveMessage, ThemeConstituent, ThemeDefinition
+from core.domain.models import LiveMessage, ThemeConstituent, ThemeDefinition, ThemeSnapshot, ThemeState
 from core.persistence.theme_repo import ThemeRepo
 from core.services.watchlist_service import WatchlistService
 
@@ -16,6 +16,9 @@ log = structlog.get_logger(__name__)
 RULE_VERSION = "v2"
 _CTX_TTL = timedelta(seconds=60)
 _DEDUP_TTL = timedelta(minutes=5)
+_VOLUME_HISTORY_MAX = 24
+_VOLUME_SPIKE_MIN_HISTORY = 4
+_VOLUME_SPIKE_RATIO = 2.5
 
 
 @dataclass
@@ -72,6 +75,7 @@ class LiveMessageService:
         self._quotes: dict[str, _QuoteState] = {}
         self._last_emit: dict[str, datetime] = {}
         self._theme_states: dict[str, _ThemeRuntimeState] = {}
+        self._bar_volumes: dict[tuple[str, str], list[int]] = {}
 
     async def handle_quote_tick(
         self,
@@ -100,7 +104,7 @@ class LiveMessageService:
 
         messages: list[LiveMessage] = []
         messages.extend(self._watchlist_messages(quote, prev, source_event_id))
-        messages.extend(self._theme_messages(market, quote, source_event_id))
+        messages.extend(await self._theme_messages(market, quote, source_event_id))
         messages.extend(self._watchlist_theme_risk_messages(market, quote, source_event_id))
         return self._dedupe(messages, now=ts)
 
@@ -139,13 +143,47 @@ class LiveMessageService:
 
     async def handle_bar_updated(
         self,
-        _payload: dict[str, Any],
+        payload: dict[str, Any],
         *,
         source_event_id: str | None = None,
     ) -> list[LiveMessage]:
-        # 第一版保留扩展点: CD 信号由 bus:signal.new 负责,bar.updated 不重复产消息。
-        _ = source_event_id
-        return []
+        market = str(payload.get("market") or "ashare")
+        if market != "ashare":
+            return []
+        interval = str(payload.get("interval") or "")
+        if interval != "5m" or not bool(payload.get("final")):
+            return []
+        symbol = str(payload.get("symbol") or "").upper()
+        volume = _int_or_none(payload.get("volume"))
+        if not symbol or volume is None or volume <= 0:
+            return []
+        await self._ensure_context(market)
+        ts = _parse_dt(payload.get("ts"))
+        key = (symbol, interval)
+        history = self._bar_volumes.get(key, [])
+        messages: list[LiveMessage] = []
+        if len(history) >= _VOLUME_SPIKE_MIN_HISTORY:
+            sample = history[-8:]
+            baseline = sum(sample) / len(sample) if sample else 0
+            ratio = volume / baseline if baseline > 0 else 0
+            if ratio >= _VOLUME_SPIKE_RATIO:
+                messages.extend(self._volume_spike_messages(
+                    market=market,
+                    symbol=symbol,
+                    interval=interval,
+                    ts=ts,
+                    payload=payload,
+                    volume=volume,
+                    baseline=baseline,
+                    ratio=ratio,
+                    sample_count=len(sample),
+                    source_event_id=source_event_id,
+                ))
+        history = [*history, volume]
+        if len(history) > _VOLUME_HISTORY_MAX:
+            history = history[-_VOLUME_HISTORY_MAX:]
+        self._bar_volumes[key] = history
+        return self._dedupe(messages, now=ts)
 
     async def _ensure_context(self, market: str) -> None:
         now = datetime.now(timezone.utc)
@@ -216,7 +254,7 @@ class LiveMessageService:
         ))
         return messages
 
-    def _theme_messages(
+    async def _theme_messages(
         self,
         market: str,
         quote: _QuoteState,
@@ -234,6 +272,7 @@ class LiveMessageService:
             current_state = "strength" if len(ev.up) >= 3 and ev.leader.change_pct >= 1.0 else (
                 "weakness" if len(ev.down) >= 3 and ev.laggard.change_pct <= -1.0 else "neutral"
             )
+            await self._persist_theme_eval(market, quote.ts, ev, current_state, prev)
             if current_state == "strength":
                 messages.append(self._message(
                     market=market,
@@ -283,6 +322,74 @@ class LiveMessageService:
                 updated_at=quote.ts,
             )
         return messages
+
+    async def _persist_theme_eval(
+        self,
+        market: str,
+        ts: datetime,
+        ev: _ThemeEval,
+        current_state: str,
+        prev: _ThemeRuntimeState,
+    ) -> None:
+        """持久化题材快照和当前状态,供 UI 展示与盘后复盘。
+
+        这条路径只写 SQLite 小表,失败不影响实时消息生成。
+        """
+        bucket = _bucket_5m(ts)
+        leaders = [s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]]
+        up_ratio = len(ev.up) / len(ev.known) if ev.known else None
+        support_score = len(ev.core_up) / len(ev.core) if ev.core else None
+        divergence_score = (
+            ev.leader.change_pct - ev.second.change_pct
+            if ev.second is not None else None
+        )
+        amount = sum(s.amount or 0 for s in ev.known)
+        payload = _theme_payload(ev) | {
+            "state": current_state,
+            "bucket_ts": bucket.isoformat(),
+            "peak_up_count": max(prev.peak_up_count, len(ev.up)),
+            "rule_version": RULE_VERSION,
+        }
+        score = _theme_score(ev, current_state)
+        reason = _theme_reason(ev, current_state)
+        try:
+            await self.theme_repo.upsert_snapshots([
+                ThemeSnapshot(
+                    market=market,
+                    theme_code=ev.ctx.definition.theme_code,
+                    theme_name=ev.ctx.definition.theme_name,
+                    classification=ev.ctx.definition.classification,
+                    ts=bucket,
+                    pct_change=ev.avg_change_pct,
+                    amount=amount or None,
+                    up_ratio=up_ratio,
+                    limit_up_count=sum(1 for s in ev.known if s.change_pct >= 9.8),
+                    member_count=len(ev.ctx.symbols),
+                    leader_symbols=leaders,
+                    divergence_score=divergence_score,
+                    support_score=support_score,
+                    raw=payload,
+                ),
+            ])
+            await self.theme_repo.upsert_states([
+                ThemeState(
+                    market=market,
+                    theme_code=ev.ctx.definition.theme_code,
+                    theme_name=ev.ctx.definition.theme_name,
+                    state=current_state,
+                    score=score,
+                    reason=reason,
+                    evidence=payload,
+                    updated_at=ts,
+                ),
+            ])
+        except Exception as e:  # noqa: BLE001
+            log.warning(
+                "live_message.theme_state_persist_failed",
+                market=market,
+                theme_code=ev.ctx.definition.theme_code,
+                error=str(e),
+            )
 
     def _evaluate_theme(self, ctx: _ThemeContext) -> _ThemeEval | None:
         known = [q for q in (self._quotes.get(s) for s in ctx.symbols) if q is not None]
@@ -396,6 +503,63 @@ class LiveMessageService:
                 payload=_theme_payload(ev) | {"watch_symbol": quote.symbol, "watch_change_pct": quote.change_pct},
             ))
         return messages
+
+    def _volume_spike_messages(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        interval: str,
+        ts: datetime,
+        payload: dict[str, Any],
+        volume: int,
+        baseline: float,
+        ratio: float,
+        sample_count: int,
+        source_event_id: str | None,
+    ) -> list[LiveMessage]:
+        related_themes = self._symbol_themes.get(symbol, [])
+        if symbol not in self._watch_symbols and not related_themes:
+            return []
+        open_price = _float_or_none(payload.get("open"))
+        close_price = _float_or_none(payload.get("close"))
+        is_down = open_price is not None and close_price is not None and close_price < open_price
+        level = "warning" if is_down else "watch"
+        category = "watchlist" if symbol in self._watch_symbols else ("risk" if is_down else "theme")
+        theme_code = related_themes[0] if related_themes else None
+        theme_name = self._themes[theme_code].definition.theme_name if theme_code and theme_code in self._themes else None
+        prefix = f"自选股 {symbol}" if symbol in self._watch_symbols else f"{theme_name or '题材'}成分 {symbol}"
+        title = f"{prefix} 5m明显放量"
+        direction = "下跌" if is_down else "上涨或持平"
+        body = f"当前5m成交量为近{sample_count}根均量 {ratio:.1f} 倍,K线{direction}。"
+        msg = self._message(
+            market=market,
+            ts=ts,
+            level=level,
+            category=category,
+            title=title,
+            body=body,
+            source_event="bus:bars.updated",
+            source_event_id=source_event_id,
+            dedupe_key=f"volume_spike:{symbol}:{interval}",
+            theme_code=theme_code,
+            symbol=symbol,
+            symbols=[symbol],
+            payload={
+                "symbol": symbol,
+                "interval": interval,
+                "volume": volume,
+                "baseline_volume": baseline,
+                "volume_ratio": ratio,
+                "sample_count": sample_count,
+                "open": open_price,
+                "close": close_price,
+                "theme_code": theme_code,
+                "theme_name": theme_name,
+                "rule_version": RULE_VERSION,
+            },
+        )
+        return [msg]
 
     def _dedupe(self, messages: list[LiveMessage], *, now: datetime) -> list[LiveMessage]:
         result: list[LiveMessage] = []
@@ -515,3 +679,31 @@ def _theme_payload(ev: _ThemeEval) -> dict[str, Any]:
             for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)
         ],
     }
+
+
+def _theme_score(ev: _ThemeEval, current_state: str) -> float:
+    up_ratio = len(ev.up) / len(ev.known) if ev.known else 0.0
+    core_ratio = len(ev.core_up) / len(ev.core) if ev.core else 0.0
+    base = ev.avg_change_pct + up_ratio * 4.0 + core_ratio * 3.0
+    if current_state == "strength":
+        base += 2.0
+    elif current_state == "weakness":
+        base -= 2.0
+    return round(base, 4)
+
+
+def _theme_reason(ev: _ThemeEval, current_state: str) -> str:
+    if current_state == "strength":
+        return (
+            f"{len(ev.known)}只已采成分中{len(ev.up)}只上涨,"
+            f"{ev.leader.symbol}领涨{ev.leader.change_pct:.2f}%"
+        )
+    if current_state == "weakness":
+        return (
+            f"{len(ev.known)}只已采成分中{len(ev.down)}只下跌,"
+            f"{ev.laggard.symbol}领跌{ev.laggard.change_pct:.2f}%"
+        )
+    return (
+        f"{len(ev.known)}只已采成分中{len(ev.up)}只上涨,"
+        f"均值{ev.avg_change_pct:.2f}%"
+    )

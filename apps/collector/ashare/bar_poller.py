@@ -20,6 +20,7 @@ import structlog
 
 from core.cache import keys
 from core.cache.redis_client import RedisCache
+from core.cache.redis_bars_cache import RedisBarsCache
 from core.domain.market_calendar import is_trading_day
 from core.domain.market_sessions import is_market_session_open
 from core.domain.runtime_env import tiered_int
@@ -68,6 +69,7 @@ class BarPoller:
     ) -> None:
         self._repo = repo
         self._redis = redis_cache
+        self._redis_bars = RedisBarsCache(redis_cache)
         self._adapter = adapter
         self._collector_symbols = collector_symbols
         self._last_polled_window: dict[str, int] = {}
@@ -126,6 +128,7 @@ class BarPoller:
         except Exception as e:  # noqa: BLE001
             log.warning("bar_poller.db_write_failed",
                         symbol=symbol, interval=interval, error=str(e))
+        await self._redis_bars.upsert_tail("ashare", symbol, interval, fresh)
 
         # 发布最新已收线 bar 到 SSE 总线(final=true)
         latest = fresh[-1]

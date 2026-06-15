@@ -1,5 +1,10 @@
 import { apiFetch } from './api_fetch'
-import type { CollectorSymbolMutationResponse, CollectorSymbolsResponse, Market } from './types'
+import type {
+  CollectorSymbolMutationResponse,
+  CollectorSymbolsResponse,
+  CollectorSymbolsStatusResponse,
+  Market,
+} from './types'
 
 export interface CollectorSymbolInput {
   market: Market
@@ -18,6 +23,16 @@ export async function listCollectorSymbols(
 ): Promise<CollectorSymbolsResponse> {
   const params = new URLSearchParams({ market, include_disabled: String(includeDisabled) })
   const r = await apiFetch(`/api/collector-symbols?${params.toString()}`, { cache: 'no-store' })
+  if (!r.ok) throw new Error(`${r.status}`)
+  return r.json()
+}
+
+export async function listCollectorSymbolStatus(
+  market: Market,
+  includeDisabled = true,
+): Promise<CollectorSymbolsStatusResponse> {
+  const params = new URLSearchParams({ market, include_disabled: String(includeDisabled) })
+  const r = await apiFetch(`/api/collector-symbols/status?${params.toString()}`, { cache: 'no-store' })
   if (!r.ok) throw new Error(`${r.status}`)
   return r.json()
 }
