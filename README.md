@@ -20,6 +20,16 @@ make dev-status  # 检查进程与健康接口
 make dev-stop-bg # 停止后台进程和 Redis
 ```
 
+单独启停某个进程:
+
+```bash
+make dev-bg ARGS="collector-us"              # 只启动美股采集
+make dev-stop-bg ARGS="collector-us"         # 只停止美股采集, 不动 Redis
+bash scripts/dev-stop.sh collector-us        # 只停止美股采集, 不动 Redis
+bash scripts/dev-stop.sh collector-crypto    # 只停止加密采集, 不动 Redis
+bash scripts/dev-status.sh collector-ashare  # 只检查 A 股采集
+```
+
 打开 http://localhost:3000/dashboard。
 
 后台启动日志:

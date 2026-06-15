@@ -20,6 +20,18 @@ fi
 echo "starting redis..."
 docker compose -f docker-compose.dev.yml up -d redis >/dev/null
 
+selected=("${@:-all}")
+
+should_start() {
+  local name="$1"
+  for item in "${selected[@]}"; do
+    if [[ "$item" == "all" || "$item" == "$name" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 start_proc() {
   local name="$1"
   local pattern="$2"
@@ -41,21 +53,31 @@ start_proc() {
   fi
 }
 
-start_proc "collector-ashare" "python -m apps.collector.ashare.main" \
-  ". .venv/bin/activate && python -m apps.collector.ashare.main"
+if should_start "collector-ashare"; then
+  start_proc "collector-ashare" "python -m apps.collector.ashare.main" \
+    ". .venv/bin/activate && python -m apps.collector.ashare.main"
+fi
 
-start_proc "collector-us" "python -m apps.collector.us.main" \
-  ". .venv/bin/activate && python -m apps.collector.us.main"
+if should_start "collector-us"; then
+  start_proc "collector-us" "python -m apps.collector.us.main" \
+    ". .venv/bin/activate && python -m apps.collector.us.main"
+fi
 
-start_proc "collector-crypto" "python -m apps.collector.crypto.main" \
-  ". .venv/bin/activate && python -m apps.collector.crypto.main"
+if should_start "collector-crypto"; then
+  start_proc "collector-crypto" "python -m apps.collector.crypto.main" \
+    ". .venv/bin/activate && python -m apps.collector.crypto.main"
+fi
 
-start_proc "api" "uvicorn apps.api.main:app" \
-  ". .venv/bin/activate && uvicorn apps.api.main:app --port 8787"
+if should_start "api"; then
+  start_proc "api" "uvicorn apps.api.main:app" \
+    ". .venv/bin/activate && uvicorn apps.api.main:app --port 8787"
+fi
 
-start_proc "web" "next dev -p 3000" \
-  "cd apps/web && npm run dev"
+if should_start "web"; then
+  start_proc "web" "next dev -p 3000" \
+    "cd apps/web && npm run dev"
+fi
 
 echo "waiting for health checks..."
 sleep "${MARKETPULSE_START_WAIT_S:-8}"
-"$ROOT/scripts/dev-status.sh"
+"$ROOT/scripts/dev-status.sh" "${selected[@]}"

@@ -14,10 +14,10 @@ dev: dev-redis
 	. .venv/bin/activate && honcho start -f Procfile
 
 dev-bg:
-	bash scripts/dev-start.sh
+	bash scripts/dev-start.sh $(ARGS)
 
 dev-status:
-	bash scripts/dev-status.sh
+	bash scripts/dev-status.sh $(ARGS)
 
 dev-stop:
 	pkill -9 -f "apps.collector.ashare" 2>/dev/null || true
@@ -29,7 +29,7 @@ dev-stop:
 	@echo "stopped collector_{ashare,us,crypto} / api / redis (web 由 honcho/Ctrl-C 管理)"
 
 dev-stop-bg:
-	bash scripts/dev-stop.sh --with-redis
+	bash scripts/dev-stop.sh $(ARGS) $(if $(ARGS),,--with-redis)
 
 test:
 	. .venv/bin/activate && pytest -m "not integration"

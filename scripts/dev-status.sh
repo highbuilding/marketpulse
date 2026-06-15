@@ -2,6 +2,17 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+selected=("${@:-all}")
+
+should_check() {
+  local name="$1"
+  for item in "${selected[@]}"; do
+    if [[ "$item" == "all" || "$item" == "$name" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
 
 check_proc() {
   local name="$1"
@@ -44,16 +55,36 @@ else
   echo "down redis"
 fi
 
-check_proc "collector-ashare" "python -m apps.collector.ashare.main"
-check_proc "collector-us" "python -m apps.collector.us.main"
-check_proc "collector-crypto" "python -m apps.collector.crypto.main"
-check_proc "api" "uvicorn apps.api.main:app"
-check_proc "web" "next dev -p 3000"
+if should_check "collector-ashare"; then
+  check_proc "collector-ashare" "python -m apps.collector.ashare.main"
+fi
+if should_check "collector-us"; then
+  check_proc "collector-us" "python -m apps.collector.us.main"
+fi
+if should_check "collector-crypto"; then
+  check_proc "collector-crypto" "python -m apps.collector.crypto.main"
+fi
+if should_check "api"; then
+  check_proc "api" "uvicorn apps.api.main:app"
+fi
+if should_check "web"; then
+  check_proc "web" "next dev -p 3000"
+fi
 
-check_http_with_proc "api" "http://127.0.0.1:8787/api/health" "uvicorn apps.api.main:app"
-check_http_with_proc "collector-ashare" "http://127.0.0.1:8788/health" "python -m apps.collector.ashare.main"
-check_http_with_proc "collector-us" "http://127.0.0.1:8789/health" "python -m apps.collector.us.main"
-check_http_with_proc "collector-crypto" "http://127.0.0.1:8790/health" "python -m apps.collector.crypto.main"
-check_http_with_proc "web" "http://127.0.0.1:3000" "next dev -p 3000"
+if should_check "api"; then
+  check_http_with_proc "api" "http://127.0.0.1:8787/api/health" "uvicorn apps.api.main:app"
+fi
+if should_check "collector-ashare"; then
+  check_http_with_proc "collector-ashare" "http://127.0.0.1:8788/health" "python -m apps.collector.ashare.main"
+fi
+if should_check "collector-us"; then
+  check_http_with_proc "collector-us" "http://127.0.0.1:8789/health" "python -m apps.collector.us.main"
+fi
+if should_check "collector-crypto"; then
+  check_http_with_proc "collector-crypto" "http://127.0.0.1:8790/health" "python -m apps.collector.crypto.main"
+fi
+if should_check "web"; then
+  check_http_with_proc "web" "http://127.0.0.1:3000" "next dev -p 3000"
+fi
 
 echo "logs: /tmp/marketpulse/*.log and data/logs/*.log"
