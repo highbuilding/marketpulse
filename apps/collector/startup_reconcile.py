@@ -75,7 +75,7 @@ _DAILY_STALE = timedelta(days=2)      # 日线落后超 2 天才补
 _INTRADAY_STALE = timedelta(days=4)   # 分钟/TF 落后超 4 天才补(否则 live poller 自愈)
 THROTTLE_S = 1.5   # 温和节流: 摊平 startup burst, 不加剧 sina/Alpaca 限频(P0 复盘)
 # 失败日线标的重试前的等待: 给瞬时网络抖动平息 / breaker 5min open 窗口进入 half-open。
-_DAILY_RETRY_DELAY_S = float(os.getenv("RECONCILE_DAILY_RETRY_DELAY_S", "20"))
+_DAILY_RETRY_DELAY_S = float(os.getenv("RECONCILE_DAILY_RETRY_DELAY_S", "330"))
 
 
 def _stale(last: datetime | None, now: datetime, thresh: timedelta) -> bool:

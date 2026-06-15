@@ -8,7 +8,9 @@ from core.domain.models import ThemeConstituent, ThemeDefinition
 from core.persistence.theme_repo import ThemeRepo
 
 
-_SEED_PATH = Path(__file__).with_name("seeds") / "ashare_themes.json"
+_SEED_DIR = Path(__file__).with_name("seeds")
+_SEED_PATH = _SEED_DIR / "ashare_themes.json"
+_EXPANSION_PATH = _SEED_DIR / "ashare_themes_expansion.json"
 
 
 def _text(value: Any) -> str | None:
@@ -19,6 +21,30 @@ def _text(value: Any) -> str | None:
 
 
 def load_ashare_seed(path: Path = _SEED_PATH) -> tuple[list[ThemeDefinition], list[ThemeConstituent]]:
+    paths = [path]
+    if path == _SEED_PATH:
+        paths.append(_EXPANSION_PATH)
+    return load_ashare_seeds(paths)
+
+
+def load_ashare_seeds(paths: list[Path]) -> tuple[list[ThemeDefinition], list[ThemeConstituent]]:
+    definitions: dict[tuple[str, str], ThemeDefinition] = {}
+    constituents: dict[tuple[str, str, str], ThemeConstituent] = {}
+    for path in paths:
+        if not path.exists():
+            continue
+        loaded_definitions, loaded_constituents = _load_ashare_seed_file(path)
+        for definition in loaded_definitions:
+            definitions.setdefault((definition.market, definition.theme_code), definition)
+        for constituent in loaded_constituents:
+            constituents.setdefault(
+                (constituent.market, constituent.theme_code, constituent.symbol),
+                constituent,
+            )
+    return list(definitions.values()), list(constituents.values())
+
+
+def _load_ashare_seed_file(path: Path) -> tuple[list[ThemeDefinition], list[ThemeConstituent]]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     market = payload.get("market", "ashare")
     version = payload.get("version")

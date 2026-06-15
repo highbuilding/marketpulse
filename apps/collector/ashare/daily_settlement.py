@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import random
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -37,7 +38,7 @@ _BJT = ZoneInfo("Asia/Shanghai")
 _SETTLE_POLL_S = float(os.getenv("ASHARE_SETTLE_POLL_S", "60"))
 _SETTLE_DEADLINE_S = float(os.getenv("ASHARE_SETTLE_DEADLINE_S", "2700"))
 # 每标的间节流, 摊平 burst (与 startup_reconcile THROTTLE_S 一致量级)
-_THROTTLE_S = float(os.getenv("ASHARE_SETTLE_THROTTLE_S", "1.0"))
+_THROTTLE_S = float(os.getenv("ASHARE_SETTLE_THROTTLE_S", "1.5"))
 
 # resample 派生周期窗口 (与 aggregate_derived 事件路径一致量级)
 _AGG_KW = dict(window_1wk=14, window_1mo=40)
@@ -93,7 +94,7 @@ async def run_settlement_round(kline, repo, symbols: list[str], today) -> set[st
                 settled.add(sym)
         except Exception as e:  # noqa: BLE001
             log.warning("settle.symbol_failed", symbol=sym, error=str(e))
-        await asyncio.sleep(_THROTTLE_S)
+        await asyncio.sleep(_THROTTLE_S * random.uniform(0.8, 1.3))
     return settled
 
 
@@ -139,7 +140,18 @@ async def run_daily_settlement(
                 continue
 
             # 条件等待: 反复结算未就位标的, 直到全就位或超 deadline
-            pending = set(symbols)
+            try:
+                last_1d = repo.fetch_last_ts_map("ashare", "1d", symbols, closed_only=True)
+            except Exception as e:  # noqa: BLE001
+                log.warning("settlement.last_ts_failed", error=str(e))
+                last_1d = {}
+            pending = {
+                s for s in symbols
+                if not (last_1d.get(s) is not None and _bar_covers_today(last_1d[s], today))
+            }
+            log.info("settlement.scope", date=str(today), total=len(symbols),
+                     already_settled=len(symbols) - len(pending), pending=len(pending),
+                     throttle_s=_THROTTLE_S)
             deadline = now.timestamp() + _SETTLE_DEADLINE_S
             rounds = 0
             while pending and datetime.now(timezone.utc).timestamp() < deadline:

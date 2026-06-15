@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -13,7 +14,7 @@ from core.services.watchlist_service import WatchlistService
 
 log = structlog.get_logger(__name__)
 
-RULE_VERSION = "v2"
+RULE_VERSION = "v3"
 _CTX_TTL = timedelta(seconds=60)
 _DEDUP_TTL = timedelta(minutes=5)
 _VOLUME_HISTORY_MAX = 24
@@ -75,6 +76,8 @@ class _ThemeRuntimeState:
     leader_change_pct: float | None = None
     up_count: int = 0
     peak_up_count: int = 0
+    known_count: int = 0
+    peak_up_ratio: float = 0.0
     core_up_count: int = 0
     state: str = "neutral"
     updated_at: datetime | None = None
@@ -674,6 +677,8 @@ class LiveMessageService:
                 leader_change_pct=ev.leader.change_pct,
                 up_count=len(ev.up),
                 peak_up_count=max(prev.peak_up_count, len(ev.up)),
+                known_count=len(ev.known),
+                peak_up_ratio=max(prev.peak_up_ratio, _up_ratio(ev)),
                 core_up_count=len(ev.core_up),
                 state=current_state,
                 updated_at=quote.ts,
@@ -750,7 +755,11 @@ class LiveMessageService:
 
     def _evaluate_theme(self, ctx: _ThemeContext) -> _ThemeEval | None:
         known = [q for q in (self._quotes.get(s) for s in ctx.symbols) if q is not None]
-        if len(known) < min(3, len(ctx.symbols)):
+        min_known = min(
+            len(ctx.symbols),
+            max(3, min(8, math.ceil(len(ctx.symbols) * 0.35))),
+        )
+        if len(known) < min_known:
             return None
         up = [s for s in known if s.change_pct > 0]
         down = [s for s in known if s.change_pct < 0]
@@ -798,18 +807,23 @@ class LiveMessageService:
                 symbols=[ev.leader.symbol, prev.leader],
                 payload=_theme_payload(ev) | {"prev_leader": prev.leader, "prev_leader_change_pct": prev.leader_change_pct},
             ))
-        if len(ev.up) >= 3 and len(ev.core_up) < 2:
+        if len(ev.known) >= 4 and _up_ratio(ev) >= 0.45 and _core_up_ratio(ev) <= 0.50:
             messages.append(self._message(
                 market=market, ts=ts, level="warning", category="risk",
                 title=f"{theme_name}走强质量一般",
-                body=f"题材有 {len(ev.up)} 只上涨,但核心股上涨仅 {len(ev.core_up)} 只。",
+                body=(
+                    f"上涨占比 {_up_ratio(ev):.0%},"
+                    f"但核心上涨占比仅 {_core_up_ratio(ev):.0%}。"
+                ),
                 source_event="bus:quote.tick", source_event_id=source_event_id,
                 dedupe_key=f"risk:{theme_code}:core_unsynced",
                 theme_code=theme_code, symbol=ev.leader.symbol,
                 symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
                 payload=_theme_payload(ev),
             ))
-        if ev.leader.change_pct >= 4.0 and (len(ev.up) < 3 or (ev.second and ev.leader.change_pct - ev.second.change_pct >= 2.0)):
+        if ev.leader.change_pct >= 4.0 and (
+            _up_ratio(ev) < 0.45 or _leader_gap(ev) >= 2.0
+        ):
             messages.append(self._message(
                 market=market, ts=ts, level="warning", category="risk",
                 title=f"{theme_name}异动偏单点",
@@ -1010,11 +1024,16 @@ def _theme_payload(ev: _ThemeEval) -> dict[str, Any]:
         "theme_name": ev.ctx.definition.theme_name,
         "member_count": len(ev.ctx.symbols),
         "known_count": len(ev.known),
+        "known_ratio": _known_ratio(ev),
         "up_count": len(ev.up),
+        "up_ratio": _up_ratio(ev),
         "down_count": len(ev.down),
+        "down_ratio": _down_ratio(ev),
         "core_count": len(ev.core),
         "core_up_count": len(ev.core_up),
+        "core_up_ratio": _core_up_ratio(ev),
         "follower_up_count": len(ev.follower_up),
+        "follower_up_ratio": _follower_up_ratio(ev),
         "avg_change_pct": ev.avg_change_pct,
         "leader": {"symbol": ev.leader.symbol, "change_pct": ev.leader.change_pct},
         "laggard": {"symbol": ev.laggard.symbol, "change_pct": ev.laggard.change_pct},
@@ -1026,19 +1045,65 @@ def _theme_payload(ev: _ThemeEval) -> dict[str, Any]:
     }
 
 
+def _ratio(part: int, total: int) -> float:
+    return part / total if total > 0 else 0.0
+
+
+def _known_ratio(ev: _ThemeEval) -> float:
+    return _ratio(len(ev.known), len(ev.ctx.symbols))
+
+
+def _up_ratio(ev: _ThemeEval) -> float:
+    return _ratio(len(ev.up), len(ev.known))
+
+
+def _down_ratio(ev: _ThemeEval) -> float:
+    return _ratio(len(ev.down), len(ev.known))
+
+
+def _core_up_ratio(ev: _ThemeEval) -> float:
+    return _ratio(len(ev.core_up), len(ev.core))
+
+
+def _follower_up_ratio(ev: _ThemeEval) -> float:
+    follower_known = [
+        s for s in ev.known
+        if any(c.symbol == s.symbol and (c.role_hint or "") in {"follower", "laggard", "watch"}
+               for c in ev.ctx.constituents)
+    ]
+    return _ratio(len(ev.follower_up), len(follower_known))
+
+
+def _leader_gap(ev: _ThemeEval) -> float:
+    return (
+        ev.leader.change_pct - ev.second.change_pct
+        if ev.second is not None else 0.0
+    )
+
+
 def _theme_state(ev: _ThemeEval, prev: _ThemeRuntimeState) -> str:
     peak_up_count = max(prev.peak_up_count, prev.up_count)
-    if prev.state in {"launch", "diffusion", "strength"} and peak_up_count - len(ev.up) >= 2:
+    up_ratio = _up_ratio(ev)
+    down_ratio = _down_ratio(ev)
+    core_up_ratio = _core_up_ratio(ev)
+    min_launch_up = max(3, math.ceil(len(ev.known) * 0.45))
+    min_diffusion_up = max(4, math.ceil(len(ev.known) * 0.60))
+
+    up_count_drop = peak_up_count - len(ev.up)
+    up_ratio_drop = max(prev.peak_up_ratio, _ratio(peak_up_count, prev.known_count)) - up_ratio
+    if prev.state in {"launch", "diffusion", "strength"} \
+            and up_ratio_drop >= 0.22 \
+            and up_count_drop >= max(2, math.ceil(len(ev.known) * 0.15)):
         return "fade"
-    if len(ev.down) >= 3 and ev.laggard.change_pct <= -1.0:
+    if down_ratio >= 0.55 and ev.laggard.change_pct <= -1.0:
         return "weakness"
     if ev.leader.change_pct >= 4.0 and (
-        len(ev.up) < 3 or (ev.second is not None and ev.leader.change_pct - ev.second.change_pct >= 2.0)
+        up_ratio < 0.45 or _leader_gap(ev) >= 2.0
     ):
         return "divergence"
-    if len(ev.up) >= 4 and len(ev.core_up) >= 2 and ev.leader.change_pct >= 1.0:
+    if len(ev.up) >= min_diffusion_up and core_up_ratio >= 0.50 and ev.leader.change_pct >= 1.0:
         return "diffusion"
-    if len(ev.up) >= 3 and len(ev.core_up) >= 1 and ev.leader.change_pct >= 1.0:
+    if len(ev.up) >= min_launch_up and core_up_ratio >= 0.33 and ev.leader.change_pct >= 1.0:
         return "launch"
     return "neutral"
 
