@@ -368,3 +368,46 @@ export interface LiveMessageStatus {
   latest_message_title: string | null
   rule_version: string
 }
+
+// 盘后回放 (/api/replay)
+export interface ReplayMessage {
+  id: string
+  ts: string
+  level: LiveMessageLevel
+  category: LiveMessageCategory
+  title: string
+  body: string
+  theme_code: string | null
+  symbol: string | null
+  symbols: string[]
+  payload: Record<string, unknown>
+  rule_version: string
+}
+
+export interface ThemeSeriesPoint {
+  ts: string
+  pct_change: number | null
+  pct_change_5m: number | null
+  up_ratio: number | null
+  amount: number | null
+  limit_up_count: number | null
+  divergence_score: number | null
+  support_score: number | null
+}
+
+export interface ThemeSeries {
+  theme_code: string
+  theme_name: string
+  classification: string
+  points: ThemeSeriesPoint[]
+}
+
+export interface ReplayResponse {
+  market: Market
+  date: string
+  start: string
+  end: string
+  messages: ReplayMessage[]
+  theme_series: ThemeSeries[]
+  degraded: string[]
+}

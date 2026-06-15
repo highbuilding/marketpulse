@@ -418,6 +418,45 @@ class ThemeRepo:
             for r in rows
         ]
 
+    async def list_snapshots_window(
+        self, market: str, *, start: datetime, end: datetime, limit: int = 2000,
+    ) -> list[ThemeSnapshot]:
+        """按时间窗取题材快照, 升序返回, 供盘后回放重建状态变迁曲线。"""
+        async with self._connect() as db:
+            cur = await db.execute(
+                """SELECT market, theme_code, theme_name, classification, ts,
+                          pct_change, pct_change_5m, amount, amount_ratio, up_ratio,
+                          limit_up_count, member_count, leader_symbols_json,
+                          divergence_score, support_score, raw_json
+                   FROM theme_snapshots
+                   WHERE market = ? AND ts >= ? AND ts <= ?
+                   ORDER BY ts ASC, theme_code ASC
+                   LIMIT ?""",
+                (market, _iso(start), _iso(end), limit),
+            )
+            rows = await cur.fetchall()
+        return [
+            ThemeSnapshot(
+                market=r["market"],
+                theme_code=r["theme_code"],
+                theme_name=r["theme_name"],
+                classification=r["classification"],
+                ts=_dt(r["ts"]) or datetime.fromtimestamp(0, timezone.utc),
+                pct_change=r["pct_change"],
+                pct_change_5m=r["pct_change_5m"],
+                amount=r["amount"],
+                amount_ratio=r["amount_ratio"],
+                up_ratio=r["up_ratio"],
+                limit_up_count=r["limit_up_count"],
+                member_count=r["member_count"],
+                leader_symbols=_loads(r["leader_symbols_json"], []),
+                divergence_score=r["divergence_score"],
+                support_score=r["support_score"],
+                raw=_loads(r["raw_json"], {}),
+            )
+            for r in rows
+        ]
+
     async def upsert_states(self, states: list[ThemeState]) -> int:
         if not states:
             return 0

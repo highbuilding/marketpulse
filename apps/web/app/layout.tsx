@@ -17,6 +17,7 @@ const NAV_ITEMS = [
   { id: 'signals',   label: 'CD 信号',  icon: '🎯', href: '/signals' },
   { id: 'strategy',  label: '策略回测', icon: '🧪', href: '/strategy' },
   { id: 'assistant', label: 'AI 助手',  icon: '🤖', href: '/assistant' },
+  { id: 'replay',    label: '盘后回放', icon: '🔁', href: '/replay' },
   { id: 'trading',   label: '自动交易', icon: '⚡', href: '/trading' },
 ]
 
@@ -85,6 +86,7 @@ function Sidebar() {
     : pathname.startsWith('/notifications') ? 'signals'
     : pathname.startsWith('/strategy') ? 'strategy'
     : pathname.startsWith('/assistant') ? 'assistant'
+    : pathname.startsWith('/replay') ? 'replay'
     : pathname.startsWith('/trading') ? 'trading'
     : pathname.startsWith('/settings') ? 'settings'
     : pathname.startsWith('/ai-market') ? 'market'
