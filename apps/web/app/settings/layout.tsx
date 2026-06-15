@@ -6,6 +6,7 @@ const TABS = [
   { href: '/settings/notifications', label: '信号通知' },
   { href: '/settings/themes',        label: '题材库' },
   { href: '/settings/preferences',   label: '偏好' },
+  { href: '/settings/collector-symbols', label: '采集标的' },
   { href: '/settings/about',         label: '关于' },
 ]
 

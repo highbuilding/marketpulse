@@ -3,13 +3,8 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 
 import { SymbolSearch } from '@/components/SymbolSearch'
-import {
-  deleteCollectorSymbol,
-  listCollectorSymbolStatus,
-  upsertCollectorSymbol,
-} from '@/lib/collector_symbols_api'
 import { useMarket } from '@/lib/market-context'
-import type { CollectorSymbolStatus, CollectorSymbolsStatusResponse, ThemeClassification, ThemeConstituent, ThemeDefinition, ThemePriority } from '@/lib/types'
+import type { ThemeClassification, ThemeConstituent, ThemeDefinition, ThemePriority } from '@/lib/types'
 import {
   createTheme,
   deleteConstituent,
@@ -46,11 +41,6 @@ type MemberForm = {
   note: string
 }
 
-type CollectorForm = {
-  symbol: string
-  name: string
-}
-
 const emptyTheme: ThemeForm = {
   theme_code: '',
   theme_name: '',
@@ -65,7 +55,6 @@ const emptyMember: MemberForm = {
   weight: '',
   note: '',
 }
-const emptyCollector: CollectorForm = { symbol: '', name: '' }
 
 function numOrNull(value: string): number | null {
   const text = value.trim()
@@ -78,27 +67,6 @@ function classLabel(value: string): string {
   return classifications.find((c) => c.value === value)?.label ?? value
 }
 
-function formatTs(value: string | null): string {
-  if (!value) return '--'
-  const d = new Date(value)
-  if (Number.isNaN(d.getTime())) return '--'
-  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-}
-
-function healthColor(health: CollectorSymbolStatus['health']): string {
-  if (health === 'ok') return '#059669'
-  if (health === 'warming') return '#b45309'
-  if (health === 'stale') return '#dc2626'
-  return 'var(--text3)'
-}
-
-function healthLabel(health: CollectorSymbolStatus['health']): string {
-  if (health === 'ok') return '正常'
-  if (health === 'warming') return '预热'
-  if (health === 'stale') return '过期'
-  return '停用'
-}
-
 export default function ThemeSettingsPage() {
   const { market, marketLabel } = useMarket()
   const isAshare = market === 'ashare'
@@ -108,16 +76,11 @@ export default function ThemeSettingsPage() {
   const [members, setMembers] = useState<ThemeConstituent[]>([])
   const [themeForm, setThemeForm] = useState<ThemeForm>(emptyTheme)
   const [memberForm, setMemberForm] = useState<MemberForm>(emptyMember)
-  const [collectorForm, setCollectorForm] = useState<CollectorForm>(emptyCollector)
-  const [collectorData, setCollectorData] = useState<CollectorSymbolsStatusResponse | null>(null)
   const [includeDisabled, setIncludeDisabled] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
-  const [collectorBusy, setCollectorBusy] = useState(false)
 
   const activeCount = useMemo(() => themes.filter((t) => t.enabled).length, [themes])
-  const collectorRows = collectorData?.symbols ?? []
 
   const refreshDetail = async (code: string) => {
     const data = await getTheme(market, code)
@@ -146,16 +109,8 @@ export default function ThemeSettingsPage() {
     if (code) await refreshDetail(code)
   }
 
-  const refreshCollectorSymbols = async () => {
-    if (!isAshare) {
-      setCollectorData(null)
-      return
-    }
-    setCollectorData(await listCollectorSymbolStatus(market, includeDisabled))
-  }
-
   useEffect(() => {
-    void Promise.all([refreshThemes(), refreshCollectorSymbols()])
+    void refreshThemes()
       .catch((e) => setError(`加载失败: ${e instanceof Error ? e.message : String(e)}`))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [market, includeDisabled])
@@ -272,50 +227,6 @@ export default function ThemeSettingsPage() {
     }
   }
 
-  const addCollectorSymbol = async () => {
-    if (!isAshare || collectorBusy) return
-    const symbol = collectorForm.symbol.trim().toUpperCase()
-    if (!symbol) { setError('采集标的代码不能为空'); return }
-    setCollectorBusy(true); setError(null); setNotice(null)
-    try {
-      const res = await upsertCollectorSymbol({
-        market,
-        symbol,
-        name: collectorForm.name.trim() || null,
-        enabled: true,
-        collect_snapshot: true,
-        collect_5m: true,
-        collect_signals: true,
-      })
-      setCollectorForm(emptyCollector)
-      await refreshCollectorSymbols()
-      setNotice(
-        res.collector_confirmed
-          ? `${symbol} 已加入采集,collector 已确认${res.refill_queued ? ',5m 补数已排队' : ''}`
-          : `${symbol} 已写入采集清单,但 collector 未确认:${res.collector_message ?? 'timeout'}`,
-      )
-    } catch (e) {
-      setError(`添加采集标的失败: ${e instanceof Error ? e.message : String(e)}`)
-    } finally { setCollectorBusy(false) }
-  }
-
-  const removeCollectorSymbol = async (row: CollectorSymbolStatus) => {
-    const action = row.source === 'manual' ? '删除' : '停用'
-    if (!window.confirm(`${action}采集标的 ${row.name || row.symbol}?`)) return
-    setCollectorBusy(true); setError(null); setNotice(null)
-    try {
-      const res = await deleteCollectorSymbol(market, row.symbol)
-      await refreshCollectorSymbols()
-      setNotice(
-        res.collector_confirmed
-          ? `${row.symbol} 已${action},collector 已确认`
-          : `${row.symbol} 已${action},但 collector 未确认:${res.collector_message ?? 'timeout'}`,
-      )
-    } catch (e) {
-      setError(`${action}采集标的失败: ${e instanceof Error ? e.message : String(e)}`)
-    } finally { setCollectorBusy(false) }
-  }
-
   if (!isAshare) {
     return (
       <div>
@@ -339,7 +250,6 @@ export default function ThemeSettingsPage() {
       </div>
       {activeCount > 45 && <div style={st.warn}>启用题材已超过 45 个,盘中跟踪会变得分散。</div>}
       {error && <div style={st.err}>{error}</div>}
-      {notice && <div style={st.ok}>{notice}</div>}
 
       <div style={st.grid}>
         <section className="panel" style={st.side}>
@@ -456,66 +366,6 @@ export default function ThemeSettingsPage() {
           </div>
         </section>
 
-        <section className="panel" style={st.collector}>
-          <div className="panel-header">
-            采集标的
-            <span style={st.source}>快照 + 5m+ 入库</span>
-          </div>
-          <div style={st.collectorBody}>
-            <div style={st.collectorStats}>
-              <span>启用 {collectorData?.enabled ?? 0}</span>
-              <span>正常 {collectorData?.ok ?? 0}</span>
-              <span>预热 {collectorData?.warming ?? 0}</span>
-              <span>过期 {collectorData?.stale ?? 0}</span>
-            </div>
-            <div style={st.collectorStats}>
-              <span>快照 {collectorData?.snapshot_count ?? 0}</span>
-              <span>5m+ {collectorData?.kline_5m_count ?? 0}</span>
-              <span>信号 {collectorData?.signals_count ?? 0}</span>
-              <span>总计 {collectorData?.total ?? 0}</span>
-            </div>
-            <div style={{ position: 'relative', zIndex: 15, marginBottom: 8 }}>
-              {collectorForm.symbol ? (
-                <div style={st.picked}>
-                  <span><b>{collectorForm.name || collectorForm.symbol}</b> <span style={st.code}>{collectorForm.symbol}</span></span>
-                  <button style={st.ghost} onClick={() => setCollectorForm(emptyCollector)}>清空</button>
-                </div>
-              ) : (
-                <SymbolSearch market={market} coreOnly={false}
-                  placeholder="搜索代码或名称加入采集"
-                  onSelect={(hit: any) => setCollectorForm({ symbol: hit.symbol, name: hit.name || '' })} />
-              )}
-            </div>
-            <div style={st.collectorForm}>
-              <input style={st.input} placeholder="股票代码" value={collectorForm.symbol} onChange={(e) => setCollectorForm({ ...collectorForm, symbol: e.target.value.toUpperCase() })} />
-              <button style={st.btn} disabled={collectorBusy} onClick={() => void addCollectorSymbol()}>{collectorBusy ? '处理中' : '加入采集'}</button>
-            </div>
-            <div style={st.collectorList}>
-              {collectorRows.length === 0 && <div style={st.empty}>暂无采集标的</div>}
-              {collectorRows.map((row) => (
-                <div key={row.symbol} style={{ ...st.collectorRow, opacity: row.enabled ? 1 : 0.5 }}>
-                  <div>
-                    <div style={st.collectorName}>{row.name || row.symbol}</div>
-                    <div style={st.code}>{row.symbol}</div>
-                  </div>
-                  <div style={st.collectorFlags}>
-                    <span style={{ color: healthColor(row.health), fontWeight: 700 }}>{healthLabel(row.health)}</span>
-                    <span>{row.health_reason}</span>
-                    <span>快照 {formatTs(row.snapshot_ts)}</span>
-                    <span>5m {formatTs(row.kline_5m_ts)}</span>
-                    <span>{row.source === 'core' ? '核心' : row.source === 'seed' ? '内置' : '手动'}</span>
-                    {row.collect_snapshot && <span>快照</span>}
-                    {row.collect_5m && <span>5m+</span>}
-                    {row.collect_signals && <span>信号</span>}
-                  </div>
-                  <button style={st.ghostDanger} disabled={collectorBusy} onClick={() => void removeCollectorSymbol(row)}>
-                    {row.source === 'manual' ? '删除' : '停用'}
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
       </div>
     </div>
   )
@@ -527,12 +377,10 @@ const st: Record<string, CSSProperties> = {
   h2: { fontSize: 15, margin: '0 0 10px' },
   sub: { color: 'var(--text3)', fontSize: 13, margin: '0 0 18px' },
   stats: { display: 'flex', gap: 8, color: 'var(--text2)', fontSize: 12, whiteSpace: 'nowrap' },
-  grid: { display: 'grid', gridTemplateColumns: '300px minmax(420px, 1fr) 380px', gap: 16, alignItems: 'start' },
+  grid: { display: 'grid', gridTemplateColumns: '300px minmax(420px, 1fr)', gap: 16, alignItems: 'start' },
   side: { minHeight: 560 },
   main: { minHeight: 560 },
-  collector: { minHeight: 560 },
   body: { padding: '14px 18px' },
-  collectorBody: { padding: 12 },
   filters: { padding: '10px 12px', borderBottom: '1px solid var(--border)' },
   check: { display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text2)', fontSize: 12 },
   themeList: { display: 'flex', flexDirection: 'column', gap: 4, padding: 8, maxHeight: 680, overflow: 'auto' },
@@ -562,7 +410,6 @@ const st: Record<string, CSSProperties> = {
   source: { marginLeft: 8, color: 'var(--text3)', fontSize: 11, fontWeight: 400 },
   formGrid: { display: 'grid', gridTemplateColumns: '1.2fr 1.2fr 0.9fr 0.6fr', gap: 8 },
   memberForm: { display: 'grid', gridTemplateColumns: '1fr 1fr 0.8fr 0.6fr auto', gap: 8, alignItems: 'center', marginBottom: 12 },
-  collectorForm: { display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, alignItems: 'center', marginBottom: 10 },
   input: { width: '100%', minWidth: 0, background: 'var(--bg3)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '8px 9px', fontSize: 13, outline: 'none' },
   actions: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 },
   btn: { background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 14px', cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap' },
@@ -576,9 +423,4 @@ const st: Record<string, CSSProperties> = {
   err: { marginBottom: 12, color: '#dc2626', background: 'rgba(220,38,38,0.08)', border: '1px solid rgba(220,38,38,0.2)', borderRadius: 6, padding: '8px 10px', fontSize: 13 },
   ok: { marginBottom: 12, color: '#047857', background: 'rgba(16,185,129,0.10)', border: '1px solid rgba(16,185,129,0.25)', borderRadius: 6, padding: '8px 10px', fontSize: 13 },
   warn: { marginBottom: 12, color: '#b45309', background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.25)', borderRadius: 6, padding: '8px 10px', fontSize: 13 },
-  collectorStats: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginBottom: 10, color: 'var(--text2)', fontSize: 11 },
-  collectorList: { display: 'grid', gap: 6, maxHeight: 620, overflow: 'auto' },
-  collectorRow: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.1fr) auto', alignItems: 'center', gap: 8, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg2)', padding: '8px 9px' },
-  collectorName: { fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  collectorFlags: { display: 'flex', flexWrap: 'wrap', gap: 4, color: 'var(--text3)', fontSize: 10 },
 }
