@@ -32,6 +32,12 @@ bash scripts/dev-status.sh collector-ashare  # 只检查 A 股采集
 
 打开 http://localhost:3000/dashboard。
 
+盘中看盘能力、启动流程和当前架构见:
+
+```bash
+docs/2026-06-15-ashare-intraday-watch-runbook.md
+```
+
 后台启动日志:
 
 ```bash
