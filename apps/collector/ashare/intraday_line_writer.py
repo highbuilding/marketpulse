@@ -2,6 +2,7 @@
 
 读最新 quote → 算 price + 累计成交额 + 累计成交量 + 均价 → upsert 独立分时库
 + 发 bus:intraday.updated + 写 :current 缓存。只在交易时段写。
+标的集来自 collector_symbols, 不依赖 SSE subscription。
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ import structlog
 from core.cache import keys
 from core.domain.market_calendar import is_trading_day
 from core.domain.market_sessions import is_market_session_open
+from core.persistence.collector_symbol_repo import CollectorSymbolRepo
 from core.persistence.intraday_repo import IntradayLineRepo, IntradayPoint
 
 log = structlog.get_logger(__name__)
@@ -30,9 +32,15 @@ def compute_point(symbol: str, ts: datetime, *, price: float,
 
 
 class IntradayLineWriter:
-    def __init__(self, repo: IntradayLineRepo, redis):
+    def __init__(
+        self,
+        repo: IntradayLineRepo,
+        redis,
+        collector_symbols: CollectorSymbolRepo | None = None,
+    ):
         self._repo = repo
         self._redis = redis
+        self._collector_symbols = collector_symbols
         self._stopped = False
 
     async def write_once(self, symbol: str, *, now: datetime) -> None:
@@ -64,23 +72,15 @@ class IntradayLineWriter:
         except Exception as e:  # noqa: BLE001
             log.warning("intraday.publish_failed", symbol=symbol, error=str(e))
 
-    async def _scan_subscribed(self) -> set[str]:
-        active: set[str] = set()
+    async def _scan_symbols(self) -> set[str]:
+        if self._collector_symbols is None:
+            return set()
         try:
-            cursor = 0
-            while True:
-                cursor, found = await self._redis._r.scan(  # noqa: SLF001
-                    cursor, match="state:subscribe:ashare:*", count=200)
-                for k in found:
-                    key = k.decode() if isinstance(k, bytes) else k
-                    parts = key.split(":")
-                    if len(parts) >= 4:
-                        active.add(parts[3])
-                if cursor == 0:
-                    break
+            return set(await self._collector_symbols.active_symbols(
+                "ashare", capability="snapshot"))
         except Exception as e:  # noqa: BLE001
-            log.warning("intraday.scan_failed", error=str(e))
-        return active
+            log.warning("intraday.symbol_scan_failed", error=str(e))
+            return set()
 
     async def run(self) -> None:
         log.info("intraday_line_writer.started")
@@ -88,12 +88,16 @@ class IntradayLineWriter:
             try:
                 now = datetime.now(timezone.utc)
                 if is_trading_day("ashare") and is_market_session_open("ashare", now):
-                    for symbol in await self._scan_subscribed():
+                    for symbol in await self._scan_symbols():
                         await self.write_once(symbol, now=now)
             except Exception as e:  # noqa: BLE001
                 log.warning("intraday.loop_error", error=str(e))
             await asyncio.sleep(WRITE_INTERVAL_S)
 
 
-async def run_intraday_line_writer(repo: IntradayLineRepo, redis) -> None:
-    await IntradayLineWriter(repo, redis).run()
+async def run_intraday_line_writer(
+    repo: IntradayLineRepo,
+    redis,
+    collector_symbols: CollectorSymbolRepo,
+) -> None:
+    await IntradayLineWriter(repo, redis, collector_symbols).run()

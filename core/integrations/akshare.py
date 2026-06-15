@@ -92,7 +92,12 @@ _FUNC_TO_SOURCE = {
     "stock_zh_a_spot_em": "em",
     "stock_hk_spot_em": "em",
     "stock_cyq_em": "em",
+    # akshare 实际函数名不带 _em 后缀, 但数据源是东方财富。
+    # 若漏映射会默认归到 sina, 导致 EM fallback 的 RemoteDisconnected
+    # 误开 sina breaker, 进一步拖垮 daily reconcile/settlement 主源。
+    "stock_zh_a_hist": "em",
     "stock_zh_a_hist_em": "em",
+    "stock_zh_index_daily_em": "em",
     "fund_etf_spot_em": "em",
     "stock_individual_fund_flow": "em",
     "stock_individual_fund_flow_rank_em": "em",

@@ -230,7 +230,7 @@ async def lifespan(app: FastAPI):
                             watchlist=get_watchlist_service())
     sched.start()
 
-    # === A 股按需 K 线轮询 (SSE 订阅驱动 + 大盘默认) ===
+    # === A 股 K 线轮询 (collector_symbols 驱动) ===
     from apps.collector.ashare.bar_poller import run_bar_poller
     from core.domain.runtime_env import tiered_int as _tiered_int
     # 冷启动让路 reconcile: poller 延迟启动, 避免与 reconcile 并发同拉 5m 触发 sina 限频。
@@ -252,7 +252,7 @@ async def lifespan(app: FastAPI):
     # === A 股分时图写入器 (quote 驱动, 10s 一次) ===
     from apps.collector.ashare.intraday_line_writer import run_intraday_line_writer
     _intraday_task = asyncio.create_task(
-        run_intraday_line_writer(intraday_repo, redis_cache),
+        run_intraday_line_writer(intraday_repo, redis_cache, get_collector_symbol_repo()),
         name="ashare.intraday_line_writer",
     )
 

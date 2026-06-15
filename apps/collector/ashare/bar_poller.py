@@ -1,11 +1,9 @@
-"""A 股按需 K 线轮询 (SSE 订阅驱动).
+"""A 股 K 线采集清单轮询.
 
-SSE 订阅 → Redis state:subscribe:ashare:{symbol}:{interval} → bar_poller 检测
-→ 启动对应标的的 10s 定时轮询 → DuckDB + Redis + SSE 总线
+collector_symbols → slot scheduler → 5m 直取 → DuckDB + Redis + SSE 总线
 
-仅交易时段轮询。SSE 断开 → Redis key 过期 → 轮询自动停止。
-
-支持 1m/5m/15m/30m 周期 (sina stock_zh_a_minute 原生提供).
+仅交易时段轮询。5m 收线后派生 15m/30m/60m/4h, 并同步生成当日 1d
+进行态(final=false)。采集任务只和采集清单绑定, 不依赖 SSE subscription。
 """
 from __future__ import annotations
 
@@ -15,14 +13,17 @@ import json
 import random
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import structlog
 
 from core.cache import keys
 from core.cache.redis_client import RedisCache
 from core.cache.redis_bars_cache import RedisBarsCache
+from core.domain.derived_provisional import synthesize_daily_provisional
 from core.domain.market_calendar import is_trading_day
 from core.domain.market_sessions import is_market_session_open
+from core.domain.models import Bar
 from core.domain.runtime_env import tiered_int
 from core.persistence.collector_symbol_repo import CollectorSymbolRepo
 from core.persistence.duckdb_repo import BarRepo
@@ -44,12 +45,7 @@ MAX_CONCURRENCY = tiered_int("BAR_POLLER_MAX_CONCURRENCY", test=3, prod=3)
 # 支持从 sina 拉的周期 → ak_call period 参数
 INTERVAL_TO_PERIOD = {"5m": "5", "15m": "15", "30m": "30"}
 
-# 大盘默认标的 (始终轮询, 不受 SSE 订阅影响)
-_DEFAULT_SYMBOLS = (
-    "000001.SH", "399001.SZ", "000300.SH", "399006.SZ",
-    "000905.SH", "000852.SH", "000688.SH", "000016.SH",
-)
-_DEFAULT_INTERVALS = ("5m", "15m", "30m")
+_CN_TZ = ZoneInfo("Asia/Shanghai")
 
 
 def _slot_for_symbol(symbol: str) -> int:
@@ -122,13 +118,24 @@ class BarPoller:
         if not fresh:
             return
 
-        # DuckDB upsert(仅新增已收线根)
+        daily_provisional: Bar | None = None
+        if interval == "5m":
+            daily_provisional = self._build_daily_provisional(
+                symbol, now=now, fresh_5m=fresh)
+
+        to_insert = [*fresh]
+        if daily_provisional is not None:
+            to_insert.append(daily_provisional)
+
+        # DuckDB upsert(新增已收线根 + 1d 进行态托底)
         try:
-            self._repo.insert_bars(fresh)
+            self._repo.insert_bars(to_insert)
         except Exception as e:  # noqa: BLE001
             log.warning("bar_poller.db_write_failed",
                         symbol=symbol, interval=interval, error=str(e))
         await self._redis_bars.upsert_tail("ashare", symbol, interval, fresh)
+        if daily_provisional is not None:
+            await self._publish_daily_provisional(daily_provisional)
 
         # 发布最新已收线 bar 到 SSE 总线(final=true)
         latest = fresh[-1]
@@ -149,7 +156,6 @@ class BarPoller:
             log.warning("bar_poller.xadd_failed", error=str(e))
 
         # 5m 收线触发大周期事件驱动聚合 + 发 bus
-        # 审计 B5: 15m/30m 走源头直取(本 poller 已直取),不再聚合,只聚合 60m/4h(无直取源)
         if interval == "5m":
             from apps.collector.jobs.aggregate_derived import aggregate_and_publish
             await aggregate_and_publish(
@@ -157,47 +163,95 @@ class BarPoller:
                 targets=("15m", "30m", "60m", "4h"), now=now,
             )
 
+    def _today_ts(self, now: datetime) -> datetime:
+        bjt_date = now.astimezone(_CN_TZ).date()
+        return datetime(
+            bjt_date.year, bjt_date.month, bjt_date.day, tzinfo=_CN_TZ,
+        ).astimezone(timezone.utc)
+
+    def _build_daily_provisional(
+        self, symbol: str, *, now: datetime, fresh_5m: list[Bar],
+    ) -> Bar | None:
+        """从今日已收线 5m 合成 1d final=false。
+
+        若今日已存在 final=true 日线, 不再写 final=false, 避免收盘定稿后被
+        后续轮询降级覆盖。
+        """
+        today_ts = self._today_ts(now)
+        try:
+            closed_daily = self._repo.fetch_history(
+                "ashare", symbol, today_ts, today_ts,
+                interval="1d", closed_only=True,
+            )
+        except Exception:  # noqa: BLE001
+            closed_daily = []
+        if not isinstance(closed_daily, list):
+            closed_daily = []
+        if closed_daily:
+            return None
+
+        try:
+            existing_5m = self._repo.fetch_history(
+                "ashare", symbol, today_ts, now,
+                interval="5m", closed_only=True,
+            )
+        except Exception:  # noqa: BLE001
+            existing_5m = []
+        if not isinstance(existing_5m, list):
+            existing_5m = []
+
+        by_ts = {b.ts: b for b in existing_5m if b.ts >= today_ts}
+        for b in fresh_5m:
+            if b.ts >= today_ts:
+                by_ts[b.ts] = b
+        today_5m = [by_ts[k] for k in sorted(by_ts)]
+        if not today_5m:
+            return None
+
+        latest_price = float(today_5m[-1].close)
+        bar = synthesize_daily_provisional(
+            today_5m, market="ashare", symbol=symbol,
+            today_ts=today_ts, price=latest_price,
+        )
+        if bar is None:
+            return None
+        return Bar(
+            market=bar.market, symbol=bar.symbol, ts=bar.ts,
+            open=bar.open, high=bar.high, low=bar.low, close=bar.close,
+            volume=bar.volume, interval="1d", final=False,
+        )
+
+    async def _publish_daily_provisional(self, bar: Bar) -> None:
+        await self._redis_bars.upsert_tail("ashare", bar.symbol, "1d", [bar])
+        payload = {
+            "market": "ashare", "symbol": bar.symbol,
+            "interval": "1d", "ts": bar.ts.isoformat(),
+            "open": float(bar.open), "high": float(bar.high),
+            "low": float(bar.low), "close": float(bar.close),
+            "volume": int(bar.volume), "final": False,
+        }
+        try:
+            await self._redis._r.xadd(  # noqa: SLF001
+                keys.BUS_BARS_UPDATED,
+                {"data": json.dumps(payload).encode()},
+                maxlen=10000, approximate=True,
+            )
+            await self._redis.set_msgpack(
+                keys.cache_bars_current("ashare", bar.symbol, "1d"),
+                payload, ttl_s=86400,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("bar_poller.daily_provisional_publish_failed",
+                        symbol=bar.symbol, error=str(e))
+
     # ------------------------------------------------------------------
-    # 订阅扫描 + 任务管理
+    # 采集任务扫描 + 任务管理
     # ------------------------------------------------------------------
 
-    async def _scan_subscriptions(self) -> set[str]:
+    async def _scan_collection_tasks(self) -> set[str]:
         """采集集 = collector_symbols。仅 5m 直取,15m/30m/60m/4h 由 5m 聚合。"""
         symbols = await self._collector_symbols.active_symbols("ashare", capability="5m")
         return {self._task_key(symbol, "5m") for symbol in symbols}
-
-    async def _scan_subscriptions_legacy(self) -> set[str]:
-        """[废弃] 旧的订阅驱动扫描, 保留备查。"""
-        active: set[str] = set()
-
-        # 大盘默认始终轮询
-        for sym in _DEFAULT_SYMBOLS:
-            for iv in _DEFAULT_INTERVALS:
-                active.add(self._task_key(sym, iv))
-
-        # 扫描 SSE 订阅
-        try:
-            # Redis keys 扫描 (小量, 安全)
-            cursor = 0
-            pattern = "state:subscribe:*"
-            while True:
-                cursor, found = await self._redis._r.scan(  # noqa: SLF001
-                    cursor, match=pattern, count=100,
-                )
-                for k in found:
-                    k_str = k.decode() if isinstance(k, bytes) else k
-                    # state:subscribe:{market}:{symbol}:{interval}
-                    parts = k_str.split(":")
-                    if len(parts) >= 5 and parts[2] == "ashare":
-                        symbol = parts[3]
-                        interval = parts[4]
-                        active.add(self._task_key(symbol, interval))
-                if cursor == 0:
-                    break
-        except Exception as e:  # noqa: BLE001
-            log.warning("bar_poller.scan_failed", error=str(e))
-
-        return active
 
     def _due_tasks(self, active: set[str], *, now_s: int) -> list[str]:
         phase = now_s % WINDOW_S
@@ -224,7 +278,7 @@ class BarPoller:
     # ------------------------------------------------------------------
 
     async def run(self) -> None:
-        """主调度循环: 定期扫描订阅, 同步任务."""
+        """主调度循环: 定期扫描采集任务, 同步任务."""
         log.info("bar_poller.start",
                  mode="collector_symbols_slot_scheduler",
                  scan_interval_s=SCAN_INTERVAL_S,
@@ -232,7 +286,7 @@ class BarPoller:
                  max_concurrency=MAX_CONCURRENCY)
         while not self._stopped:
             try:
-                active = await self._scan_subscriptions()
+                active = await self._scan_collection_tasks()
                 if is_trading_day("ashare") and is_market_session_open("ashare"):
                     due = self._due_tasks(active, now_s=int(time.time()))
                     if due:

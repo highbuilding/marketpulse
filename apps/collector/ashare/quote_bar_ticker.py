@@ -2,7 +2,7 @@
 
 每 10s 读最新 quote, 对每个被 SSE 订阅的 (symbol, interval), 维护当前未收线桶的
 进行中 bar (high/low/close 随 quote 跳), 推 final=false + 写 :current, 不入库。
-收线由源头采集 (bar_poller) 负责。对齐 crypto 的进行中态体验。
+收线和 1d 进行态入库都由采集清单驱动的 bar_poller 负责。对齐 crypto 的进行中态体验。
 """
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ from core.domain.bucket_state import BucketState, current_bucket, seed_baseline,
 from core.domain.derived_provisional import synthesize_provisional, synthesize_daily_provisional
 from core.domain.market_calendar import is_trading_day
 from core.domain.market_sessions import is_market_session_open
-from core.domain.models import Bar
 
 log = structlog.get_logger(__name__)
 
@@ -142,23 +141,6 @@ class QuoteBarTicker:
             )
         if bar is None:
             return
-        # 进行态日K入库(带 final=False): 让前端历史分页也能看到当日这根(盘后进行态停推
-        # + sina 日线定稿慢未入库时, 至少有进行态根托底)。收线后由 daily_settlement 的
-        # 权威数据 ON CONFLICT 覆盖翻 final=True。信号/聚合/缺口检测查 closed_only 排除它,
-        # 故不污染 CD(收线才扫)。仅 1d 入库(周/月进行态仍只走易失通道, 维持原状)。
-        if interval == "1d" and self._repo is not None:
-            try:
-                self._repo.insert_bars([
-                    Bar(
-                        market="ashare", symbol=symbol, ts=bar.ts,
-                        open=bar.open, high=bar.high, low=bar.low,
-                        close=bar.close, volume=bar.volume, interval="1d",
-                        final=False,
-                    )
-                ])
-            except Exception as e:  # noqa: BLE001
-                log.warning("ticker.provisional_insert_failed",
-                            symbol=symbol, interval=interval, error=str(e))
         payload = {
             "market": "ashare", "symbol": symbol, "interval": interval,
             "ts": bar.ts.isoformat(),

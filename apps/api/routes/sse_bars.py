@@ -38,7 +38,8 @@ def _sse_event(event: str, data: dict) -> bytes:
 async def _register_subscriptions(symbols: set[str], interval: str, redis_cache) -> None:
     """把'谁在看'写进订阅登记表 (TTL 120s, 边看边续期)。
 
-    collector 的进行中态 ticker / 分时 writer / poller 扫这张表决定给哪些标的算实时。
+    collector 的进行中态 ticker 扫这张表决定给哪些已打开图表推 current bar。
+    A 股 K 线/分时入库采集不再依赖这张表, 统一由 collector_symbols 驱动。
     每个 symbol 按其市场写 state:subscribe:{market}:{symbol}:{interval}。失败仅忽略(优雅降级)。
     """
     for sym in symbols:
@@ -64,7 +65,7 @@ async def _stream_gen(symbols: set[str], interval: str, hub, redis_cache):
         server_ts = datetime.now(timezone.utc).isoformat()
         yield _sse_event("connected", {"symbols": list(symbols),
                                        "interval": interval, "server_ts": server_ts})
-        # 写订阅登记表, 激活 collector 进行中态 ticker / 分时 writer
+        # 写订阅登记表, 激活 collector 进行中态 ticker
         await _register_subscriptions(symbols, interval, redis_cache)
         last_reg = datetime.now(timezone.utc)
         for sym in symbols:
@@ -86,7 +87,7 @@ async def _stream_gen(symbols: set[str], interval: str, hub, redis_cache):
             now = datetime.now(timezone.utc)
             # 续期订阅登记表: 每 60s 一次, 不论有无消息(订阅 TTL 120s)。
             # 关键: 活跃推送的标的消息不断、永不超时, 必须在消息路径也续期, 否则
-            # 2 分钟后 state:subscribe 过期 → collector 停掉该标的实时(回归)。
+            # 2 分钟后 state:subscribe 过期 → 已打开图表停掉 current bar 推送。
             if (now - last_reg).total_seconds() >= _REGISTER_REFRESH_S:
                 await _register_subscriptions(symbols, interval, redis_cache)
                 last_reg = now

@@ -123,3 +123,43 @@ async def test_poll_one_empty_fetch_noop(monkeypatch):
     await poller._poll_one("600519.SH", "5m")
     repo.insert_bars.assert_not_called()
     repo.fetch_history_paged.assert_not_called()
+
+
+def test_build_daily_provisional_from_collector_5m():
+    """1d 进行态从采集链路的 5m 收线合成, 不依赖 SSE 订阅。"""
+    now = datetime(2026, 6, 15, 2, 40, tzinfo=timezone.utc)  # BJT 10:40
+    today_ts = datetime(2026, 6, 14, 16, tzinfo=timezone.utc)
+    b1 = _bar(datetime(2026, 6, 15, 1, 35, tzinfo=timezone.utc))
+    b2 = _bar(datetime(2026, 6, 15, 1, 40, tzinfo=timezone.utc))
+
+    repo = MagicMock()
+    repo.fetch_history.side_effect = [
+        [],      # 今日无 final=true 日线
+        [b1],    # DB 已有今日 5m
+    ]
+    redis = MagicMock(); redis._r = MagicMock(); redis._r.xadd = AsyncMock()
+    poller = _make_poller(repo, redis, [])
+
+    bar = poller._build_daily_provisional("600519.SH", now=now, fresh_5m=[b2])
+
+    assert bar is not None
+    assert bar.ts == today_ts
+    assert bar.interval == "1d"
+    assert bar.final is False
+    assert bar.open == b1.open
+    assert bar.close == b2.close
+    assert bar.volume == b1.volume + b2.volume
+
+
+def test_build_daily_provisional_keeps_final_daily_authority():
+    """今日已有 final=true 日线时, 不允许 5m 进行态把它降级覆盖。"""
+    now = datetime(2026, 6, 15, 2, 40, tzinfo=timezone.utc)
+    daily = _bar(datetime(2026, 6, 14, 16, tzinfo=timezone.utc), interval="1d")
+    fresh = _bar(datetime(2026, 6, 15, 1, 40, tzinfo=timezone.utc))
+
+    repo = MagicMock()
+    repo.fetch_history.return_value = [daily]
+    redis = MagicMock(); redis._r = MagicMock(); redis._r.xadd = AsyncMock()
+    poller = _make_poller(repo, redis, [])
+
+    assert poller._build_daily_provisional("600519.SH", now=now, fresh_5m=[fresh]) is None
