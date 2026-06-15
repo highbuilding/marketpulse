@@ -245,3 +245,36 @@ async def test_watchlist_against_theme_risk(tmp_path: Path):
 
     assert [m.title for m in messages] == ["自选股 000005.SZ 逆测试题材走弱"]
     assert messages[0].category == "risk"
+
+
+@pytest.mark.asyncio
+async def test_index_pulse_weak_message_from_core_indices(tmp_path: Path):
+    svc = await _service(tmp_path)
+    ts = datetime(2026, 6, 15, 1, 35, tzinfo=timezone.utc)
+
+    assert await _tick(svc, "000001.SH", -0.4, ts) == []
+    assert await _tick(svc, "399001.SZ", -0.5, ts) == []
+    assert await _tick(svc, "399006.SZ", -0.7, ts) == []
+    assert await _tick(svc, "000300.SH", -0.3, ts) == []
+    messages = await _tick(svc, "000905.SH", -0.8, ts)
+
+    assert [m.title for m in messages] == ["大盘脉搏偏弱"]
+    assert messages[0].category == "index"
+    assert messages[0].payload["down_count"] == 5
+    assert messages[0].payload["state"] == "weak"
+
+
+@pytest.mark.asyncio
+async def test_index_style_large_defense_risk(tmp_path: Path):
+    svc = await _service(tmp_path)
+    ts = datetime(2026, 6, 15, 1, 35, tzinfo=timezone.utc)
+
+    assert await _tick(svc, "000001.SH", 0.1, ts) == []
+    assert await _tick(svc, "000300.SH", 0.2, ts) == []
+    assert await _tick(svc, "399006.SZ", -0.4, ts) == []
+    assert await _tick(svc, "000016.SH", 0.5, ts) == []
+    messages = await _tick(svc, "000852.SH", -0.7, ts)
+
+    assert [m.title for m in messages] == ["权重护盘但小票走弱"]
+    assert messages[0].category == "risk"
+    assert messages[0].payload["small_vs_large_pct"] == pytest.approx(-1.2)

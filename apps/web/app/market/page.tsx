@@ -4,7 +4,6 @@ import useSWR from 'swr'
 import { useMarket } from '@/lib/market-context'
 import { fetchHealth } from '@/lib/api'
 import { LiveMessagesPanel } from '@/components/LiveMessagesPanel'
-import { MarketPulsePanel } from '@/components/MarketPulsePanel'
 
 export default function MarketPage() {
   const { market, marketLabel } = useMarket()
@@ -24,7 +23,6 @@ export default function MarketPage() {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
         <LiveMessagesPanel />
-        <MarketPulsePanel />
       </div>
     </div>
   )

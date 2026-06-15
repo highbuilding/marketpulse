@@ -19,6 +19,19 @@ _DEDUP_TTL = timedelta(minutes=5)
 _VOLUME_HISTORY_MAX = 24
 _VOLUME_SPIKE_MIN_HISTORY = 4
 _VOLUME_SPIKE_RATIO = 2.5
+_INDEX_NAMES = {
+    "000001.SH": "上证指数",
+    "399001.SZ": "深证成指",
+    "399006.SZ": "创业板指",
+    "000300.SH": "沪深300",
+    "000905.SH": "中证500",
+    "000852.SH": "中证1000",
+    "000016.SH": "上证50",
+    "000688.SH": "科创50",
+}
+_LARGE_CAP_INDEX = "000016.SH"
+_SMALL_CAP_INDEX = "000852.SH"
+_GROWTH_INDEX = "399006.SZ"
 
 
 @dataclass
@@ -64,6 +77,13 @@ class _ThemeRuntimeState:
     updated_at: datetime | None = None
 
 
+@dataclass
+class _MarketPulseRuntimeState:
+    breadth_state: str = "neutral"
+    style_state: str = "neutral"
+    updated_at: datetime | None = None
+
+
 class LiveMessageService:
     def __init__(self, theme_repo: ThemeRepo, watchlist: WatchlistService) -> None:
         self.theme_repo = theme_repo
@@ -75,6 +95,7 @@ class LiveMessageService:
         self._quotes: dict[str, _QuoteState] = {}
         self._last_emit: dict[str, datetime] = {}
         self._theme_states: dict[str, _ThemeRuntimeState] = {}
+        self._market_pulse = _MarketPulseRuntimeState()
         self._bar_volumes: dict[tuple[str, str], list[int]] = {}
 
     async def handle_quote_tick(
@@ -103,10 +124,143 @@ class LiveMessageService:
         self._quotes[symbol] = quote
 
         messages: list[LiveMessage] = []
+        messages.extend(self._index_pulse_messages(market, quote, source_event_id))
         messages.extend(self._watchlist_messages(quote, prev, source_event_id))
         messages.extend(await self._theme_messages(market, quote, source_event_id))
         messages.extend(self._watchlist_theme_risk_messages(market, quote, source_event_id))
         return self._dedupe(messages, now=ts)
+
+    def _index_pulse_messages(
+        self,
+        market: str,
+        quote: _QuoteState,
+        source_event_id: str | None,
+    ) -> list[LiveMessage]:
+        if quote.symbol not in _INDEX_NAMES:
+            return []
+        known = [self._quotes[s] for s in _INDEX_NAMES if s in self._quotes]
+        if len(known) < 4:
+            return []
+
+        up = [s for s in known if s.change_pct > 0]
+        down = [s for s in known if s.change_pct < 0]
+        ordered = sorted(known, key=lambda s: s.change_pct, reverse=True)
+        leader = ordered[0]
+        laggard = ordered[-1]
+        avg = sum(s.change_pct for s in known) / len(known)
+        amount_values = [s.amount for s in known if s.amount is not None]
+        total_amount = sum(amount_values) if amount_values else None
+        payload = {
+            "known_count": len(known),
+            "up_count": len(up),
+            "down_count": len(down),
+            "avg_change_pct": avg,
+            "leader": {"symbol": leader.symbol, "name": _INDEX_NAMES.get(leader.symbol), "change_pct": leader.change_pct},
+            "laggard": {"symbol": laggard.symbol, "name": _INDEX_NAMES.get(laggard.symbol), "change_pct": laggard.change_pct},
+            "indices": [
+                {"symbol": s.symbol, "name": _INDEX_NAMES.get(s.symbol), "change_pct": s.change_pct, "price": s.price}
+                for s in ordered
+            ],
+            "total_amount": total_amount,
+            "rule_version": RULE_VERSION,
+        }
+
+        messages: list[LiveMessage] = []
+        breadth_state = "neutral"
+        if len(up) >= 5 and avg >= 0.25 and leader.change_pct >= 0.6:
+            breadth_state = "strong"
+        elif len(down) >= 5 and avg <= -0.25 and laggard.change_pct <= -0.6:
+            breadth_state = "weak"
+
+        if breadth_state == "strong" and self._market_pulse.breadth_state != "strong":
+            messages.append(self._message(
+                market=market,
+                ts=quote.ts,
+                level="watch",
+                category="index",
+                title="大盘脉搏偏强",
+                body=f"{len(known)}个核心指数中{len(up)}个上涨,{_INDEX_NAMES.get(leader.symbol, leader.symbol)}领涨 {leader.change_pct:.2f}%。",
+                source_event="bus:quote.tick",
+                source_event_id=source_event_id,
+                dedupe_key="index:pulse:strong",
+                symbol=leader.symbol,
+                symbols=[s.symbol for s in ordered],
+                payload=payload | {"state": breadth_state},
+            ))
+        elif breadth_state == "weak" and self._market_pulse.breadth_state != "weak":
+            messages.append(self._message(
+                market=market,
+                ts=quote.ts,
+                level="warning",
+                category="index",
+                title="大盘脉搏偏弱",
+                body=f"{len(known)}个核心指数中{len(down)}个下跌,{_INDEX_NAMES.get(laggard.symbol, laggard.symbol)}领跌 {laggard.change_pct:.2f}%。",
+                source_event="bus:quote.tick",
+                source_event_id=source_event_id,
+                dedupe_key="index:pulse:weak",
+                symbol=laggard.symbol,
+                symbols=[s.symbol for s in ordered],
+                payload=payload | {"state": breadth_state},
+            ))
+
+        style_state = "neutral"
+        large = self._quotes.get(_LARGE_CAP_INDEX)
+        small = self._quotes.get(_SMALL_CAP_INDEX)
+        growth = self._quotes.get(_GROWTH_INDEX)
+        if large and small:
+            small_vs_large = small.change_pct - large.change_pct
+            growth_vs_large = growth.change_pct - large.change_pct if growth else None
+            style_payload = payload | {
+                "large": {"symbol": large.symbol, "change_pct": large.change_pct},
+                "small": {"symbol": small.symbol, "change_pct": small.change_pct},
+                "growth": {"symbol": growth.symbol, "change_pct": growth.change_pct} if growth else None,
+                "small_vs_large_pct": small_vs_large,
+                "growth_vs_large_pct": growth_vs_large,
+            }
+            if large.change_pct >= 0.3 and small.change_pct <= -0.5:
+                style_state = "large_defense"
+                title = "权重护盘但小票走弱"
+                body = f"上证50 {large.change_pct:.2f}%,中证1000 {small.change_pct:.2f}%,风格分化扩大。"
+                messages.append(self._message(
+                    market=market, ts=quote.ts, level="warning", category="risk",
+                    title=title, body=body,
+                    source_event="bus:quote.tick", source_event_id=source_event_id,
+                    dedupe_key="index:style:large_defense",
+                    symbol=small.symbol,
+                    symbols=[large.symbol, small.symbol, *([growth.symbol] if growth else [])],
+                    payload=style_payload | {"state": style_state},
+                ))
+            elif small_vs_large >= 0.8 and (growth_vs_large is None or growth_vs_large >= 0.3):
+                style_state = "small_growth_stronger"
+                messages.append(self._message(
+                    market=market, ts=quote.ts, level="watch", category="index",
+                    title="小票成长强于权重",
+                    body=f"中证1000相对上证50强 {small_vs_large:.2f} 个百分点。",
+                    source_event="bus:quote.tick", source_event_id=source_event_id,
+                    dedupe_key="index:style:small_growth_stronger",
+                    symbol=small.symbol,
+                    symbols=[large.symbol, small.symbol, *([growth.symbol] if growth else [])],
+                    payload=style_payload | {"state": style_state},
+                ))
+            elif small_vs_large <= -0.8:
+                style_state = "large_stronger"
+                messages.append(self._message(
+                    market=market, ts=quote.ts, level="watch", category="index",
+                    title="权重强于小票",
+                    body=f"上证50相对中证1000强 {abs(small_vs_large):.2f} 个百分点。",
+                    source_event="bus:quote.tick", source_event_id=source_event_id,
+                    dedupe_key="index:style:large_stronger",
+                    symbol=large.symbol,
+                    symbols=[large.symbol, small.symbol, *([growth.symbol] if growth else [])],
+                    payload=style_payload | {"state": style_state},
+                ))
+
+        self._market_pulse = _MarketPulseRuntimeState(
+            breadth_state=breadth_state,
+            style_state=style_state,
+            updated_at=quote.ts,
+        )
+        return messages
 
     async def handle_signal_new(
         self,
