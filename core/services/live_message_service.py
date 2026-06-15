@@ -19,6 +19,9 @@ _DEDUP_TTL = timedelta(minutes=5)
 _VOLUME_HISTORY_MAX = 24
 _VOLUME_SPIKE_MIN_HISTORY = 4
 _VOLUME_SPIKE_RATIO = 2.5
+_BREADTH_MIN_SYMBOLS = 20
+_BREADTH_STRONG_RATIO = 0.68
+_BREADTH_WEAK_RATIO = 0.68
 _INDEX_NAMES = {
     "000001.SH": "上证指数",
     "399001.SZ": "深证成指",
@@ -80,6 +83,7 @@ class _ThemeRuntimeState:
 @dataclass
 class _MarketPulseRuntimeState:
     breadth_state: str = "neutral"
+    universe_width_state: str = "neutral"
     style_state: str = "neutral"
     updated_at: datetime | None = None
 
@@ -125,6 +129,7 @@ class LiveMessageService:
 
         messages: list[LiveMessage] = []
         messages.extend(self._index_pulse_messages(market, quote, source_event_id))
+        messages.extend(self._collector_breadth_messages(market, quote, source_event_id))
         messages.extend(self._watchlist_messages(quote, prev, source_event_id))
         messages.extend(await self._theme_messages(market, quote, source_event_id))
         messages.extend(self._watchlist_theme_risk_messages(market, quote, source_event_id))
@@ -203,6 +208,49 @@ class LiveMessageService:
                 payload=payload | {"state": breadth_state},
             ))
 
+        core_lineup = {
+            "000001.SH": self._quotes.get("000001.SH"),
+            "000300.SH": self._quotes.get("000300.SH"),
+            _GROWTH_INDEX: self._quotes.get(_GROWTH_INDEX),
+            _SMALL_CAP_INDEX: self._quotes.get(_SMALL_CAP_INDEX),
+        }
+        if all(core_lineup.values()):
+            core_values = [s for s in core_lineup.values() if s is not None]
+            core_up = [s for s in core_values if s.change_pct >= 0.35]
+            core_down = [s for s in core_values if s.change_pct <= -0.35]
+            if len(core_up) >= 3 and self._market_pulse.breadth_state != "resonance_up":
+                messages.append(self._message(
+                    market=market,
+                    ts=quote.ts,
+                    level="watch",
+                    category="index",
+                    title="核心指数共振走强",
+                    body=f"上证、沪深300、创业板和中证1000中 {len(core_up)} 个涨幅超过 0.35%。",
+                    source_event="bus:quote.tick",
+                    source_event_id=source_event_id,
+                    dedupe_key="index:resonance:up",
+                    symbol=leader.symbol,
+                    symbols=[s.symbol for s in core_values],
+                    payload=payload | {"state": "resonance_up"},
+                ))
+                breadth_state = "resonance_up"
+            elif len(core_down) >= 3 and self._market_pulse.breadth_state != "resonance_down":
+                messages.append(self._message(
+                    market=market,
+                    ts=quote.ts,
+                    level="warning",
+                    category="index",
+                    title="核心指数共振走弱",
+                    body=f"上证、沪深300、创业板和中证1000中 {len(core_down)} 个跌幅超过 0.35%。",
+                    source_event="bus:quote.tick",
+                    source_event_id=source_event_id,
+                    dedupe_key="index:resonance:down",
+                    symbol=laggard.symbol,
+                    symbols=[s.symbol for s in core_values],
+                    payload=payload | {"state": "resonance_down"},
+                ))
+                breadth_state = "resonance_down"
+
         style_state = "neutral"
         large = self._quotes.get(_LARGE_CAP_INDEX)
         small = self._quotes.get(_SMALL_CAP_INDEX)
@@ -257,7 +305,107 @@ class LiveMessageService:
 
         self._market_pulse = _MarketPulseRuntimeState(
             breadth_state=breadth_state,
+            universe_width_state=self._market_pulse.universe_width_state,
             style_state=style_state,
+            updated_at=quote.ts,
+        )
+        return messages
+
+    def _collector_breadth_messages(
+        self,
+        market: str,
+        quote: _QuoteState,
+        source_event_id: str | None,
+    ) -> list[LiveMessage]:
+        known = [
+            q for symbol, q in self._quotes.items()
+            if symbol not in _INDEX_NAMES and (symbol.endswith(".SH") or symbol.endswith(".SZ"))
+        ]
+        if len(known) < _BREADTH_MIN_SYMBOLS:
+            return []
+        up = [s for s in known if s.change_pct > 0]
+        down = [s for s in known if s.change_pct < 0]
+        flat = len(known) - len(up) - len(down)
+        avg = sum(s.change_pct for s in known) / len(known)
+        up_ratio = len(up) / len(known)
+        down_ratio = len(down) / len(known)
+        ordered = sorted(known, key=lambda s: s.change_pct, reverse=True)
+        leader = ordered[0]
+        laggard = ordered[-1]
+        width_state = "neutral"
+        if up_ratio >= _BREADTH_STRONG_RATIO and avg >= 0.35:
+            width_state = "strong"
+        elif down_ratio >= _BREADTH_WEAK_RATIO and avg <= -0.35:
+            width_state = "weak"
+        payload = {
+            "sample_source": "collector_symbols",
+            "sample_scope": "当前采集清单,非全A",
+            "sample_count": len(known),
+            "up_count": len(up),
+            "down_count": len(down),
+            "flat_count": flat,
+            "up_ratio": up_ratio,
+            "down_ratio": down_ratio,
+            "avg_change_pct": avg,
+            "leader": {"symbol": leader.symbol, "change_pct": leader.change_pct},
+            "laggard": {"symbol": laggard.symbol, "change_pct": laggard.change_pct},
+            "rule_version": RULE_VERSION,
+        }
+        messages: list[LiveMessage] = []
+        if width_state == "strong" and self._market_pulse.universe_width_state != "strong":
+            messages.append(self._message(
+                market=market,
+                ts=quote.ts,
+                level="watch",
+                category="index",
+                title="采集样本宽度偏强",
+                body=f"采集清单 {len(known)} 个标的中 {len(up)} 个上涨,平均涨跌幅 {avg:.2f}%。",
+                source_event="bus:quote.tick",
+                source_event_id=source_event_id,
+                dedupe_key="collector_breadth:strong",
+                symbol=leader.symbol,
+                symbols=[s.symbol for s in ordered[:8]],
+                payload=payload | {"state": width_state},
+            ))
+        elif width_state == "weak" and self._market_pulse.universe_width_state != "weak":
+            messages.append(self._message(
+                market=market,
+                ts=quote.ts,
+                level="warning",
+                category="index",
+                title="采集样本宽度偏弱",
+                body=f"采集清单 {len(known)} 个标的中 {len(down)} 个下跌,平均涨跌幅 {avg:.2f}%。",
+                source_event="bus:quote.tick",
+                source_event_id=source_event_id,
+                dedupe_key="collector_breadth:weak",
+                symbol=laggard.symbol,
+                symbols=[s.symbol for s in ordered[-8:]],
+                payload=payload | {"state": width_state},
+            ))
+
+        if self._market_pulse.breadth_state in {"strong", "resonance_up"} and width_state == "weak":
+            messages.append(self._message(
+                market=market,
+                ts=quote.ts,
+                level="warning",
+                category="risk",
+                title="指数偏强但采集样本背离",
+                body=f"核心指数偏强,但采集清单 {len(down)} / {len(known)} 个标的下跌。",
+                source_event="bus:quote.tick",
+                source_event_id=source_event_id,
+                dedupe_key="risk:index_vs_collector_breadth",
+                symbol=laggard.symbol,
+                symbols=[s.symbol for s in ordered[-8:]],
+                payload=payload | {
+                    "state": "index_up_width_down",
+                    "index_state": self._market_pulse.breadth_state,
+                },
+            ))
+
+        self._market_pulse = _MarketPulseRuntimeState(
+            breadth_state=self._market_pulse.breadth_state,
+            universe_width_state=width_state,
+            style_state=self._market_pulse.style_state,
             updated_at=quote.ts,
         )
         return messages
@@ -423,28 +571,61 @@ class LiveMessageService:
             if ev is None:
                 continue
             prev = self._theme_states.get(theme_code, _ThemeRuntimeState())
-            current_state = "strength" if len(ev.up) >= 3 and ev.leader.change_pct >= 1.0 else (
-                "weakness" if len(ev.down) >= 3 and ev.laggard.change_pct <= -1.0 else "neutral"
-            )
+            current_state = _theme_state(ev, prev)
             await self._persist_theme_eval(market, quote.ts, ev, current_state, prev)
-            if current_state == "strength":
+            if current_state == "launch":
                 messages.append(self._message(
                     market=market,
                     ts=quote.ts,
                     level="watch",
                     category="theme",
-                    title=f"{ctx.definition.theme_name}走强",
+                    title=f"{ctx.definition.theme_name}启动",
                     body=(
-                        f"{len(ctx.symbols)}只成分股中{len(ev.up)}只上涨,"
-                        f"{ev.leader.symbol} 领涨 {ev.leader.change_pct:.2f}%。"
+                        f"{len(ev.known)}只已采成分中{len(ev.up)}只上涨,"
+                        f"{ev.leader.symbol} 领涨 {ev.leader.change_pct:.2f}%,核心上涨 {len(ev.core_up)} 只。"
                     ),
                     source_event="bus:quote.tick",
                     source_event_id=source_event_id,
-                    dedupe_key=f"theme:{theme_code}:strength",
+                    dedupe_key=f"theme:{theme_code}:launch",
                     theme_code=theme_code,
                     symbol=ev.leader.symbol,
                     symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
-                    payload=_theme_payload(ev),
+                    payload=_theme_payload(ev) | {"state": current_state, "prev_state": prev.state},
+                ))
+            if current_state == "diffusion":
+                messages.append(self._message(
+                    market=market,
+                    ts=quote.ts,
+                    level="watch",
+                    category="theme",
+                    title=f"{ctx.definition.theme_name}进入扩散",
+                    body=(
+                        f"{len(ev.known)}只已采成分中{len(ev.up)}只上涨,"
+                        f"核心上涨 {len(ev.core_up)} 只,跟随上涨 {len(ev.follower_up)} 只。"
+                    ),
+                    source_event="bus:quote.tick",
+                    source_event_id=source_event_id,
+                    dedupe_key=f"theme:{theme_code}:diffusion",
+                    theme_code=theme_code,
+                    symbol=ev.leader.symbol,
+                    symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
+                    payload=_theme_payload(ev) | {"state": current_state, "prev_state": prev.state},
+                ))
+            if current_state == "divergence":
+                messages.append(self._message(
+                    market=market,
+                    ts=quote.ts,
+                    level="warning",
+                    category="risk",
+                    title=f"{ctx.definition.theme_name}进入分歧",
+                    body=f"{ev.leader.symbol} 领涨 {ev.leader.change_pct:.2f}%,但扩散不足或龙二断层。",
+                    source_event="bus:quote.tick",
+                    source_event_id=source_event_id,
+                    dedupe_key=f"risk:{theme_code}:divergence",
+                    theme_code=theme_code,
+                    symbol=ev.leader.symbol,
+                    symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
+                    payload=_theme_payload(ev) | {"state": current_state, "prev_state": prev.state},
                 ))
             if current_state == "weakness":
                 messages.append(self._message(
@@ -463,7 +644,29 @@ class LiveMessageService:
                     theme_code=theme_code,
                     symbol=ev.laggard.symbol,
                     symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct)[:5]],
-                    payload=_theme_payload(ev),
+                    payload=_theme_payload(ev) | {"state": current_state, "prev_state": prev.state},
+                ))
+            if current_state == "fade":
+                peak_up_count = max(prev.peak_up_count, prev.up_count)
+                messages.append(self._message(
+                    market=market,
+                    ts=quote.ts,
+                    level="warning",
+                    category="risk",
+                    title=f"{ctx.definition.theme_name}强度回落",
+                    body=f"上涨家数从盘中高点 {peak_up_count} 降至 {len(ev.up)},领涨 {ev.leader.symbol} 当前 {ev.leader.change_pct:.2f}%。",
+                    source_event="bus:quote.tick",
+                    source_event_id=source_event_id,
+                    dedupe_key=f"risk:{theme_code}:strength_fade",
+                    theme_code=theme_code,
+                    symbol=ev.leader.symbol,
+                    symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
+                    payload=_theme_payload(ev) | {
+                        "state": current_state,
+                        "prev_state": prev.state,
+                        "prev_up_count": prev.up_count,
+                        "peak_up_count": peak_up_count,
+                    },
                 ))
             messages.extend(self._theme_quality_messages(market, quote.ts, ev, prev, source_event_id))
             self._theme_states[theme_code] = _ThemeRuntimeState(
@@ -616,18 +819,6 @@ class LiveMessageService:
                 theme_code=theme_code, symbol=ev.leader.symbol,
                 symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
                 payload=_theme_payload(ev),
-            ))
-        peak_up_count = max(prev.peak_up_count, prev.up_count)
-        if prev.state == "strength" and peak_up_count - len(ev.up) >= 2:
-            messages.append(self._message(
-                market=market, ts=ts, level="warning", category="risk",
-                title=f"{theme_name}强度回落",
-                body=f"上涨家数从盘中高点 {peak_up_count} 降至 {len(ev.up)},领涨 {ev.leader.symbol} 当前 {ev.leader.change_pct:.2f}%。",
-                source_event="bus:quote.tick", source_event_id=source_event_id,
-                dedupe_key=f"risk:{theme_code}:strength_fade",
-                theme_code=theme_code, symbol=ev.leader.symbol,
-                symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
-                payload=_theme_payload(ev) | {"prev_up_count": prev.up_count, "peak_up_count": peak_up_count, "prev_state": prev.state},
             ))
         return messages
 
@@ -835,26 +1026,64 @@ def _theme_payload(ev: _ThemeEval) -> dict[str, Any]:
     }
 
 
+def _theme_state(ev: _ThemeEval, prev: _ThemeRuntimeState) -> str:
+    peak_up_count = max(prev.peak_up_count, prev.up_count)
+    if prev.state in {"launch", "diffusion", "strength"} and peak_up_count - len(ev.up) >= 2:
+        return "fade"
+    if len(ev.down) >= 3 and ev.laggard.change_pct <= -1.0:
+        return "weakness"
+    if ev.leader.change_pct >= 4.0 and (
+        len(ev.up) < 3 or (ev.second is not None and ev.leader.change_pct - ev.second.change_pct >= 2.0)
+    ):
+        return "divergence"
+    if len(ev.up) >= 4 and len(ev.core_up) >= 2 and ev.leader.change_pct >= 1.0:
+        return "diffusion"
+    if len(ev.up) >= 3 and len(ev.core_up) >= 1 and ev.leader.change_pct >= 1.0:
+        return "launch"
+    return "neutral"
+
+
 def _theme_score(ev: _ThemeEval, current_state: str) -> float:
     up_ratio = len(ev.up) / len(ev.known) if ev.known else 0.0
     core_ratio = len(ev.core_up) / len(ev.core) if ev.core else 0.0
     base = ev.avg_change_pct + up_ratio * 4.0 + core_ratio * 3.0
-    if current_state == "strength":
+    if current_state == "launch":
+        base += 1.5
+    elif current_state == "diffusion":
         base += 2.0
+    elif current_state == "divergence":
+        base -= 0.5
+    elif current_state == "fade":
+        base -= 1.0
     elif current_state == "weakness":
         base -= 2.0
     return round(base, 4)
 
 
 def _theme_reason(ev: _ThemeEval, current_state: str) -> str:
-    if current_state == "strength":
+    if current_state == "launch":
         return (
-            f"{len(ev.known)}只已采成分中{len(ev.up)}只上涨,"
-            f"{ev.leader.symbol}领涨{ev.leader.change_pct:.2f}%"
+            f"题材启动:{len(ev.known)}只已采成分中{len(ev.up)}只上涨,"
+            f"核心上涨{len(ev.core_up)}只,{ev.leader.symbol}领涨{ev.leader.change_pct:.2f}%"
+        )
+    if current_state == "diffusion":
+        return (
+            f"题材扩散:{len(ev.known)}只已采成分中{len(ev.up)}只上涨,"
+            f"核心上涨{len(ev.core_up)}只,跟随上涨{len(ev.follower_up)}只"
+        )
+    if current_state == "divergence":
+        return (
+            f"题材分歧:{ev.leader.symbol}领涨{ev.leader.change_pct:.2f}%,"
+            f"上涨家数{len(ev.up)}只"
+        )
+    if current_state == "fade":
+        return (
+            f"题材回落:{len(ev.known)}只已采成分中{len(ev.up)}只上涨,"
+            f"均值{ev.avg_change_pct:.2f}%"
         )
     if current_state == "weakness":
         return (
-            f"{len(ev.known)}只已采成分中{len(ev.down)}只下跌,"
+            f"题材转弱:{len(ev.known)}只已采成分中{len(ev.down)}只下跌,"
             f"{ev.laggard.symbol}领跌{ev.laggard.change_pct:.2f}%"
         )
     return (

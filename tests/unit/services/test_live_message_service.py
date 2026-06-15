@@ -99,13 +99,13 @@ async def test_theme_strength_message_is_deduped(tmp_path: Path):
     first = await _tick(svc, "000003.SZ", 1.8, ts)
     assert len(first) == 1
     assert first[0].category == "theme"
-    assert first[0].title == "测试题材走强"
+    assert first[0].title == "测试题材启动"
     assert first[0].theme_code == "theme:test"
     assert first[0].payload["up_count"] == 3
     assert first[0].payload["core_up_count"] == 2
 
     again = await _tick(svc, "000004.SZ", 1.6, ts)
-    assert again == []
+    assert [m.title for m in again] == ["测试题材进入扩散"]
 
 
 @pytest.mark.asyncio
@@ -125,7 +125,7 @@ async def test_theme_eval_persists_snapshot_and_state(tmp_path: Path):
     assert snapshots[0].up_ratio == 1.0
     assert snapshots[0].leader_symbols == ["000001.SZ", "000002.SZ", "000003.SZ"]
     assert states[0].theme_code == "theme:test"
-    assert states[0].state == "strength"
+    assert states[0].state == "launch"
     assert states[0].evidence["up_count"] == 3
 
 
@@ -179,7 +179,7 @@ async def test_theme_leader_switch_message(tmp_path: Path):
 
     assert await _tick(svc, "000001.SZ", 2.5, ts) == []
     assert await _tick(svc, "000002.SZ", 2.0, ts) == []
-    assert [m.title for m in await _tick(svc, "000003.SZ", 1.5, ts)] == ["测试题材走强"]
+    assert [m.title for m in await _tick(svc, "000003.SZ", 1.5, ts)] == ["测试题材启动"]
 
     messages = await _tick(svc, "000002.SZ", 4.0, ts)
     assert [m.title for m in messages] == ["测试题材核心股切换"]
@@ -197,7 +197,7 @@ async def test_theme_quality_risk_messages(tmp_path: Path):
     messages = await _tick(svc, "000004.SZ", 1.5, ts)
 
     titles = {m.title for m in messages}
-    assert "测试题材走强" in titles
+    assert "测试题材启动" in titles
     assert "测试题材走强质量一般" in titles
     risk = next(m for m in messages if m.title == "测试题材走强质量一般")
     assert risk.category == "risk"
@@ -213,8 +213,8 @@ async def test_theme_single_leader_risk(tmp_path: Path):
     assert await _tick(svc, "000002.SZ", 1.0, ts) == []
     messages = await _tick(svc, "000003.SZ", -0.2, ts)
 
-    assert [m.title for m in messages] == ["测试题材异动偏单点"]
-    assert messages[0].category == "risk"
+    assert {m.title for m in messages} == {"测试题材进入分歧", "测试题材异动偏单点"}
+    assert all(m.category == "risk" for m in messages)
 
 
 @pytest.mark.asyncio
@@ -245,6 +245,62 @@ async def test_watchlist_against_theme_risk(tmp_path: Path):
 
     assert [m.title for m in messages] == ["自选股 000005.SZ 逆测试题材走弱"]
     assert messages[0].category == "risk"
+
+
+@pytest.mark.asyncio
+async def test_collector_breadth_weak_message_uses_sample_scope(tmp_path: Path):
+    svc = await _service(tmp_path)
+    ts = datetime(2026, 6, 15, 1, 35, tzinfo=timezone.utc)
+
+    messages = []
+    for i in range(20):
+        messages = await _tick(svc, f"60{i:04d}.SH", -0.6, ts)
+
+    assert [m.title for m in messages] == ["采集样本宽度偏弱"]
+    assert messages[0].category == "index"
+    assert messages[0].payload["sample_source"] == "collector_symbols"
+    assert messages[0].payload["sample_scope"] == "当前采集清单,非全A"
+    assert messages[0].payload["sample_count"] == 20
+    assert messages[0].payload["down_count"] == 20
+
+
+@pytest.mark.asyncio
+async def test_index_strong_but_collector_breadth_diverges(tmp_path: Path):
+    svc = await _service(tmp_path)
+    ts = datetime(2026, 6, 15, 1, 35, tzinfo=timezone.utc)
+
+    await _tick(svc, "000001.SH", 0.5, ts)
+    await _tick(svc, "000300.SH", 0.6, ts)
+    await _tick(svc, "399006.SZ", 0.7, ts)
+    await _tick(svc, "000852.SH", 0.8, ts)
+
+    messages = []
+    for i in range(20):
+        messages = await _tick(svc, f"60{i:04d}.SH", -0.7, ts)
+
+    titles = {m.title for m in messages}
+    assert "采集样本宽度偏弱" in titles
+    assert "指数偏强但采集样本背离" in titles
+    risk = next(m for m in messages if m.title == "指数偏强但采集样本背离")
+    assert risk.category == "risk"
+    assert risk.payload["index_state"] == "resonance_up"
+
+
+@pytest.mark.asyncio
+async def test_theme_state_machine_persists_diffusion(tmp_path: Path):
+    svc, theme_repo = await _service_with_repo(tmp_path)
+    ts = datetime(2026, 6, 15, 1, 35, tzinfo=timezone.utc)
+
+    await _tick(svc, "000001.SZ", 2.5, ts)
+    await _tick(svc, "000002.SZ", 2.0, ts)
+    await _tick(svc, "000003.SZ", 1.8, ts)
+    messages = await _tick(svc, "000004.SZ", 1.6, ts)
+    states = await theme_repo.list_states("ashare")
+
+    assert [m.title for m in messages] == ["测试题材进入扩散"]
+    assert states[0].state == "diffusion"
+    assert states[0].evidence["state"] == "diffusion"
+    assert states[0].evidence["core_up_count"] == 2
 
 
 @pytest.mark.asyncio
