@@ -67,23 +67,26 @@ def build_scheduler(
 def attach_fundamentals_jobs(
     sched: AsyncIOScheduler,
     *, fund_flow: FundFlowService, watchlist: WatchlistService,
+    include_symbol_flow: bool = True,
 ) -> None:
     sched.add_job(
         _leader_gated(pull_north_flow_job), IntervalTrigger(minutes=2),
         args=(fund_flow,),
         id="ff:north", max_instances=1, coalesce=True,
     )
-    sched.add_job(
-        _leader_gated(pull_watchlist_symbol_flow_job), IntervalTrigger(minutes=30),
-        args=(fund_flow, watchlist),
-        id="ff:symbols", max_instances=1, coalesce=True,
-    )
+    if include_symbol_flow:
+        sched.add_job(
+            _leader_gated(pull_watchlist_symbol_flow_job), IntervalTrigger(minutes=30),
+            args=(fund_flow, watchlist),
+            id="ff:symbols", max_instances=1, coalesce=True,
+        )
     sched.add_job(
         _leader_gated(purge_fund_flow_job), CronTrigger(hour=2, minute=0),
         args=(fund_flow,),
         id="ff:purge", max_instances=1, coalesce=True,
     )
-    log.info("scheduler.fundamentals_attached")
+    log.info("scheduler.fundamentals_attached",
+             include_symbol_flow=include_symbol_flow)
 
 
 def attach_signal_jobs(

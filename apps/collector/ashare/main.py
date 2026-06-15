@@ -165,13 +165,13 @@ async def lifespan(app: FastAPI):
 
     # === scheduler: 仅 A 股专属 cron ===
     from core.scheduler.scheduler import (
-        attach_ai_packet_job, attach_chip_preload_job,
+        attach_chip_preload_job,
         attach_fundamentals_jobs,
-        attach_market_top_job, attach_signal_jobs, build_scheduler,
+        build_scheduler,
     )
     from apps.api.deps import (
-        get_ai_market_service, get_chip_service, get_fund_flow_service,
-        get_market_query_service, get_notification_service, get_signal_scan_service,
+        get_chip_service, get_fund_flow_service,
+        get_notification_service, get_signal_scan_service,
     )
     sched = build_scheduler(
         registry, cache, bar_repo, get_watchlist_service(),
@@ -181,6 +181,7 @@ async def lifespan(app: FastAPI):
     attach_fundamentals_jobs(
         sched, fund_flow=get_fund_flow_service(),
         watchlist=get_watchlist_service(),
+        include_symbol_flow=False,
     )
     # CD 信号扫描: 事件驱动(订阅 bus:bars.updated, 只读已存 bar)。
     # 不再用 attach_signal_jobs cron(那条走 fetch_fresh_bars 现聚合, 有 close/open 偏移)。
@@ -218,12 +219,12 @@ async def lifespan(app: FastAPI):
         ),
         name="ashare.collector_symbol_consumer",
     )
-    attach_market_top_job(sched,
-                          market_query=get_market_query_service(),
-                          cache=redis_cache)
-    attach_ai_packet_job(sched,
-                         ai_market=get_ai_market_service(),
-                         cache=redis_cache)
+    # 盘中实盘链路以 collector_symbols + quote/bar/live-message 为事实源。
+    # 旧 market_top / ai_packet job 会每分钟触发 EM 全 A/板块接口, 盘中容易 timeout
+    # 并替换 ak worker, 反而挤占 5m 采集。保留 API 缓存读取能力, A 股 collector 不再挂载这些预拉取任务。
+    log.info("collector_ashare.skip_em_bulk_jobs",
+             jobs=["market_top", "ai_packet"],
+             reason="avoid_em_bulk_calls_during_intraday")
     attach_chip_preload_job(sched,
                             chip_service=get_chip_service(),
                             watchlist=get_watchlist_service())
@@ -269,12 +270,21 @@ async def lifespan(app: FastAPI):
     #   2) daily_settlement 收盘结算管 1d→1wk/1mo resample
     #   3) startup_reconcile 启动时全量初始化 + 缺口补齐 (含派生全周期)
 
-    # === 启动 reconcile: CORE ∪ watchlist 缺口回补 (非阻塞) ===
+    # === 启动 reconcile: 盘中跳过, 避免深历史回补与快照/5m 实盘采集抢 ak worker ===
     from apps.collector.startup_reconcile import run_startup_reconcile
-    _reconcile_task = asyncio.create_task(
-        run_startup_reconcile("ashare", bar_repo, kline, _sweep_syms),
-        name="ashare.startup_reconcile",
-    )
+    from core.domain.market_calendar import is_trading_day as _is_trading_day
+    from core.domain.market_sessions import is_market_session_open as _is_market_session_open
+    _reconcile_task: asyncio.Task | None = None
+    if _is_trading_day("ashare") and _is_market_session_open("ashare"):
+        log.info("startup_reconcile.skip_open_session",
+                 market="ashare",
+                 symbols=len(_sweep_syms),
+                 reason="protect_intraday_collection")
+    else:
+        _reconcile_task = asyncio.create_task(
+            run_startup_reconcile("ashare", bar_repo, kline, _sweep_syms),
+            name="ashare.startup_reconcile",
+        )
 
     # === 收盘结算 (完成度驱动, 非 cron): 1d 唯一的稳态写入路径 ===
     # 检测 session open→closed 边沿, 收盘后条件等待拉齐当日 1d + resample 1wk/1mo,
@@ -400,11 +410,12 @@ async def lifespan(app: FastAPI):
             await _refill_task
         except (asyncio.CancelledError, Exception):
             pass
-        _reconcile_task.cancel()
-        try:
-            await _reconcile_task
-        except (asyncio.CancelledError, Exception):
-            pass
+        if _reconcile_task is not None:
+            _reconcile_task.cancel()
+            try:
+                await _reconcile_task
+            except (asyncio.CancelledError, Exception):
+                pass
         _settlement_task.cancel()
         try:
             await _settlement_task
