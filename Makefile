@@ -1,4 +1,4 @@
-.PHONY: install dev dev-redis dev-stop test test-integration test-full lint typecheck web-install web-dev clean init-data warmup
+.PHONY: install dev dev-bg dev-status dev-redis dev-stop dev-stop-bg test test-integration test-full lint typecheck web-install web-dev clean init-data warmup
 
 install:
 	python -m venv .venv && . .venv/bin/activate && pip install -e ".[dev]"
@@ -13,6 +13,12 @@ dev: dev-redis
 	# 代码变更请 Ctrl-C 退出 honcho 再重新 make dev。
 	. .venv/bin/activate && honcho start -f Procfile
 
+dev-bg:
+	bash scripts/dev-start.sh
+
+dev-status:
+	bash scripts/dev-status.sh
+
 dev-stop:
 	pkill -9 -f "apps.collector.ashare" 2>/dev/null || true
 	pkill -9 -f "apps.collector.us" 2>/dev/null || true
@@ -21,6 +27,9 @@ dev-stop:
 	pkill -9 -f "uvicorn apps.api.main:app" 2>/dev/null || true
 	docker compose -f docker-compose.dev.yml stop redis
 	@echo "stopped collector_{ashare,us,crypto} / api / redis (web 由 honcho/Ctrl-C 管理)"
+
+dev-stop-bg:
+	bash scripts/dev-stop.sh --with-redis
 
 test:
 	. .venv/bin/activate && pytest -m "not integration"

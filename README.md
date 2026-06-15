@@ -4,14 +4,46 @@
 
 ## 启动
 
+### 首次安装
+
 ```bash
 make install     # 安装 Python 依赖
 make web-install # 安装前端依赖
 cp .env.example .env  # 按需填入 API key
-make dev         # 启动后端(8787)与前端(3000)
+```
+
+### 日常后台启动(推荐)
+
+```bash
+make dev-bg      # 后台启动 Redis + API + Web + 3 个 collector
+make dev-status  # 检查进程与健康接口
+make dev-stop-bg # 停止后台进程和 Redis
 ```
 
 打开 http://localhost:3000/dashboard。
+
+后台启动日志:
+
+```bash
+tail -f /tmp/marketpulse/api.log
+tail -f /tmp/marketpulse/web.log
+tail -f /tmp/marketpulse/collector-ashare.log
+```
+
+结构化长期日志:
+
+```bash
+tail -f data/logs/api.log
+tail -f data/logs/collector_ashare.log
+tail -f data/logs/api-errors.log
+tail -f data/logs/collector_ashare-errors.log
+```
+
+### 前台开发模式
+
+```bash
+make dev         # 用 honcho 前台启动, Ctrl-C 停止; 适合改代码时看滚动日志
+```
 
 ## Plan 2 新增功能(基建夯实)
 
@@ -45,4 +77,3 @@ make warmup                                          # 回填关注列表中所�
 - 每 30 分钟:`pull_watchlist_symbol_flow_job`(关注列表里的个股资金流)
 - 每日 09:25 UTC:`refresh_sectors_job`(刷新所有新浪行业板块成分)
 - 每日 02:00 UTC:`purge_fund_flow_job`(清理过期资金流数据)
-
