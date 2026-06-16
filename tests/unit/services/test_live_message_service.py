@@ -54,15 +54,20 @@ async def _tick(
     symbol: str,
     change_pct: float,
     ts: datetime,
+    *,
+    amount: float | None = None,
 ) -> list:
-    return await svc.handle_quote_tick({
+    payload = {
         "market": "ashare",
         "symbol": symbol,
         "ts": ts.isoformat(),
         "price": 10,
         "change_pct": change_pct,
         "volume": 100,
-    })
+    }
+    if amount is not None:
+        payload["amount"] = amount
+    return await svc.handle_quote_tick(payload)
 
 
 async def _bar(
@@ -215,6 +220,57 @@ async def test_theme_single_leader_risk(tmp_path: Path):
 
     assert {m.title for m in messages} == {"测试题材进入分歧", "测试题材异动偏单点"}
     assert all(m.category == "risk" for m in messages)
+
+
+@pytest.mark.asyncio
+async def test_theme_active_state_adds_amount_confirmation(tmp_path: Path):
+    svc = await _service(tmp_path)
+    ts = datetime(2026, 6, 15, 1, 35, tzinfo=timezone.utc)
+
+    assert await _tick(svc, "000001.SZ", 5.2, ts, amount=300) == []
+    assert await _tick(svc, "000002.SZ", 5.0, ts, amount=250) == []
+    messages = await _tick(svc, "000003.SZ", 1.8, ts, amount=200)
+
+    titles = {m.title for m in messages}
+    assert "测试题材启动" in titles
+    assert "测试题材扩散有成交确认" in titles
+    confirmed = next(m for m in messages if m.title == "测试题材扩散有成交确认")
+    assert confirmed.payload["active_money_confirmed"] is True
+    assert confirmed.payload["leader_amount_share"] == pytest.approx(0.4)
+
+
+@pytest.mark.asyncio
+async def test_theme_amount_concentration_risk(tmp_path: Path):
+    svc = await _service(tmp_path)
+    ts = datetime(2026, 6, 15, 1, 35, tzinfo=timezone.utc)
+
+    await _tick(svc, "000001.SZ", 2.5, ts, amount=1_000)
+    await _tick(svc, "000002.SZ", 2.0, ts, amount=100)
+    await _tick(svc, "000003.SZ", 1.8, ts, amount=100)
+    messages = await _tick(svc, "000004.SZ", 1.6, ts, amount=100)
+
+    assert "测试题材成交集中度偏高" in {m.title for m in messages}
+    risk = next(m for m in messages if m.title == "测试题材成交集中度偏高")
+    assert risk.category == "risk"
+    assert risk.payload["leader_amount_share"] == pytest.approx(1_000 / 1_300)
+
+
+@pytest.mark.asyncio
+async def test_theme_limit_structure_and_leader_pullback_proxy(tmp_path: Path):
+    svc = await _service(tmp_path)
+    ts = datetime(2026, 6, 15, 1, 35, tzinfo=timezone.utc)
+
+    await _tick(svc, "000001.SZ", 9.9, ts, amount=300)
+    await _tick(svc, "000002.SZ", 7.4, ts, amount=200)
+    messages = await _tick(svc, "000003.SZ", 7.1, ts, amount=180)
+
+    assert "测试题材涨停结构增强" in {m.title for m in messages}
+    structure = next(m for m in messages if m.title == "测试题材涨停结构增强")
+    assert structure.payload["limit_up_count"] == 1
+    assert structure.payload["near_limit_count"] == 3
+
+    pullback = await _tick(svc, "000001.SZ", 6.8, ts, amount=360)
+    assert "测试题材龙头高位回落" in {m.title for m in pullback}
 
 
 @pytest.mark.asyncio

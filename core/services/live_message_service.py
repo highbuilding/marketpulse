@@ -678,7 +678,8 @@ class LiveMessageService:
                 ))
             messages.extend(self._theme_rotation_messages(
                 market, quote.ts, theme_code, ev, prev, current_state, source_event_id))
-            messages.extend(self._theme_quality_messages(market, quote.ts, ev, prev, source_event_id))
+            messages.extend(self._theme_quality_messages(
+                market, quote.ts, ev, prev, current_state, source_event_id))
             score = _theme_score(ev, current_state)
             self._theme_states[theme_code] = _ThemeRuntimeState(
                 theme_name=ctx.definition.theme_name,
@@ -794,7 +795,7 @@ class LiveMessageService:
                     pct_change=ev.avg_change_pct,
                     amount=amount or None,
                     up_ratio=up_ratio,
-                    limit_up_count=sum(1 for s in ev.known if s.change_pct >= 9.8),
+                    limit_up_count=_limit_up_count(ev),
                     member_count=len(ev.ctx.symbols),
                     leader_symbols=leaders,
                     divergence_score=divergence_score,
@@ -856,11 +857,17 @@ class LiveMessageService:
         ts: datetime,
         ev: _ThemeEval,
         prev: _ThemeRuntimeState,
+        current_state: str,
         source_event_id: str | None,
     ) -> list[LiveMessage]:
         messages: list[LiveMessage] = []
         theme_code = ev.ctx.definition.theme_code
         theme_name = ev.ctx.definition.theme_name
+        amount_known_ratio = _amount_known_ratio(ev)
+        leader_amount_share = _leader_amount_share(ev)
+        limit_up_count = _limit_up_count(ev)
+        near_limit_count = _near_limit_count(ev)
+        momentum_count = _momentum_count(ev)
         leader_core = any(c.symbol == ev.leader.symbol for c in ev.ctx.constituents
                           if (c.role_hint or "") in {"leader", "core", "mid_core"} or (c.weight or 0) >= 8)
         if prev.leader and prev.leader != ev.leader.symbol and leader_core \
@@ -902,6 +909,72 @@ class LiveMessageService:
                 theme_code=theme_code, symbol=ev.leader.symbol,
                 symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
                 payload=_theme_payload(ev),
+            ))
+        if current_state in _THEME_ACTIVE_STATES \
+                and amount_known_ratio >= 0.65 \
+                and leader_amount_share is not None \
+                and leader_amount_share <= 0.45 \
+                and momentum_count >= max(2, math.ceil(len(ev.known) * 0.20)):
+            messages.append(self._message(
+                market=market, ts=ts, level="watch", category="theme",
+                title=f"{theme_name}扩散有成交确认",
+                body=(
+                    f"{momentum_count}只成分涨幅超过5%,"
+                    f"领涨成交占比 {leader_amount_share:.0%},成交没有明显集中在单一标的。"
+                ),
+                source_event="bus:quote.tick", source_event_id=source_event_id,
+                dedupe_key=f"theme:{theme_code}:amount_confirmed",
+                theme_code=theme_code, symbol=ev.leader.symbol,
+                symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
+                payload=_theme_payload(ev) | {"state": current_state},
+            ))
+        if current_state in _THEME_ACTIVE_STATES \
+                and leader_amount_share is not None \
+                and leader_amount_share >= 0.55 \
+                and len(ev.known) >= 4:
+            messages.append(self._message(
+                market=market, ts=ts, level="warning", category="risk",
+                title=f"{theme_name}成交集中度偏高",
+                body=f"{ev.leader.symbol} 成交额占已采成分 {leader_amount_share:.0%},题材扩散质量需要继续确认。",
+                source_event="bus:quote.tick", source_event_id=source_event_id,
+                dedupe_key=f"risk:{theme_code}:amount_concentrated",
+                theme_code=theme_code, symbol=ev.leader.symbol,
+                symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
+                payload=_theme_payload(ev) | {"state": current_state},
+            ))
+        if limit_up_count >= 1 and near_limit_count >= max(2, math.ceil(len(ev.known) * 0.15)):
+            messages.append(self._message(
+                market=market, ts=ts, level="watch", category="theme",
+                title=f"{theme_name}涨停结构增强",
+                body=f"已采成分中 {limit_up_count} 只涨停或接近涨停,{near_limit_count} 只涨幅超过7%。",
+                source_event="bus:quote.tick", source_event_id=source_event_id,
+                dedupe_key=f"theme:{theme_code}:limit_structure",
+                theme_code=theme_code, symbol=ev.leader.symbol,
+                symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
+                payload=_theme_payload(ev) | {"state": current_state},
+            ))
+        prev_leader_quote = next((s for s in ev.known if s.symbol == prev.leader), None)
+        if prev.leader \
+                and prev_leader_quote is not None \
+                and prev.leader_change_pct is not None \
+                and prev.leader_change_pct >= 7.0 \
+                and prev.leader_change_pct - prev_leader_quote.change_pct >= 2.0:
+            messages.append(self._message(
+                market=market, ts=ts, level="warning", category="risk",
+                title=f"{theme_name}龙头高位回落",
+                body=(
+                    f"{prev_leader_quote.symbol} 从 {prev.leader_change_pct:.2f}% "
+                    f"回落至 {prev_leader_quote.change_pct:.2f}%,观察是否带动后排退潮。"
+                ),
+                source_event="bus:quote.tick", source_event_id=source_event_id,
+                dedupe_key=f"risk:{theme_code}:leader_pullback",
+                theme_code=theme_code, symbol=prev_leader_quote.symbol,
+                symbols=[prev_leader_quote.symbol, ev.leader.symbol],
+                payload=_theme_payload(ev) | {
+                    "state": current_state,
+                    "prev_leader_change_pct": prev.leader_change_pct,
+                    "prev_leader_current_change_pct": prev_leader_quote.change_pct,
+                },
             ))
         return messages
 
@@ -1104,6 +1177,16 @@ def _theme_payload(ev: _ThemeEval) -> dict[str, Any]:
         "follower_up_count": len(ev.follower_up),
         "follower_up_ratio": _follower_up_ratio(ev),
         "avg_change_pct": ev.avg_change_pct,
+        "total_amount": _total_amount(ev),
+        "amount_known_count": _amount_known_count(ev),
+        "amount_known_ratio": _amount_known_ratio(ev),
+        "leader_amount": ev.leader.amount,
+        "leader_amount_share": _leader_amount_share(ev),
+        "limit_up_count": _limit_up_count(ev),
+        "near_limit_count": _near_limit_count(ev),
+        "momentum_count": _momentum_count(ev),
+        "severe_down_count": _severe_down_count(ev),
+        "active_money_confirmed": _active_money_confirmed(ev),
         "leader": {"symbol": ev.leader.symbol, "change_pct": ev.leader.change_pct},
         "laggard": {"symbol": ev.laggard.symbol, "change_pct": ev.laggard.change_pct},
         "second": {"symbol": ev.second.symbol, "change_pct": ev.second.change_pct} if ev.second else None,
@@ -1141,6 +1224,52 @@ def _follower_up_ratio(ev: _ThemeEval) -> float:
                for c in ev.ctx.constituents)
     ]
     return _ratio(len(ev.follower_up), len(follower_known))
+
+
+def _amount_known_count(ev: _ThemeEval) -> int:
+    return sum(1 for s in ev.known if s.amount is not None and s.amount > 0)
+
+
+def _amount_known_ratio(ev: _ThemeEval) -> float:
+    return _ratio(_amount_known_count(ev), len(ev.known))
+
+
+def _total_amount(ev: _ThemeEval) -> float | None:
+    values = [s.amount for s in ev.known if s.amount is not None and s.amount > 0]
+    return sum(values) if values else None
+
+
+def _leader_amount_share(ev: _ThemeEval) -> float | None:
+    total = _total_amount(ev)
+    if not total or ev.leader.amount is None or ev.leader.amount <= 0:
+        return None
+    return ev.leader.amount / total
+
+
+def _limit_up_count(ev: _ThemeEval) -> int:
+    return sum(1 for s in ev.known if s.change_pct >= 9.8)
+
+
+def _near_limit_count(ev: _ThemeEval) -> int:
+    return sum(1 for s in ev.known if s.change_pct >= 7.0)
+
+
+def _momentum_count(ev: _ThemeEval) -> int:
+    return sum(1 for s in ev.known if s.change_pct >= 5.0)
+
+
+def _severe_down_count(ev: _ThemeEval) -> int:
+    return sum(1 for s in ev.known if s.change_pct <= -5.0)
+
+
+def _active_money_confirmed(ev: _ThemeEval) -> bool:
+    leader_share = _leader_amount_share(ev)
+    return (
+        _amount_known_ratio(ev) >= 0.65
+        and leader_share is not None
+        and leader_share <= 0.45
+        and _momentum_count(ev) >= max(2, math.ceil(len(ev.known) * 0.20))
+    )
 
 
 def _leader_gap(ev: _ThemeEval) -> float:
@@ -1191,6 +1320,13 @@ def _theme_score(ev: _ThemeEval, current_state: str) -> float:
         base -= 1.0
     elif current_state == "weakness":
         base -= 2.0
+    if current_state in _THEME_ACTIVE_STATES:
+        if _active_money_confirmed(ev):
+            base += 0.75
+        else:
+            leader_share = _leader_amount_share(ev)
+            if leader_share is not None and leader_share >= 0.55:
+                base -= 0.5
     return round(base, 4)
 
 
