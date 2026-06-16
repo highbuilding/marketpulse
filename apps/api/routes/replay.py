@@ -92,7 +92,7 @@ def _day_window(date_str: str | None, market: str) -> tuple[str, datetime, datet
 async def replay(
     market: str = Query("ashare"),
     date: str | None = Query(None, description="BJT 自然日 YYYY-MM-DD, 缺省=今天"),
-    msg_limit: int = Query(1000, ge=1, le=2000),
+    msg_limit: int = Query(5000, ge=1, le=5000),
     snapshot_limit: int = Query(2000, ge=1, le=5000),
     msg_repo: LiveMessageRepo = Depends(get_live_message_repo),
     theme_repo: ThemeRepo = Depends(get_theme_repo),
@@ -103,9 +103,8 @@ async def replay(
 
     messages: list[ReplayMessageDTO] = []
     try:
-        rows = await msg_repo.list_window(market, start=start, end=end, limit=msg_limit)
-        # list_window 降序返回, 回放按时间正序展示
-        for m in sorted(rows, key=lambda x: x.ts):
+        rows = await msg_repo.list_window_asc(market, start=start, end=end, limit=msg_limit)
+        for m in rows:
             messages.append(
                 ReplayMessageDTO(
                     id=m.id,

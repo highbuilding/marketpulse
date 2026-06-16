@@ -2,6 +2,7 @@
 
 import type { CSSProperties } from 'react'
 
+import Link from 'next/link'
 import useSWR from 'swr'
 
 import { fetchLiveMessageStatus } from '@/lib/live_messages_api'
@@ -130,14 +131,15 @@ export function LiveMessagesPanel({ limit = 30 }: { limit?: number }) {
   )
   const isAshare = market === 'ashare'
   const headerMeta = isAshare && status
-    ? `监听 ${status.enabled_themes} 题材 / ${status.enabled_constituents} 成分股 / ${status.watchlist_symbols} 自选`
-    : (isAshare ? `${messages.length} 条` : '仅 A 股')
+    ? `最近 ${messages.length}/${limit} 条 · 监听 ${status.enabled_themes} 题材 / ${status.enabled_constituents} 成分股 / ${status.watchlist_symbols} 自选`
+    : (isAshare ? `最近 ${messages.length}/${limit} 条` : '仅 A 股')
 
   return (
     <section className="panel">
       <div className="panel-header">
         实盘消息
         <span style={st.headerMeta}>{headerMeta}</span>
+        {isAshare && <Link href="/replay" style={st.replayLink}>盘后回放</Link>}
       </div>
       <div style={st.wrap}>
         {!isAshare && <div style={st.empty}>实盘消息第一版仅支持 A 股。</div>}
@@ -160,6 +162,7 @@ export function LiveMessagesPanel({ limit = 30 }: { limit?: number }) {
 
 const st: Record<string, CSSProperties> = {
   headerMeta: { marginLeft: 'auto', color: 'var(--text3)', fontSize: 12, fontWeight: 400 },
+  replayLink: { color: 'var(--accent)', fontSize: 12, fontWeight: 600, textDecoration: 'none' },
   wrap: { display: 'grid', gap: 8, padding: 12, maxHeight: 420, overflow: 'auto' },
   row: { border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg2)', padding: '10px 12px' },
   rowTop: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 },

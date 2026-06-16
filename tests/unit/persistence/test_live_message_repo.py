@@ -50,3 +50,25 @@ async def test_live_message_insert_is_idempotent_and_queryable(tmp_path: Path):
     )
     assert [m.id for m in window] == ["m1"]
 
+
+@pytest.mark.asyncio
+async def test_live_message_window_asc_preserves_early_messages(tmp_path: Path):
+    db = tmp_path / "state.db"
+    await StateRepo(str(db)).init()
+    repo = LiveMessageRepo(str(db))
+    start = datetime(2026, 6, 16, 1, 30, tzinfo=timezone.utc)
+
+    await repo.insert_many([
+        _msg("m1", start),
+        _msg("m2", start + timedelta(minutes=1)),
+        _msg("m3", start + timedelta(minutes=2)),
+    ])
+
+    rows = await repo.list_window_asc(
+        "ashare",
+        start=start - timedelta(minutes=1),
+        end=start + timedelta(minutes=10),
+        limit=2,
+    )
+
+    assert [m.id for m in rows] == ["m1", "m2"]

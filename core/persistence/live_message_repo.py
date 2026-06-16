@@ -149,3 +149,28 @@ class LiveMessageRepo:
             rows = await cur.fetchall()
         return [self._row_to_message(r) for r in rows]
 
+    async def list_window_asc(
+        self,
+        market: str,
+        *,
+        start: datetime,
+        end: datetime,
+        category: str | None = None,
+        limit: int = 5000,
+    ) -> list[LiveMessage]:
+        where = ["market = ?", "ts >= ?", "ts <= ?"]
+        args: list[object] = [market, _iso(start), _iso(end)]
+        if category:
+            where.append("category = ?")
+            args.append(category)
+        args.append(max(1, min(limit, 5000)))
+        async with self._connect() as db:
+            cur = await db.execute(
+                f"""SELECT * FROM live_messages
+                    WHERE {' AND '.join(where)}
+                    ORDER BY ts ASC
+                    LIMIT ?""",
+                args,
+            )
+            rows = await cur.fetchall()
+        return [self._row_to_message(r) for r in rows]
