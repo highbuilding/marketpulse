@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -9,6 +10,7 @@ from typing import Any
 import structlog
 
 from core.domain.models import LiveMessage, ThemeConstituent, ThemeDefinition, ThemeSnapshot, ThemeState
+from core.persistence.duckdb_repo import BarRepo
 from core.persistence.fund_flow_repo import FundFlowRepo
 from core.persistence.theme_repo import ThemeRepo
 from core.services.watchlist_service import WatchlistService
@@ -28,6 +30,10 @@ _BREADTH_MIN_SYMBOLS = 20
 _BREADTH_STRONG_RATIO = 0.68
 _BREADTH_WEAK_RATIO = 0.68
 _BREADTH_FAST_CHANGE_RATIO = 0.18
+_LIMIT_UP_PCT = 9.8
+_PREV_LIMIT_PCT = 9.5
+_LIMIT_BREAK_PCT = 7.5
+_LIMIT_BREAK_DROP_PCT = 2.0
 _INDEX_NAMES = {
     "000001.SH": "上证指数",
     "399001.SZ": "深证成指",
@@ -91,6 +97,13 @@ class _ThemeRuntimeState:
 
 
 @dataclass
+class _SymbolLimitRuntimeState:
+    day_key: str
+    peak_change_pct: float
+    peak_ts: datetime
+
+
+@dataclass
 class _MarketPulseRuntimeState:
     breadth_state: str = "neutral"
     universe_width_state: str = "neutral"
@@ -115,10 +128,12 @@ class LiveMessageService:
         theme_repo: ThemeRepo,
         watchlist: WatchlistService,
         fund_flow_repo: FundFlowRepo | None = None,
+        bar_repo: BarRepo | None = None,
     ) -> None:
         self.theme_repo = theme_repo
         self.watchlist = watchlist
         self.fund_flow_repo = fund_flow_repo
+        self.bar_repo = bar_repo
         self._ctx_loaded_at: datetime | None = None
         self._themes: dict[str, _ThemeContext] = {}
         self._symbol_themes: dict[str, list[str]] = {}
@@ -126,6 +141,8 @@ class LiveMessageService:
         self._quotes: dict[str, _QuoteState] = {}
         self._last_emit: dict[str, datetime] = {}
         self._theme_states: dict[str, _ThemeRuntimeState] = {}
+        self._symbol_limit_states: dict[str, _SymbolLimitRuntimeState] = {}
+        self._daily_limit_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self._market_pulse = _MarketPulseRuntimeState()
         self._bar_volumes: dict[tuple[str, str], list[int]] = {}
 
@@ -153,6 +170,7 @@ class LiveMessageService:
         )
         prev = self._quotes.get(symbol)
         self._quotes[symbol] = quote
+        self._record_symbol_limit_peak(quote)
 
         messages: list[LiveMessage] = []
         messages.extend(self._index_pulse_messages(market, quote, source_event_id))
@@ -367,8 +385,8 @@ class LiveMessageService:
         avg = sum(s.change_pct for s in known) / len(known)
         up_ratio = len(up) / len(known)
         down_ratio = len(down) / len(known)
-        up_limit = sum(1 for s in known if s.change_pct >= 9.8)
-        down_limit = sum(1 for s in known if s.change_pct <= -9.8)
+        up_limit = sum(1 for s in known if s.change_pct >= _LIMIT_UP_PCT)
+        down_limit = sum(1 for s in known if s.change_pct <= -_LIMIT_UP_PCT)
         near_limit = sum(1 for s in known if s.change_pct >= 7.0)
         severe_down = sum(1 for s in known if s.change_pct <= -7.0)
         total_amount = sum(s.amount or 0 for s in known) or None
@@ -722,7 +740,9 @@ class LiveMessageService:
             prev = self._theme_states.get(theme_code, _ThemeRuntimeState())
             current_state = _theme_state(ev, prev)
             flow_evidence = await self._fund_flow_evidence(ev, quote.ts)
-            await self._persist_theme_eval(market, quote.ts, ev, current_state, prev, flow_evidence)
+            limit_evidence = await self._limit_structure_evidence(ev, quote.ts)
+            evidence = flow_evidence | limit_evidence
+            await self._persist_theme_eval(market, quote.ts, ev, current_state, prev, evidence)
             if current_state == "launch":
                 messages.append(self._message(
                     market=market,
@@ -740,7 +760,7 @@ class LiveMessageService:
                     theme_code=theme_code,
                     symbol=ev.leader.symbol,
                     symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
-                    payload=_theme_payload(ev) | flow_evidence | {"state": current_state, "prev_state": prev.state},
+                    payload=_theme_payload(ev) | evidence | {"state": current_state, "prev_state": prev.state},
                 ))
             if current_state == "diffusion":
                 messages.append(self._message(
@@ -759,7 +779,7 @@ class LiveMessageService:
                     theme_code=theme_code,
                     symbol=ev.leader.symbol,
                     symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
-                    payload=_theme_payload(ev) | flow_evidence | {"state": current_state, "prev_state": prev.state},
+                    payload=_theme_payload(ev) | evidence | {"state": current_state, "prev_state": prev.state},
                 ))
             if current_state == "divergence":
                 messages.append(self._message(
@@ -775,7 +795,7 @@ class LiveMessageService:
                     theme_code=theme_code,
                     symbol=ev.leader.symbol,
                     symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
-                    payload=_theme_payload(ev) | flow_evidence | {"state": current_state, "prev_state": prev.state},
+                    payload=_theme_payload(ev) | evidence | {"state": current_state, "prev_state": prev.state},
                 ))
             if current_state == "weakness":
                 messages.append(self._message(
@@ -794,7 +814,7 @@ class LiveMessageService:
                     theme_code=theme_code,
                     symbol=ev.laggard.symbol,
                     symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct)[:5]],
-                    payload=_theme_payload(ev) | flow_evidence | {"state": current_state, "prev_state": prev.state},
+                    payload=_theme_payload(ev) | evidence | {"state": current_state, "prev_state": prev.state},
                 ))
             if current_state == "fade":
                 peak_up_count = max(prev.peak_up_count, prev.up_count)
@@ -811,7 +831,7 @@ class LiveMessageService:
                     theme_code=theme_code,
                     symbol=ev.leader.symbol,
                     symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
-                    payload=_theme_payload(ev) | flow_evidence | {
+                    payload=_theme_payload(ev) | evidence | {
                         "state": current_state,
                         "prev_state": prev.state,
                         "prev_up_count": prev.up_count,
@@ -821,8 +841,8 @@ class LiveMessageService:
             messages.extend(self._theme_rotation_messages(
                 market, quote.ts, theme_code, ev, prev, current_state, source_event_id))
             messages.extend(self._theme_quality_messages(
-                market, quote.ts, ev, prev, current_state, flow_evidence, source_event_id))
-            score = _theme_score(ev, current_state, flow_evidence)
+                market, quote.ts, ev, prev, current_state, evidence, source_event_id))
+            score = _theme_score(ev, current_state, evidence)
             self._theme_states[theme_code] = _ThemeRuntimeState(
                 theme_name=ctx.definition.theme_name,
                 leader=ev.leader.symbol,
@@ -1123,6 +1143,38 @@ class LiveMessageService:
                 symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
                 payload=_theme_payload(ev) | flow_evidence | {"state": current_state},
             ))
+        continuation_count = int(flow_evidence.get("continuation_limit_count") or 0)
+        if continuation_count >= 1:
+            continuation_symbols = [
+                str(item["symbol"])
+                for item in flow_evidence.get("continuation_limit_symbols", [])[:5]
+            ]
+            messages.append(self._message(
+                market=market, ts=ts, level="watch", category="theme",
+                title=f"{theme_name}连板结构增强",
+                body=f"已采成分中 {continuation_count} 只昨日强势股今日继续接近涨停。",
+                source_event="bus:quote.tick", source_event_id=source_event_id,
+                dedupe_key=f"theme:{theme_code}:limit_continuation",
+                theme_code=theme_code, symbol=continuation_symbols[0] if continuation_symbols else ev.leader.symbol,
+                symbols=continuation_symbols or [ev.leader.symbol],
+                payload=_theme_payload(ev) | flow_evidence | {"state": current_state},
+            ))
+        broken_count = int(flow_evidence.get("broken_limit_count") or 0)
+        if broken_count >= 1 and (current_state in _THEME_ACTIVE_STATES or near_limit_count >= 2):
+            broken_symbols = [
+                str(item["symbol"])
+                for item in flow_evidence.get("broken_limit_symbols", [])[:5]
+            ]
+            messages.append(self._message(
+                market=market, ts=ts, level="warning", category="risk",
+                title=f"{theme_name}炸板风险出现",
+                body=f"已采成分中 {broken_count} 只盘中曾接近涨停后明显回落,短线接力强度需要重新确认。",
+                source_event="bus:quote.tick", source_event_id=source_event_id,
+                dedupe_key=f"risk:{theme_code}:limit_break",
+                theme_code=theme_code, symbol=broken_symbols[0] if broken_symbols else ev.leader.symbol,
+                symbols=broken_symbols or [ev.leader.symbol],
+                payload=_theme_payload(ev) | flow_evidence | {"state": current_state},
+            ))
         prev_leader_quote = next((s for s in ev.known if s.symbol == prev.leader), None)
         if prev.leader \
                 and prev_leader_quote is not None \
@@ -1147,6 +1199,115 @@ class LiveMessageService:
                 },
             ))
         return messages
+
+    def _record_symbol_limit_peak(self, quote: _QuoteState) -> None:
+        day_key = _bjt_date_key(quote.ts)
+        prev = self._symbol_limit_states.get(quote.symbol)
+        if prev is None or prev.day_key != day_key or quote.change_pct > prev.peak_change_pct:
+            self._symbol_limit_states[quote.symbol] = _SymbolLimitRuntimeState(
+                day_key=day_key,
+                peak_change_pct=quote.change_pct,
+                peak_ts=quote.ts,
+            )
+
+    async def _limit_structure_evidence(self, ev: _ThemeEval, ts: datetime) -> dict[str, Any]:
+        day_key = _bjt_date_key(ts)
+        daily_items = [
+            await self._previous_day_limit_evidence(symbol=s.symbol, ts=ts)
+            for s in ev.known
+        ]
+        previous_limit_items = [
+            item for item in daily_items
+            if item.get("previous_limit_like")
+        ]
+        continuation_items: list[dict[str, Any]] = []
+        broken_items: list[dict[str, Any]] = []
+        for quote in ev.known:
+            daily = next((item for item in daily_items if item.get("symbol") == quote.symbol), {})
+            peak = self._symbol_limit_states.get(quote.symbol)
+            peak_change_pct = peak.peak_change_pct if peak and peak.day_key == day_key else quote.change_pct
+            peak_ts = peak.peak_ts if peak and peak.day_key == day_key else quote.ts
+            if daily.get("previous_limit_like") and quote.change_pct >= _PREV_LIMIT_PCT:
+                continuation_items.append({
+                    "symbol": quote.symbol,
+                    "change_pct": quote.change_pct,
+                    "previous_day_change_pct": daily.get("previous_day_change_pct"),
+                    "previous_day_ts": daily.get("previous_day_ts"),
+                })
+            if peak_change_pct >= _PREV_LIMIT_PCT \
+                    and quote.change_pct <= _LIMIT_BREAK_PCT \
+                    and peak_change_pct - quote.change_pct >= _LIMIT_BREAK_DROP_PCT:
+                broken_items.append({
+                    "symbol": quote.symbol,
+                    "change_pct": quote.change_pct,
+                    "peak_change_pct": peak_change_pct,
+                    "peak_ts": peak_ts.isoformat(),
+                    "drop_from_peak_pct": peak_change_pct - quote.change_pct,
+                    "previous_limit_like": bool(daily.get("previous_limit_like")),
+                })
+        return {
+            "limit_structure_source": "collector_quotes_and_daily_bars",
+            "limit_structure_scope": "当前采集清单,非全A",
+            "previous_limit_available": any(item.get("previous_limit_available") for item in daily_items),
+            "previous_limit_like_count": len(previous_limit_items),
+            "previous_limit_like_symbols": previous_limit_items[:10],
+            "continuation_limit_count": len(continuation_items),
+            "continuation_limit_symbols": continuation_items[:10],
+            "broken_limit_count": len(broken_items),
+            "broken_limit_symbols": broken_items[:10],
+        }
+
+    async def _previous_day_limit_evidence(self, *, symbol: str, ts: datetime) -> dict[str, Any]:
+        day_key = _bjt_date_key(ts)
+        cache_key = (symbol, day_key)
+        cached = self._daily_limit_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        result: dict[str, Any] = {
+            "symbol": symbol,
+            "previous_limit_available": False,
+        }
+        if self.bar_repo is None:
+            result["previous_limit_reason"] = "bar_repo_missing"
+            self._daily_limit_cache[cache_key] = result
+            return result
+        day_start, _ = _bjt_day_window_utc(ts)
+        try:
+            bars = await asyncio.to_thread(
+                self.bar_repo.fetch_history_paged,
+                "ashare",
+                symbol,
+                "1d",
+                before=day_start,
+                limit=2,
+                closed_only=True,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("live_message.previous_limit_evidence_failed", symbol=symbol, error=str(e))
+            result["previous_limit_reason"] = "query_failed"
+            self._daily_limit_cache[cache_key] = result
+            return result
+        if len(bars) < 2:
+            result["previous_limit_reason"] = "insufficient_daily_bars"
+            self._daily_limit_cache[cache_key] = result
+            return result
+        prev_prev, prev = bars[-2], bars[-1]
+        prev_close = float(prev_prev.close)
+        close = float(prev.close)
+        if prev_close <= 0:
+            result["previous_limit_reason"] = "invalid_previous_close"
+            self._daily_limit_cache[cache_key] = result
+            return result
+        change_pct = (close / prev_close - 1.0) * 100
+        result = {
+            "symbol": symbol,
+            "previous_limit_available": True,
+            "previous_day_ts": prev.ts.isoformat(),
+            "previous_day_change_pct": change_pct,
+            "previous_limit_like": change_pct >= _PREV_LIMIT_PCT,
+        }
+        self._daily_limit_cache[cache_key] = result
+        return result
 
     async def _fund_flow_evidence(self, ev: _ThemeEval, ts: datetime) -> dict[str, Any]:
         core_symbols = [s.symbol for s in ev.core]
@@ -1356,6 +1517,12 @@ def _bjt_day_window_utc(ts: datetime) -> tuple[datetime, datetime]:
     return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
 
 
+def _bjt_date_key(ts: datetime) -> str:
+    from zoneinfo import ZoneInfo
+
+    return ts.astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat()
+
+
 def _int_or_none(value: Any) -> int | None:
     try:
         return int(value) if value is not None else None
@@ -1474,7 +1641,7 @@ def _leader_amount_share(ev: _ThemeEval) -> float | None:
 
 
 def _limit_up_count(ev: _ThemeEval) -> int:
-    return sum(1 for s in ev.known if s.change_pct >= 9.8)
+    return sum(1 for s in ev.known if s.change_pct >= _LIMIT_UP_PCT)
 
 
 def _near_limit_count(ev: _ThemeEval) -> int:

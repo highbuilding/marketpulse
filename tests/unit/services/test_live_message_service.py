@@ -1,16 +1,56 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
-from core.domain.models import FundFlowSnapshot, ThemeConstituent, ThemeDefinition
+from core.domain.models import Bar, FundFlowSnapshot, ThemeConstituent, ThemeDefinition
 from core.persistence.fund_flow_repo import FundFlowRepo
 from core.persistence.sqlite_repo import StateRepo
 from core.persistence.theme_repo import ThemeRepo
 from core.services.live_message_service import LiveMessageService
+
+
+class _FakeBarRepo:
+    def __init__(self, rows: dict[str, list[Bar]]) -> None:
+        self.rows = rows
+
+    def fetch_history_paged(
+        self,
+        market: str,
+        symbol: str,
+        interval: str,
+        *,
+        before: datetime | None,
+        limit: int,
+        closed_only: bool = False,
+    ) -> list[Bar]:
+        assert market == "ashare"
+        assert interval == "1d"
+        assert closed_only is True
+        rows = self.rows.get(symbol, [])
+        if before is not None:
+            rows = [row for row in rows if row.ts < before]
+        return rows[-limit:]
+
+
+def _daily_bar(symbol: str, ts: datetime, close: float) -> Bar:
+    value = Decimal(str(close))
+    return Bar(
+        market="ashare",
+        symbol=symbol,
+        ts=ts,
+        interval="1d",
+        open=value,
+        high=value,
+        low=value,
+        close=value,
+        volume=100,
+        final=True,
+    )
 
 
 async def _service(tmp_path: Path, *, watch_symbols: list[str] | None = None) -> LiveMessageService:
@@ -75,6 +115,33 @@ async def _service_with_fund_flow(tmp_path: Path) -> tuple[LiveMessageService, F
     watchlist = AsyncMock()
     watchlist.dynamic_universe = AsyncMock(return_value=[])
     return LiveMessageService(theme_repo, watchlist, fund_repo), fund_repo
+
+
+async def _service_with_bar_repo(tmp_path: Path, bar_repo: _FakeBarRepo) -> LiveMessageService:
+    db = tmp_path / "state.db"
+    await StateRepo(str(db)).init()
+    theme_repo = ThemeRepo(str(db))
+    await theme_repo.seed_definitions(
+        [
+            ThemeDefinition(
+                market="ashare",
+                theme_code="theme:test",
+                theme_name="测试题材",
+                classification="theme",
+                priority="P0",
+                source="seed",
+            ),
+        ],
+        [
+            ThemeConstituent("ashare", "theme:test", "000001.SZ", "核心A", "leader", 10, source="seed"),
+            ThemeConstituent("ashare", "theme:test", "000002.SZ", "核心B", "core", 9, source="seed"),
+            ThemeConstituent("ashare", "theme:test", "000003.SZ", "跟随C", "follower", 5, source="seed"),
+            ThemeConstituent("ashare", "theme:test", "000004.SZ", "跟随D", "follower", 4, source="seed"),
+        ],
+    )
+    watchlist = AsyncMock()
+    watchlist.dynamic_universe = AsyncMock(return_value=[])
+    return LiveMessageService(theme_repo, watchlist, None, bar_repo)  # type: ignore[arg-type]
 
 
 async def _tick(
@@ -360,6 +427,57 @@ async def test_theme_limit_structure_and_leader_pullback_proxy(tmp_path: Path):
 
     pullback = await _tick(svc, "000001.SZ", 6.8, ts, amount=360)
     assert "测试题材龙头高位回落" in {m.title for m in pullback}
+
+
+@pytest.mark.asyncio
+async def test_theme_limit_continuation_uses_previous_closed_daily_bars(tmp_path: Path):
+    ts = datetime(2026, 6, 16, 1, 35, tzinfo=timezone.utc)
+    prev_prev = datetime(2026, 6, 13, 16, 0, tzinfo=timezone.utc)
+    prev = datetime(2026, 6, 14, 16, 0, tzinfo=timezone.utc)
+    bar_repo = _FakeBarRepo({
+        "000001.SZ": [
+            _daily_bar("000001.SZ", prev_prev, 10),
+            _daily_bar("000001.SZ", prev, 11),
+        ],
+        "000002.SZ": [
+            _daily_bar("000002.SZ", prev_prev, 10),
+            _daily_bar("000002.SZ", prev, 10.2),
+        ],
+        "000003.SZ": [
+            _daily_bar("000003.SZ", prev_prev, 10),
+            _daily_bar("000003.SZ", prev, 10.1),
+        ],
+    })
+    svc = await _service_with_bar_repo(tmp_path, bar_repo)
+
+    await _tick(svc, "000001.SZ", 9.9, ts, amount=300)
+    await _tick(svc, "000002.SZ", 7.2, ts, amount=200)
+    messages = await _tick(svc, "000003.SZ", 7.1, ts, amount=180)
+
+    assert "测试题材连板结构增强" in {m.title for m in messages}
+    continuation = next(m for m in messages if m.title == "测试题材连板结构增强")
+    assert continuation.payload["limit_structure_scope"] == "当前采集清单,非全A"
+    assert continuation.payload["previous_limit_like_count"] == 1
+    assert continuation.payload["continuation_limit_count"] == 1
+    assert continuation.payload["continuation_limit_symbols"][0]["symbol"] == "000001.SZ"
+
+
+@pytest.mark.asyncio
+async def test_theme_limit_break_proxy_uses_intraday_peak(tmp_path: Path):
+    svc = await _service(tmp_path)
+    ts = datetime(2026, 6, 15, 1, 35, tzinfo=timezone.utc)
+
+    await _tick(svc, "000001.SZ", 9.9, ts, amount=300)
+    await _tick(svc, "000002.SZ", 7.3, ts, amount=220)
+    await _tick(svc, "000003.SZ", 7.1, ts, amount=180)
+    messages = await _tick(svc, "000001.SZ", 6.9, ts.replace(minute=45), amount=380)
+
+    assert "测试题材炸板风险出现" in {m.title for m in messages}
+    broken = next(m for m in messages if m.title == "测试题材炸板风险出现")
+    assert broken.category == "risk"
+    assert broken.payload["broken_limit_count"] == 1
+    assert broken.payload["broken_limit_symbols"][0]["symbol"] == "000001.SZ"
+    assert broken.payload["broken_limit_symbols"][0]["peak_change_pct"] == pytest.approx(9.9)
 
 
 @pytest.mark.asyncio
