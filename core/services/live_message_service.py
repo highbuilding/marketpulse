@@ -26,6 +26,7 @@ _THEME_WEAK_STATES = {"fade", "weakness"}
 _BREADTH_MIN_SYMBOLS = 20
 _BREADTH_STRONG_RATIO = 0.68
 _BREADTH_WEAK_RATIO = 0.68
+_BREADTH_FAST_CHANGE_RATIO = 0.18
 _INDEX_NAMES = {
     "000001.SH": "上证指数",
     "399001.SZ": "深证成指",
@@ -93,6 +94,17 @@ class _MarketPulseRuntimeState:
     breadth_state: str = "neutral"
     universe_width_state: str = "neutral"
     style_state: str = "neutral"
+    universe_sample_count: int = 0
+    universe_up_count: int = 0
+    universe_down_count: int = 0
+    universe_up_ratio: float = 0.0
+    universe_down_ratio: float = 0.0
+    universe_bucket: datetime | None = None
+    universe_baseline_sample_count: int = 0
+    universe_baseline_up_count: int = 0
+    universe_baseline_down_count: int = 0
+    universe_baseline_up_ratio: float = 0.0
+    universe_baseline_down_ratio: float = 0.0
     updated_at: datetime | None = None
 
 
@@ -315,6 +327,17 @@ class LiveMessageService:
             breadth_state=breadth_state,
             universe_width_state=self._market_pulse.universe_width_state,
             style_state=style_state,
+            universe_sample_count=self._market_pulse.universe_sample_count,
+            universe_up_count=self._market_pulse.universe_up_count,
+            universe_down_count=self._market_pulse.universe_down_count,
+            universe_up_ratio=self._market_pulse.universe_up_ratio,
+            universe_down_ratio=self._market_pulse.universe_down_ratio,
+            universe_bucket=self._market_pulse.universe_bucket,
+            universe_baseline_sample_count=self._market_pulse.universe_baseline_sample_count,
+            universe_baseline_up_count=self._market_pulse.universe_baseline_up_count,
+            universe_baseline_down_count=self._market_pulse.universe_baseline_down_count,
+            universe_baseline_up_ratio=self._market_pulse.universe_baseline_up_ratio,
+            universe_baseline_down_ratio=self._market_pulse.universe_baseline_down_ratio,
             updated_at=quote.ts,
         )
         return messages
@@ -337,6 +360,11 @@ class LiveMessageService:
         avg = sum(s.change_pct for s in known) / len(known)
         up_ratio = len(up) / len(known)
         down_ratio = len(down) / len(known)
+        up_limit = sum(1 for s in known if s.change_pct >= 9.8)
+        down_limit = sum(1 for s in known if s.change_pct <= -9.8)
+        near_limit = sum(1 for s in known if s.change_pct >= 7.0)
+        severe_down = sum(1 for s in known if s.change_pct <= -7.0)
+        total_amount = sum(s.amount or 0 for s in known) or None
         ordered = sorted(known, key=lambda s: s.change_pct, reverse=True)
         leader = ordered[0]
         laggard = ordered[-1]
@@ -355,6 +383,11 @@ class LiveMessageService:
             "up_ratio": up_ratio,
             "down_ratio": down_ratio,
             "avg_change_pct": avg,
+            "up_limit_count": up_limit,
+            "down_limit_count": down_limit,
+            "near_limit_count": near_limit,
+            "severe_down_count": severe_down,
+            "total_amount": total_amount,
             "leader": {"symbol": leader.symbol, "change_pct": leader.change_pct},
             "laggard": {"symbol": laggard.symbol, "change_pct": laggard.change_pct},
             "rule_version": RULE_VERSION,
@@ -391,6 +424,96 @@ class LiveMessageService:
                 payload=payload | {"state": width_state},
             ))
 
+        prev = self._market_pulse
+        bucket = _bucket_5m(quote.ts)
+        if prev.universe_bucket != bucket:
+            baseline_sample_count = prev.universe_sample_count
+            baseline_up_count = prev.universe_up_count
+            baseline_down_count = prev.universe_down_count
+            baseline_up_ratio = prev.universe_up_ratio
+            baseline_down_ratio = prev.universe_down_ratio
+        else:
+            baseline_sample_count = prev.universe_baseline_sample_count
+            baseline_up_count = prev.universe_baseline_up_count
+            baseline_down_count = prev.universe_baseline_down_count
+            baseline_up_ratio = prev.universe_baseline_up_ratio
+            baseline_down_ratio = prev.universe_baseline_down_ratio
+        min_delta = max(5, math.ceil(len(known) * 0.12))
+        if baseline_sample_count >= _BREADTH_MIN_SYMBOLS:
+            down_delta = len(down) - baseline_down_count
+            up_delta = len(up) - baseline_up_count
+            if down_delta >= min_delta and down_ratio - baseline_down_ratio >= _BREADTH_FAST_CHANGE_RATIO:
+                messages.append(self._message(
+                    market=market,
+                    ts=quote.ts,
+                    level="warning",
+                    category="risk",
+                    title="采集样本宽度快速恶化",
+                    body=f"采集清单下跌标的较上一快照增加 {down_delta} 个,下跌占比升至 {down_ratio:.0%}。",
+                    source_event="bus:quote.tick",
+                    source_event_id=source_event_id,
+                    dedupe_key="collector_breadth:fast_deterioration",
+                    symbol=laggard.symbol,
+                    symbols=[s.symbol for s in ordered[-8:]],
+                    payload=payload | {
+                        "state": "fast_deterioration",
+                        "baseline_bucket": bucket.isoformat(),
+                        "baseline_down_count": baseline_down_count,
+                        "baseline_down_ratio": baseline_down_ratio,
+                    },
+                ))
+            elif up_delta >= min_delta and up_ratio - baseline_up_ratio >= _BREADTH_FAST_CHANGE_RATIO:
+                messages.append(self._message(
+                    market=market,
+                    ts=quote.ts,
+                    level="watch",
+                    category="index",
+                    title="采集样本宽度快速改善",
+                    body=f"采集清单上涨标的较上一快照增加 {up_delta} 个,上涨占比升至 {up_ratio:.0%}。",
+                    source_event="bus:quote.tick",
+                    source_event_id=source_event_id,
+                    dedupe_key="collector_breadth:fast_improvement",
+                    symbol=leader.symbol,
+                    symbols=[s.symbol for s in ordered[:8]],
+                    payload=payload | {
+                        "state": "fast_improvement",
+                        "baseline_bucket": bucket.isoformat(),
+                        "baseline_up_count": baseline_up_count,
+                        "baseline_up_ratio": baseline_up_ratio,
+                    },
+                ))
+
+        if near_limit >= max(3, math.ceil(len(known) * 0.03)):
+            messages.append(self._message(
+                market=market,
+                ts=quote.ts,
+                level="watch",
+                category="index",
+                title="采集样本涨停结构增强",
+                body=f"采集清单中 {near_limit} 个标的涨幅超过7%,其中 {up_limit} 个接近涨停。",
+                source_event="bus:quote.tick",
+                source_event_id=source_event_id,
+                dedupe_key="collector_breadth:limit_structure",
+                symbol=leader.symbol,
+                symbols=[s.symbol for s in ordered[:8]],
+                payload=payload | {"state": "limit_structure"},
+            ))
+        if severe_down >= max(3, math.ceil(len(known) * 0.03)):
+            messages.append(self._message(
+                market=market,
+                ts=quote.ts,
+                level="warning",
+                category="risk",
+                title="采集样本跌停风险扩散",
+                body=f"采集清单中 {severe_down} 个标的跌幅超过7%,其中 {down_limit} 个接近跌停。",
+                source_event="bus:quote.tick",
+                source_event_id=source_event_id,
+                dedupe_key="collector_breadth:down_limit_risk",
+                symbol=laggard.symbol,
+                symbols=[s.symbol for s in ordered[-8:]],
+                payload=payload | {"state": "down_limit_risk"},
+            ))
+
         if self._market_pulse.breadth_state in {"strong", "resonance_up"} and width_state == "weak":
             messages.append(self._message(
                 market=market,
@@ -414,6 +537,17 @@ class LiveMessageService:
             breadth_state=self._market_pulse.breadth_state,
             universe_width_state=width_state,
             style_state=self._market_pulse.style_state,
+            universe_sample_count=len(known),
+            universe_up_count=len(up),
+            universe_down_count=len(down),
+            universe_up_ratio=up_ratio,
+            universe_down_ratio=down_ratio,
+            universe_bucket=bucket,
+            universe_baseline_sample_count=baseline_sample_count,
+            universe_baseline_up_count=baseline_up_count,
+            universe_baseline_down_count=baseline_down_count,
+            universe_baseline_up_ratio=baseline_up_ratio,
+            universe_baseline_down_ratio=baseline_down_ratio,
             updated_at=quote.ts,
         )
         return messages

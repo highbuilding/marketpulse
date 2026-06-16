@@ -321,6 +321,57 @@ async def test_collector_breadth_weak_message_uses_sample_scope(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_collector_breadth_fast_deterioration_uses_5m_bucket_baseline(tmp_path: Path):
+    svc = await _service(tmp_path)
+    ts = datetime(2026, 6, 15, 1, 35, tzinfo=timezone.utc)
+
+    for i in range(20):
+        await _tick(svc, f"60{i:04d}.SH", 0.1, ts)
+
+    messages = []
+    next_bucket = ts.replace(minute=40)
+    for i in range(5):
+        messages = await _tick(svc, f"60{i:04d}.SH", -0.8, next_bucket)
+
+    assert "采集样本宽度快速恶化" in {m.title for m in messages}
+    risk = next(m for m in messages if m.title == "采集样本宽度快速恶化")
+    assert risk.category == "risk"
+    assert risk.payload["sample_scope"] == "当前采集清单,非全A"
+    assert risk.payload["baseline_down_count"] == 0
+    assert risk.payload["down_count"] == 5
+
+
+@pytest.mark.asyncio
+async def test_collector_breadth_limit_structure_and_down_limit_proxy(tmp_path: Path):
+    svc = await _service(tmp_path)
+    ts = datetime(2026, 6, 15, 1, 35, tzinfo=timezone.utc)
+
+    messages = []
+    for i in range(17):
+        messages = await _tick(svc, f"60{i:04d}.SH", 0.1, ts)
+    messages = await _tick(svc, "600017.SH", 9.9, ts)
+    messages = await _tick(svc, "600018.SH", 7.5, ts)
+    messages = await _tick(svc, "600019.SH", 7.2, ts)
+
+    assert "采集样本涨停结构增强" in {m.title for m in messages}
+    limit_msg = next(m for m in messages if m.title == "采集样本涨停结构增强")
+    assert limit_msg.payload["near_limit_count"] == 3
+    assert limit_msg.payload["up_limit_count"] == 1
+
+    down_ts = ts.replace(minute=40)
+    for i in range(17):
+        messages = await _tick(svc, f"60{i:04d}.SH", -0.1, down_ts)
+    messages = await _tick(svc, "600017.SH", -9.9, down_ts)
+    messages = await _tick(svc, "600018.SH", -7.5, down_ts)
+    messages = await _tick(svc, "600019.SH", -7.2, down_ts)
+
+    assert "采集样本跌停风险扩散" in {m.title for m in messages}
+    risk = next(m for m in messages if m.title == "采集样本跌停风险扩散")
+    assert risk.payload["severe_down_count"] == 3
+    assert risk.payload["down_limit_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_index_strong_but_collector_breadth_diverges(tmp_path: Path):
     svc = await _service(tmp_path)
     ts = datetime(2026, 6, 15, 1, 35, tzinfo=timezone.utc)
