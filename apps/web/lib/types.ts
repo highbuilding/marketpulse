@@ -24,6 +24,7 @@ export interface BarDTO {
   amount?: number | null
   turnover?: number | null
   outstanding_share?: number | null
+  final?: boolean
 }
 
 export interface BarsResponse {

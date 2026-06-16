@@ -10,11 +10,17 @@ import type { BarDTO, Interval, ResponseMeta } from '@/lib/types'
 const PAGE = 500
 const EMPTY: BarDTO[] = []
 
-// 多组 bar 按 ts 升序合并去重; 靠后的组在 ts 冲突时获胜 (实时尾部覆盖历史)。
+// 多组 bar 按 ts 升序合并去重; 靠后的组在 ts 冲突时获胜 (实时尾部覆盖历史),
+// 但 final=true 权威收线根不被 final=false 进行中/provisional 根覆盖 (final 缺省视为
+// true): 根治 A股收盘后 SSE 推的 final=false 1d provisional 盖掉权威收线根。
 // 后端 ts 是统一格式的 ISO UTC 串, 字典序 == 时间序, 可直接比较。
 export function mergeBarsAsc(...groups: BarDTO[][]): BarDTO[] {
   const m = new Map<string, BarDTO>()
-  for (const g of groups) for (const b of g) m.set(b.ts, b)
+  for (const g of groups) for (const b of g) {
+    const ex = m.get(b.ts)
+    if (ex && ex.final !== false && b.final === false) continue  // 权威根赢, 不被 provisional 覆盖
+    m.set(b.ts, b)
+  }
   return Array.from(m.values()).sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0))
 }
 

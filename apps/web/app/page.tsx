@@ -17,6 +17,14 @@ import { PositionsPanel } from '@/components/PositionsPanel'
 import type { BarDTO, Interval } from '@/lib/types'
 
 // ── helpers ──
+// 合并保护: ts 相同时, final=true 权威收线根优先于 final=false 进行中/provisional 根。
+// 根治: A股收盘后 Redis 残留的 final=false 1d provisional(用盘中残缺价合成)经 SSE
+// 推来会盖掉 REST 的权威收线根, 大盘指数显示旧值。final 缺省视为 true(最保守)。
+function pickBar(existing: BarDTO | undefined, incoming: BarDTO): BarDTO {
+  if (existing && existing.final !== false && incoming.final === false) return existing
+  return incoming
+}
+
 function pctChange(bars: BarDTO[]) {
   if (bars.length === 0) return null
   const last = bars[bars.length - 1]
@@ -65,18 +73,18 @@ function useBatchStream(symbols: string[], interval: string) {
     const apiBase = typeof window !== 'undefined' && window.location.port === '3000' ? 'http://127.0.0.1:8787' : ''
     const url = `${apiBase}/api/sse/bars/batch?symbols=${encodeURIComponent(symbols.join(','))}&interval=${interval}`
     const es = new EventSource(url)
-    const toDTO = (e: any): BarDTO => ({ ts: e.ts, open: e.open, high: e.high, low: e.low, close: e.close, volume: e.volume })
+    const toDTO = (e: any): BarDTO => ({ ts: e.ts, open: e.open, high: e.high, low: e.low, close: e.close, volume: e.volume, final: e.final })
     es.addEventListener('init', (msg: any) => {
       const d = JSON.parse(msg.data); const sym = d.symbol
       if (!sym) return
       const dtos = (d.bars || []).map(toDTO)
-      setPrices(prev => { const next = { ...prev }; const ex = next[sym] || []; const m = new Map<string, BarDTO>(); for (const b of ex) m.set(b.ts, b); for (const b of dtos) m.set(b.ts, b); next[sym] = Array.from(m.values()).sort((a, b) => a.ts.localeCompare(b.ts)); return next })
+      setPrices(prev => { const next = { ...prev }; const ex = next[sym] || []; const m = new Map<string, BarDTO>(); for (const b of ex) m.set(b.ts, b); for (const b of dtos) m.set(b.ts, pickBar(m.get(b.ts), b)); next[sym] = Array.from(m.values()).sort((a, b) => a.ts.localeCompare(b.ts)); return next })
     })
     const onUpdate = (msg: any) => {
       const ev = JSON.parse(msg.data); const sym = ev.symbol
       if (!sym) return
       const dto = toDTO(ev)
-      setPrices(prev => { const next = { ...prev }; const pb = next[sym] || []; const last = pb[pb.length - 1]; if (last && last.ts === dto.ts) next[sym] = [...pb.slice(0, -1), dto]; else if (!last || dto.ts > last.ts) next[sym] = [...pb, dto]; return next })
+      setPrices(prev => { const next = { ...prev }; const pb = next[sym] || []; const last = pb[pb.length - 1]; if (last && last.ts === dto.ts) next[sym] = [...pb.slice(0, -1), pickBar(last, dto)]; else if (!last || dto.ts > last.ts) next[sym] = [...pb, dto]; return next })
     }
     es.addEventListener('bar', onUpdate); es.addEventListener('tick', onUpdate)
     es.onerror = () => {}
@@ -151,7 +159,7 @@ export default function HomePage() {
       if (sse.length > 0) {
         const map = new Map<string, BarDTO>()
         for (const b of rest) map.set(b.ts, b)
-        for (const b of sse) map.set(b.ts, b)
+        for (const b of sse) map.set(b.ts, pickBar(map.get(b.ts), b))
         merged[sym] = Array.from(map.values()).sort((a, b) => a.ts.localeCompare(b.ts))
       } else {
         merged[sym] = rest
@@ -217,7 +225,7 @@ export default function HomePage() {
           if (sse.length > 0) {
             const m = new Map<string, BarDTO>()
             for (const b of rest) m.set(b.ts, b)
-            for (const b of sse) m.set(b.ts, b)
+            for (const b of sse) m.set(b.ts, pickBar(m.get(b.ts), b))
             bars = Array.from(m.values()).sort((a, b) => a.ts.localeCompare(b.ts))
           }
           const fb = pctChange(bars)

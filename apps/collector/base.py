@@ -152,6 +152,7 @@ def attach_bars_history_route(app: FastAPI, get_repo, market: str) -> None:
                 "low": float(b.low), "close": float(b.close),
                 "volume": b.volume, "amount": b.amount,
                 "turnover": b.turnover, "outstanding_share": b.outstanding_share,
+                "final": bool(b.final),
             } for b in bars],
             "meta": {"stale": False, "count": len(bars)},
         }

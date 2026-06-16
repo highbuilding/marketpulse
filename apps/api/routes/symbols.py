@@ -48,6 +48,7 @@ class BarDTO(BaseModel):
     amount: float | None = None
     turnover: float | None = None
     outstanding_share: float | None = None
+    final: bool = True
 
 
 class BarsResponseMeta(BaseModel):
