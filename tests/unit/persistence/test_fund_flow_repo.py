@@ -37,6 +37,27 @@ async def test_save_and_query_symbol_flow(repo):
 
 
 @pytest.mark.asyncio
+async def test_latest_symbol_flows_returns_latest_rows_in_window(repo):
+    base = datetime(2026, 5, 13, 9, 30, tzinfo=timezone.utc)
+    await repo.save_symbol_flows([
+        _snap_symbol("600519.SH", base, 1e7),
+        _snap_symbol("600519.SH", base + timedelta(minutes=30), 1.2e7),
+        _snap_symbol("000858.SZ", base + timedelta(minutes=10), -2e7),
+        _snap_symbol("300750.SZ", base - timedelta(days=1), 9e7),
+    ])
+
+    rows = await repo.latest_symbol_flows(
+        ["600519.SH", "000858.SZ", "300750.SZ"],
+        start=base - timedelta(minutes=1),
+        end=base + timedelta(hours=1),
+    )
+
+    assert set(rows) == {"600519.SH", "000858.SZ"}
+    assert rows["600519.SH"].main_net == pytest.approx(1.2e7)
+    assert rows["000858.SZ"].main_net == pytest.approx(-2e7)
+
+
+@pytest.mark.asyncio
 async def test_save_north_flow(repo):
     ts = datetime(2026, 5, 13, 10, 0, tzinfo=timezone.utc)
     await repo.save_north_flow(FundFlowSnapshot(

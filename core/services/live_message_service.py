@@ -9,6 +9,7 @@ from typing import Any
 import structlog
 
 from core.domain.models import LiveMessage, ThemeConstituent, ThemeDefinition, ThemeSnapshot, ThemeState
+from core.persistence.fund_flow_repo import FundFlowRepo
 from core.persistence.theme_repo import ThemeRepo
 from core.services.watchlist_service import WatchlistService
 
@@ -109,9 +110,15 @@ class _MarketPulseRuntimeState:
 
 
 class LiveMessageService:
-    def __init__(self, theme_repo: ThemeRepo, watchlist: WatchlistService) -> None:
+    def __init__(
+        self,
+        theme_repo: ThemeRepo,
+        watchlist: WatchlistService,
+        fund_flow_repo: FundFlowRepo | None = None,
+    ) -> None:
         self.theme_repo = theme_repo
         self.watchlist = watchlist
+        self.fund_flow_repo = fund_flow_repo
         self._ctx_loaded_at: datetime | None = None
         self._themes: dict[str, _ThemeContext] = {}
         self._symbol_themes: dict[str, list[str]] = {}
@@ -714,7 +721,8 @@ class LiveMessageService:
                 continue
             prev = self._theme_states.get(theme_code, _ThemeRuntimeState())
             current_state = _theme_state(ev, prev)
-            await self._persist_theme_eval(market, quote.ts, ev, current_state, prev)
+            flow_evidence = await self._fund_flow_evidence(ev, quote.ts)
+            await self._persist_theme_eval(market, quote.ts, ev, current_state, prev, flow_evidence)
             if current_state == "launch":
                 messages.append(self._message(
                     market=market,
@@ -732,7 +740,7 @@ class LiveMessageService:
                     theme_code=theme_code,
                     symbol=ev.leader.symbol,
                     symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
-                    payload=_theme_payload(ev) | {"state": current_state, "prev_state": prev.state},
+                    payload=_theme_payload(ev) | flow_evidence | {"state": current_state, "prev_state": prev.state},
                 ))
             if current_state == "diffusion":
                 messages.append(self._message(
@@ -751,7 +759,7 @@ class LiveMessageService:
                     theme_code=theme_code,
                     symbol=ev.leader.symbol,
                     symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
-                    payload=_theme_payload(ev) | {"state": current_state, "prev_state": prev.state},
+                    payload=_theme_payload(ev) | flow_evidence | {"state": current_state, "prev_state": prev.state},
                 ))
             if current_state == "divergence":
                 messages.append(self._message(
@@ -767,7 +775,7 @@ class LiveMessageService:
                     theme_code=theme_code,
                     symbol=ev.leader.symbol,
                     symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
-                    payload=_theme_payload(ev) | {"state": current_state, "prev_state": prev.state},
+                    payload=_theme_payload(ev) | flow_evidence | {"state": current_state, "prev_state": prev.state},
                 ))
             if current_state == "weakness":
                 messages.append(self._message(
@@ -786,7 +794,7 @@ class LiveMessageService:
                     theme_code=theme_code,
                     symbol=ev.laggard.symbol,
                     symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct)[:5]],
-                    payload=_theme_payload(ev) | {"state": current_state, "prev_state": prev.state},
+                    payload=_theme_payload(ev) | flow_evidence | {"state": current_state, "prev_state": prev.state},
                 ))
             if current_state == "fade":
                 peak_up_count = max(prev.peak_up_count, prev.up_count)
@@ -803,7 +811,7 @@ class LiveMessageService:
                     theme_code=theme_code,
                     symbol=ev.leader.symbol,
                     symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
-                    payload=_theme_payload(ev) | {
+                    payload=_theme_payload(ev) | flow_evidence | {
                         "state": current_state,
                         "prev_state": prev.state,
                         "prev_up_count": prev.up_count,
@@ -813,8 +821,8 @@ class LiveMessageService:
             messages.extend(self._theme_rotation_messages(
                 market, quote.ts, theme_code, ev, prev, current_state, source_event_id))
             messages.extend(self._theme_quality_messages(
-                market, quote.ts, ev, prev, current_state, source_event_id))
-            score = _theme_score(ev, current_state)
+                market, quote.ts, ev, prev, current_state, flow_evidence, source_event_id))
+            score = _theme_score(ev, current_state, flow_evidence)
             self._theme_states[theme_code] = _ThemeRuntimeState(
                 theme_name=ctx.definition.theme_name,
                 leader=ev.leader.symbol,
@@ -896,6 +904,7 @@ class LiveMessageService:
         ev: _ThemeEval,
         current_state: str,
         prev: _ThemeRuntimeState,
+        flow_evidence: dict[str, Any],
     ) -> None:
         """持久化题材快照和当前状态,供 UI 展示与盘后复盘。
 
@@ -910,13 +919,13 @@ class LiveMessageService:
             if ev.second is not None else None
         )
         amount = sum(s.amount or 0 for s in ev.known)
-        payload = _theme_payload(ev) | {
+        payload = _theme_payload(ev) | flow_evidence | {
             "state": current_state,
             "bucket_ts": bucket.isoformat(),
             "peak_up_count": max(prev.peak_up_count, len(ev.up)),
             "rule_version": RULE_VERSION,
         }
-        score = _theme_score(ev, current_state)
+        score = _theme_score(ev, current_state, flow_evidence)
         reason = _theme_reason(ev, current_state)
         try:
             await self.theme_repo.upsert_snapshots([
@@ -992,6 +1001,7 @@ class LiveMessageService:
         ev: _ThemeEval,
         prev: _ThemeRuntimeState,
         current_state: str,
+        flow_evidence: dict[str, Any],
         source_event_id: str | None,
     ) -> list[LiveMessage]:
         messages: list[LiveMessage] = []
@@ -1015,7 +1025,7 @@ class LiveMessageService:
                 dedupe_key=f"theme:{theme_code}:leader_switch",
                 theme_code=theme_code, symbol=ev.leader.symbol,
                 symbols=[ev.leader.symbol, prev.leader],
-                payload=_theme_payload(ev) | {"prev_leader": prev.leader, "prev_leader_change_pct": prev.leader_change_pct},
+                payload=_theme_payload(ev) | flow_evidence | {"prev_leader": prev.leader, "prev_leader_change_pct": prev.leader_change_pct},
             ))
         if len(ev.known) >= 4 and _up_ratio(ev) >= 0.45 and _core_up_ratio(ev) <= 0.50:
             messages.append(self._message(
@@ -1029,7 +1039,7 @@ class LiveMessageService:
                 dedupe_key=f"risk:{theme_code}:core_unsynced",
                 theme_code=theme_code, symbol=ev.leader.symbol,
                 symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
-                payload=_theme_payload(ev),
+                payload=_theme_payload(ev) | flow_evidence,
             ))
         if ev.leader.change_pct >= 4.0 and (
             _up_ratio(ev) < 0.45 or _leader_gap(ev) >= 2.0
@@ -1042,8 +1052,34 @@ class LiveMessageService:
                 dedupe_key=f"risk:{theme_code}:single_leader",
                 theme_code=theme_code, symbol=ev.leader.symbol,
                 symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
-                payload=_theme_payload(ev),
+                payload=_theme_payload(ev) | flow_evidence,
             ))
+        if current_state in _THEME_ACTIVE_STATES and flow_evidence.get("fund_flow_available"):
+            core_main_net = _float_or_none(flow_evidence.get("core_main_net"))
+            positive_count = int(flow_evidence.get("core_positive_flow_count") or 0)
+            negative_count = int(flow_evidence.get("core_negative_flow_count") or 0)
+            if core_main_net is not None and core_main_net > 0 and positive_count >= 1:
+                messages.append(self._message(
+                    market=market, ts=ts, level="watch", category="theme",
+                    title=f"{theme_name}核心资金流确认",
+                    body=f"已采核心股当日主力净流入合计 {core_main_net / 10000:.0f} 万元,扩散质量获得资金侧确认。",
+                    source_event="bus:quote.tick", source_event_id=source_event_id,
+                    dedupe_key=f"theme:{theme_code}:fund_flow_confirmed",
+                    theme_code=theme_code, symbol=ev.leader.symbol,
+                    symbols=[s["symbol"] for s in flow_evidence.get("core_fund_flows", [])[:5]],
+                    payload=_theme_payload(ev) | flow_evidence | {"state": current_state},
+                ))
+            elif core_main_net is not None and core_main_net < 0 and negative_count >= 1:
+                messages.append(self._message(
+                    market=market, ts=ts, level="warning", category="risk",
+                    title=f"{theme_name}上涨但资金流背离",
+                    body=f"题材处于{_theme_state_label(current_state)},但已采核心股当日主力净流出 {abs(core_main_net) / 10000:.0f} 万元。",
+                    source_event="bus:quote.tick", source_event_id=source_event_id,
+                    dedupe_key=f"risk:{theme_code}:fund_flow_divergence",
+                    theme_code=theme_code, symbol=ev.leader.symbol,
+                    symbols=[s["symbol"] for s in flow_evidence.get("core_fund_flows", [])[:5]],
+                    payload=_theme_payload(ev) | flow_evidence | {"state": current_state},
+                ))
         if current_state in _THEME_ACTIVE_STATES \
                 and amount_known_ratio >= 0.65 \
                 and leader_amount_share is not None \
@@ -1060,7 +1096,7 @@ class LiveMessageService:
                 dedupe_key=f"theme:{theme_code}:amount_confirmed",
                 theme_code=theme_code, symbol=ev.leader.symbol,
                 symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
-                payload=_theme_payload(ev) | {"state": current_state},
+                payload=_theme_payload(ev) | flow_evidence | {"state": current_state},
             ))
         if current_state in _THEME_ACTIVE_STATES \
                 and leader_amount_share is not None \
@@ -1074,7 +1110,7 @@ class LiveMessageService:
                 dedupe_key=f"risk:{theme_code}:amount_concentrated",
                 theme_code=theme_code, symbol=ev.leader.symbol,
                 symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
-                payload=_theme_payload(ev) | {"state": current_state},
+                payload=_theme_payload(ev) | flow_evidence | {"state": current_state},
             ))
         if limit_up_count >= 1 and near_limit_count >= max(2, math.ceil(len(ev.known) * 0.15)):
             messages.append(self._message(
@@ -1085,7 +1121,7 @@ class LiveMessageService:
                 dedupe_key=f"theme:{theme_code}:limit_structure",
                 theme_code=theme_code, symbol=ev.leader.symbol,
                 symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
-                payload=_theme_payload(ev) | {"state": current_state},
+                payload=_theme_payload(ev) | flow_evidence | {"state": current_state},
             ))
         prev_leader_quote = next((s for s in ev.known if s.symbol == prev.leader), None)
         if prev.leader \
@@ -1104,13 +1140,61 @@ class LiveMessageService:
                 dedupe_key=f"risk:{theme_code}:leader_pullback",
                 theme_code=theme_code, symbol=prev_leader_quote.symbol,
                 symbols=[prev_leader_quote.symbol, ev.leader.symbol],
-                payload=_theme_payload(ev) | {
+                payload=_theme_payload(ev) | flow_evidence | {
                     "state": current_state,
                     "prev_leader_change_pct": prev.leader_change_pct,
                     "prev_leader_current_change_pct": prev_leader_quote.change_pct,
                 },
             ))
         return messages
+
+    async def _fund_flow_evidence(self, ev: _ThemeEval, ts: datetime) -> dict[str, Any]:
+        core_symbols = [s.symbol for s in ev.core]
+        if self.fund_flow_repo is None or not core_symbols:
+            return {"fund_flow_available": False, "fund_flow_reason": "repo_or_core_missing"}
+        start, end = _bjt_day_window_utc(ts)
+        try:
+            flows = await self.fund_flow_repo.latest_symbol_flows(core_symbols, start=start, end=end)
+        except Exception as e:  # noqa: BLE001
+            log.warning(
+                "live_message.fund_flow_evidence_failed",
+                theme_code=ev.ctx.definition.theme_code,
+                error=str(e),
+            )
+            return {"fund_flow_available": False, "fund_flow_reason": "query_failed"}
+        items = [
+            {
+                "symbol": sym,
+                "ts": snap.ts.isoformat(),
+                "main_net": snap.main_net,
+                "super_large_net": snap.super_large_net,
+                "large_net": snap.large_net,
+            }
+            for sym, snap in sorted(flows.items())
+        ]
+        main_values = [snap.main_net for snap in flows.values() if snap.main_net is not None]
+        if not main_values:
+            return {
+                "fund_flow_available": False,
+                "fund_flow_reason": "same_day_core_flow_missing",
+                "core_fund_flow_count": len(flows),
+                "core_count": len(core_symbols),
+            }
+        core_main_net = sum(main_values)
+        return {
+            "fund_flow_available": True,
+            "fund_flow_scope": "same_day_core_symbols",
+            "core_count": len(core_symbols),
+            "core_fund_flow_count": len(main_values),
+            "core_main_net": core_main_net,
+            "core_positive_flow_count": sum(1 for v in main_values if v > 0),
+            "core_negative_flow_count": sum(1 for v in main_values if v < 0),
+            "core_fund_flows": sorted(
+                items,
+                key=lambda item: abs(float(item.get("main_net") or 0)),
+                reverse=True,
+            ),
+        }
 
     def _watchlist_theme_risk_messages(
         self,
@@ -1261,6 +1345,15 @@ def _bucket_5m(ts: datetime) -> datetime:
     ts = ts.astimezone(timezone.utc)
     minute = ts.minute - (ts.minute % 5)
     return ts.replace(minute=minute, second=0, microsecond=0)
+
+
+def _bjt_day_window_utc(ts: datetime) -> tuple[datetime, datetime]:
+    from zoneinfo import ZoneInfo
+
+    bjt = ts.astimezone(ZoneInfo("Asia/Shanghai"))
+    start = bjt.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1) - timedelta(microseconds=1)
+    return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -1440,7 +1533,11 @@ def _theme_state(ev: _ThemeEval, prev: _ThemeRuntimeState) -> str:
     return "neutral"
 
 
-def _theme_score(ev: _ThemeEval, current_state: str) -> float:
+def _theme_score(
+    ev: _ThemeEval,
+    current_state: str,
+    flow_evidence: dict[str, Any] | None = None,
+) -> float:
     up_ratio = len(ev.up) / len(ev.known) if ev.known else 0.0
     core_ratio = len(ev.core_up) / len(ev.core) if ev.core else 0.0
     base = ev.avg_change_pct + up_ratio * 4.0 + core_ratio * 3.0
@@ -1460,6 +1557,12 @@ def _theme_score(ev: _ThemeEval, current_state: str) -> float:
         else:
             leader_share = _leader_amount_share(ev)
             if leader_share is not None and leader_share >= 0.55:
+                base -= 0.5
+        if flow_evidence and flow_evidence.get("fund_flow_available"):
+            core_main_net = _float_or_none(flow_evidence.get("core_main_net"))
+            if core_main_net is not None and core_main_net > 0:
+                base += 0.5
+            elif core_main_net is not None and core_main_net < 0:
                 base -= 0.5
     return round(base, 4)
 

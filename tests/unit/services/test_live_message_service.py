@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.domain.models import ThemeConstituent, ThemeDefinition
+from core.domain.models import FundFlowSnapshot, ThemeConstituent, ThemeDefinition
+from core.persistence.fund_flow_repo import FundFlowRepo
 from core.persistence.sqlite_repo import StateRepo
 from core.persistence.theme_repo import ThemeRepo
 from core.services.live_message_service import LiveMessageService
@@ -47,6 +48,33 @@ async def _service_with_repo(
     watchlist = AsyncMock()
     watchlist.dynamic_universe = AsyncMock(return_value=watch_symbols or [])
     return LiveMessageService(theme_repo, watchlist), theme_repo
+
+
+async def _service_with_fund_flow(tmp_path: Path) -> tuple[LiveMessageService, FundFlowRepo]:
+    db = tmp_path / "state.db"
+    await StateRepo(str(db)).init()
+    theme_repo = ThemeRepo(str(db))
+    await theme_repo.seed_definitions(
+        [
+            ThemeDefinition(
+                market="ashare",
+                theme_code="theme:test",
+                theme_name="测试题材",
+                classification="theme",
+                priority="P0",
+                source="seed",
+            ),
+        ],
+        [
+            ThemeConstituent("ashare", "theme:test", "000001.SZ", "核心A", "leader", 10, source="seed"),
+            ThemeConstituent("ashare", "theme:test", "000002.SZ", "核心B", "core", 9, source="seed"),
+            ThemeConstituent("ashare", "theme:test", "000003.SZ", "跟随C", "follower", 5, source="seed"),
+        ],
+    )
+    fund_repo = FundFlowRepo(str(db))
+    watchlist = AsyncMock()
+    watchlist.dynamic_universe = AsyncMock(return_value=[])
+    return LiveMessageService(theme_repo, watchlist, fund_repo), fund_repo
 
 
 async def _tick(
@@ -253,6 +281,67 @@ async def test_theme_amount_concentration_risk(tmp_path: Path):
     risk = next(m for m in messages if m.title == "测试题材成交集中度偏高")
     assert risk.category == "risk"
     assert risk.payload["leader_amount_share"] == pytest.approx(1_000 / 1_300)
+
+
+@pytest.mark.asyncio
+async def test_theme_active_state_adds_same_day_core_fund_flow_confirmation(tmp_path: Path):
+    svc, fund_repo = await _service_with_fund_flow(tmp_path)
+    ts = datetime(2026, 6, 15, 1, 35, tzinfo=timezone.utc)
+    await fund_repo.save_symbol_flows([
+        FundFlowSnapshot("000001.SZ", "symbol", ts, main_net=10_000_000),
+        FundFlowSnapshot("000002.SZ", "symbol", ts, main_net=5_000_000),
+    ])
+
+    assert await _tick(svc, "000001.SZ", 2.5, ts) == []
+    assert await _tick(svc, "000002.SZ", 2.0, ts) == []
+    messages = await _tick(svc, "000003.SZ", 1.8, ts)
+
+    titles = {m.title for m in messages}
+    assert "测试题材启动" in titles
+    assert "测试题材核心资金流确认" in titles
+    confirmed = next(m for m in messages if m.title == "测试题材核心资金流确认")
+    assert confirmed.payload["fund_flow_available"] is True
+    assert confirmed.payload["core_main_net"] == pytest.approx(15_000_000)
+    assert confirmed.payload["core_positive_flow_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_theme_active_state_warns_same_day_core_fund_flow_divergence(tmp_path: Path):
+    svc, fund_repo = await _service_with_fund_flow(tmp_path)
+    ts = datetime(2026, 6, 15, 1, 35, tzinfo=timezone.utc)
+    await fund_repo.save_symbol_flows([
+        FundFlowSnapshot("000001.SZ", "symbol", ts, main_net=-8_000_000),
+        FundFlowSnapshot("000002.SZ", "symbol", ts, main_net=-3_000_000),
+    ])
+
+    await _tick(svc, "000001.SZ", 2.5, ts)
+    await _tick(svc, "000002.SZ", 2.0, ts)
+    messages = await _tick(svc, "000003.SZ", 1.8, ts)
+
+    assert "测试题材上涨但资金流背离" in {m.title for m in messages}
+    risk = next(m for m in messages if m.title == "测试题材上涨但资金流背离")
+    assert risk.category == "risk"
+    assert risk.payload["fund_flow_available"] is True
+    assert risk.payload["core_main_net"] == pytest.approx(-11_000_000)
+
+
+@pytest.mark.asyncio
+async def test_theme_fund_flow_evidence_ignores_stale_previous_day_rows(tmp_path: Path):
+    svc, fund_repo = await _service_with_fund_flow(tmp_path)
+    ts = datetime(2026, 6, 15, 1, 35, tzinfo=timezone.utc)
+    stale = datetime(2026, 6, 13, 16, 0, tzinfo=timezone.utc)
+    await fund_repo.save_symbol_flows([
+        FundFlowSnapshot("000001.SZ", "symbol", stale, main_net=99_000_000),
+    ])
+
+    await _tick(svc, "000001.SZ", 2.5, ts)
+    await _tick(svc, "000002.SZ", 2.0, ts)
+    messages = await _tick(svc, "000003.SZ", 1.8, ts)
+
+    assert "测试题材核心资金流确认" not in {m.title for m in messages}
+    launch = next(m for m in messages if m.title == "测试题材启动")
+    assert launch.payload["fund_flow_available"] is False
+    assert launch.payload["fund_flow_reason"] == "same_day_core_flow_missing"
 
 
 @pytest.mark.asyncio

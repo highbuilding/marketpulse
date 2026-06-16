@@ -53,6 +53,39 @@ class FundFlowRepo:
             rows = await cur.fetchall()
         return [_to_symbol_snapshot(r) for r in rows]
 
+    async def latest_symbol_flows(
+        self,
+        symbols: list[str],
+        *,
+        start: datetime,
+        end: datetime,
+    ) -> dict[str, FundFlowSnapshot]:
+        if not symbols:
+            return {}
+        placeholders = ",".join("?" for _ in symbols)
+        args: list[object] = [
+            *symbols,
+            start.astimezone(timezone.utc).isoformat(),
+            end.astimezone(timezone.utc).isoformat(),
+        ]
+        async with self._connect() as db:
+            cur = await db.execute(
+                f"""
+                SELECT s.symbol, s.ts, s.main_net, s.super_large_net,
+                       s.large_net, s.medium_net, s.small_net
+                FROM fund_flow_symbol s
+                JOIN (
+                    SELECT symbol, MAX(ts) AS ts
+                    FROM fund_flow_symbol
+                    WHERE symbol IN ({placeholders}) AND ts BETWEEN ? AND ?
+                    GROUP BY symbol
+                ) latest ON latest.symbol = s.symbol AND latest.ts = s.ts
+                """,
+                args,
+            )
+            rows = await cur.fetchall()
+        return {r["symbol"]: _to_symbol_snapshot(r) for r in rows}
+
     async def save_sector_flows(self, items: list[FundFlowSnapshot]) -> None:
         if not items:
             return

@@ -165,7 +165,7 @@ def get_live_message_repo() -> LiveMessageRepo:
 
 @lru_cache(maxsize=1)
 def get_live_message_service() -> LiveMessageService:
-    return LiveMessageService(get_theme_repo(), get_watchlist_service())
+    return LiveMessageService(get_theme_repo(), get_watchlist_service(), get_fund_flow_repo())
 
 
 @lru_cache(maxsize=1)
