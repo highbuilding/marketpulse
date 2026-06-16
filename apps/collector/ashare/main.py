@@ -298,7 +298,8 @@ async def lifespan(app: FastAPI):
         })
 
     _settlement_task = asyncio.create_task(
-        run_daily_settlement(kline, bar_repo, _settle_symbols_provider),
+        run_daily_settlement(kline, bar_repo, _settle_symbols_provider,
+                             redis_cache=redis_cache),
         name="ashare.daily_settlement",
     )
 

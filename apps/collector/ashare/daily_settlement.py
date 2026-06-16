@@ -18,6 +18,7 @@ SSL 抖动失败就卡旧数据, 不重启永不自愈。
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import random
 from datetime import datetime, timezone
@@ -25,9 +26,11 @@ from zoneinfo import ZoneInfo
 
 import structlog
 
-from apps.collector.jobs.aggregate_derived import aggregate_derived_for_symbol
+from apps.collector.jobs.aggregate_derived import aggregate_and_publish, aggregate_derived_for_symbol
+from core.cache import keys
+from core.cache.redis_bars_cache import RedisBarsCache
 from core.domain.market_calendar import is_trading_day
-from core.domain.market_sessions import is_after_market_close
+from core.domain.market_sessions import expected_bar_ts, is_after_market_close
 
 log = structlog.get_logger(__name__)
 
@@ -55,11 +58,16 @@ def _bar_covers_today(bar_ts: datetime, today) -> bool:
     return bar_ts.astimezone(_BJT).date() >= today
 
 
-async def settle_one(kline, repo, market: str, symbol: str, today) -> bool:
-    """结算单标的当日 1d: 拉 → 校验覆盖今日 → resample 派生。
+async def settle_one(kline, repo, market: str, symbol: str, today, *, redis_cache=None) -> bool:
+    """结算单标的当日 1d: 拉 → 校验覆盖今日 → resample 派生 → 定稿 Redis current。
 
     返回 True=当日 1d 已就位 (定稿且入库); False=未定稿 (留待下一轮重试) 或失败。
     fetch_fresh_bars 内部已写库 (UNIQUE 幂等), 这里只判定与触发派生聚合。
+
+    redis_cache 非空时, 1d 就位后用真实收盘根 (final=true) 覆盖 Redis
+    cache_bars_current(1d): 收盘前 bar_poller 写的是 final=false provisional (用盘中
+    残缺 5m 末根价合成, 可能偏离真实收盘价), 不定稿会残留 24h (TTL) 被 SSE init 推给
+    前端盖掉权威收线根 → 大盘指数显示旧值。雷区3: current 的 ts 必须复用定稿根自身 ts。
     """
     from datetime import timedelta
     now = datetime.now(timezone.utc)
@@ -79,10 +87,73 @@ async def settle_one(kline, repo, market: str, symbol: str, today) -> bool:
         await aggregate_derived_for_symbol(repo, market, symbol, **_AGG_KW)
     except Exception as e:  # noqa: BLE001
         log.warning("settle.resample_failed", market=market, symbol=symbol, error=str(e))
+    # 补齐当日尾盘 5m 缺根 (含 15:00 集合竞价根): bar_poller 在 15:00 session 一关即停摆,
+    # 收盘段最后几根 5m 永久采不到 → 日线 provisional 用残缺价 + 5m K线尾根缺失。
+    # 这里幂等补齐, 失败不影响 1d 就位判定 (优雅降级)。
+    try:
+        await _settle_tail_5m(kline, repo, market, symbol, today, redis_cache=redis_cache)
+    except Exception as e:  # noqa: BLE001
+        log.warning("settle.tail_5m_failed", market=market, symbol=symbol, error=str(e))
+    # 定稿 Redis 1d current: 真实收盘根覆盖盘中 provisional (止血 stale 覆盖)
+    if redis_cache is not None:
+        await _finalize_daily_current(redis_cache, market, symbol, bars[-1])
     return True
 
 
-async def run_settlement_round(kline, repo, symbols: list[str], today) -> set[str]:
+async def _settle_tail_5m(kline, repo, market: str, symbol: str, today, *, redis_cache=None) -> None:
+    """补齐当日 5m 到 15:00 集合竞价根, 并触发 intraday 派生聚合。
+
+    fetch_fresh_bars(5m) 直拉 sina 整日 5m → 幂等写库, 自动补上 bar_poller 收盘瞬间
+    停摆漏掉的尾盘根。用 expected_bar_ts 校验完成度仅作日志 (不阻塞: sina 收盘后 5m
+    通常已齐, 罕见延迟下次 settlement round 再补)。
+    """
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+    bjt_start = datetime(today.year, today.month, today.day, tzinfo=_BJT)
+    start = bjt_start.astimezone(timezone.utc)
+    fresh = await kline.fetch_fresh_bars(symbol, interval="5m", start=start, end=now)
+    if not fresh:
+        return
+    expected = expected_bar_ts(market, today, 5)
+    last_expected = expected[-1] if expected else None
+    have_last = any(b.ts == last_expected for b in fresh) if last_expected else False
+    log.info("settle.tail_5m", market=market, symbol=symbol, date=str(today),
+             got=len(fresh), expected=len(expected), close_bar_ok=have_last)
+    # 尾盘补齐后触发 intraday 派生 (15m/30m/60m/4h) 收尾根
+    if redis_cache is not None:
+        try:
+            await aggregate_and_publish(
+                repo, redis_cache, market, symbol,
+                targets=("15m", "30m", "60m", "4h"), now=now)
+        except Exception as e:  # noqa: BLE001
+            log.warning("settle.tail_5m_agg_failed", market=market, symbol=symbol, error=str(e))
+
+
+async def _finalize_daily_current(redis_cache, market: str, symbol: str, bar) -> None:
+    """用真实收盘根 (final=true) 覆盖 Redis 1d current + 发 bus, 对称 bar_poller
+    _publish_daily_provisional。redis 不可达仅 warning, 不拖死结算 (优雅降级)。"""
+    payload = {
+        "market": market, "symbol": symbol,
+        "interval": "1d", "ts": bar.ts.isoformat(),
+        "open": float(bar.open), "high": float(bar.high),
+        "low": float(bar.low), "close": float(bar.close),
+        "volume": int(bar.volume), "final": True,
+    }
+    try:
+        await RedisBarsCache(redis_cache).upsert_tail(market, symbol, "1d", [bar])
+        await redis_cache.set_msgpack(
+            keys.cache_bars_current(market, symbol, "1d"), payload, ttl_s=86400)
+        await redis_cache._r.xadd(  # noqa: SLF001
+            keys.BUS_BARS_UPDATED,
+            {"data": json.dumps(payload).encode()},
+            maxlen=10000, approximate=True,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("settle.finalize_current_failed",
+                    market=market, symbol=symbol, error=str(e))
+
+
+async def run_settlement_round(kline, repo, symbols: list[str], today, *, redis_cache=None) -> set[str]:
     """对未就位标的跑一轮结算, 返回本轮已就位的标的集。
 
     单标的失败/未定稿不阻塞整批 (优雅降级)。节流摊平 burst。
@@ -90,7 +161,7 @@ async def run_settlement_round(kline, repo, symbols: list[str], today) -> set[st
     settled: set[str] = set()
     for sym in symbols:
         try:
-            if await settle_one(kline, repo, "ashare", sym, today):
+            if await settle_one(kline, repo, "ashare", sym, today, redis_cache=redis_cache):
                 settled.add(sym)
         except Exception as e:  # noqa: BLE001
             log.warning("settle.symbol_failed", symbol=sym, error=str(e))
@@ -99,7 +170,7 @@ async def run_settlement_round(kline, repo, symbols: list[str], today) -> set[st
 
 
 async def run_daily_settlement(
-    kline, repo, symbols_provider, *, poll_s: float | None = None,
+    kline, repo, symbols_provider, *, poll_s: float | None = None, redis_cache=None,
 ) -> None:
     """A 股收盘结算长驻任务 (完成度驱动门控, 非 cron)。
 
@@ -156,7 +227,8 @@ async def run_daily_settlement(
             rounds = 0
             while pending and datetime.now(timezone.utc).timestamp() < deadline:
                 rounds += 1
-                settled = await run_settlement_round(kline, repo, sorted(pending), today)
+                settled = await run_settlement_round(
+                    kline, repo, sorted(pending), today, redis_cache=redis_cache)
                 pending -= settled
                 log.info("settlement.round_done", date=str(today), round=rounds,
                          settled=len(settled), pending=len(pending))
