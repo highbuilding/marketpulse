@@ -20,6 +20,9 @@ _DEDUP_TTL = timedelta(minutes=5)
 _VOLUME_HISTORY_MAX = 24
 _VOLUME_SPIKE_MIN_HISTORY = 4
 _VOLUME_SPIKE_RATIO = 2.5
+_THEME_ROTATION_LOOKBACK = timedelta(minutes=30)
+_THEME_ACTIVE_STATES = {"launch", "diffusion"}
+_THEME_WEAK_STATES = {"fade", "weakness"}
 _BREADTH_MIN_SYMBOLS = 20
 _BREADTH_STRONG_RATIO = 0.68
 _BREADTH_WEAK_RATIO = 0.68
@@ -72,6 +75,7 @@ class _ThemeEval:
 
 @dataclass
 class _ThemeRuntimeState:
+    theme_name: str | None = None
     leader: str | None = None
     leader_change_pct: float | None = None
     up_count: int = 0
@@ -79,6 +83,7 @@ class _ThemeRuntimeState:
     known_count: int = 0
     peak_up_ratio: float = 0.0
     core_up_count: int = 0
+    score: float | None = None
     state: str = "neutral"
     updated_at: datetime | None = None
 
@@ -671,8 +676,12 @@ class LiveMessageService:
                         "peak_up_count": peak_up_count,
                     },
                 ))
+            messages.extend(self._theme_rotation_messages(
+                market, quote.ts, theme_code, ev, prev, current_state, source_event_id))
             messages.extend(self._theme_quality_messages(market, quote.ts, ev, prev, source_event_id))
+            score = _theme_score(ev, current_state)
             self._theme_states[theme_code] = _ThemeRuntimeState(
+                theme_name=ctx.definition.theme_name,
                 leader=ev.leader.symbol,
                 leader_change_pct=ev.leader.change_pct,
                 up_count=len(ev.up),
@@ -680,10 +689,70 @@ class LiveMessageService:
                 known_count=len(ev.known),
                 peak_up_ratio=max(prev.peak_up_ratio, _up_ratio(ev)),
                 core_up_count=len(ev.core_up),
+                score=score,
                 state=current_state,
                 updated_at=quote.ts,
             )
         return messages
+
+    def _theme_rotation_messages(
+        self,
+        market: str,
+        ts: datetime,
+        theme_code: str,
+        ev: _ThemeEval,
+        prev: _ThemeRuntimeState,
+        current_state: str,
+        source_event_id: str | None,
+    ) -> list[LiveMessage]:
+        """识别题材间接力: 新题材启动/扩散,同时近窗口内有其他题材转弱/回落。"""
+        if current_state not in _THEME_ACTIVE_STATES or prev.state in _THEME_ACTIVE_STATES:
+            return []
+        cutoff = ts - _THEME_ROTATION_LOOKBACK
+        candidates = [
+            (code, state)
+            for code, state in self._theme_states.items()
+            if code != theme_code
+            and state.state in _THEME_WEAK_STATES
+            and state.updated_at is not None
+            and state.updated_at >= cutoff
+        ]
+        if not candidates:
+            return []
+        from_code, from_state = max(candidates, key=lambda item: item[1].updated_at or cutoff)
+        from_name = from_state.theme_name or from_code
+        to_name = ev.ctx.definition.theme_name
+        payload = _theme_payload(ev) | {
+            "state": "rotation",
+            "to_state": current_state,
+            "from_theme_code": from_code,
+            "from_theme_name": from_name,
+            "from_state": from_state.state,
+            "from_updated_at": from_state.updated_at.isoformat() if from_state.updated_at else None,
+            "from_up_count": from_state.up_count,
+            "from_peak_up_count": from_state.peak_up_count,
+            "from_peak_up_ratio": from_state.peak_up_ratio,
+            "rule_version": RULE_VERSION,
+        }
+        return [self._message(
+            market=market,
+            ts=ts,
+            level="watch",
+            category="theme",
+            title=f"题材轮动: {to_name}接力{from_name}",
+            body=(
+                f"{to_name}进入{_theme_state_label(current_state)},"
+                f"{from_name}近30分钟已{_theme_state_label(from_state.state)},"
+                f"关注资金是否从旧主线切向新主线。"
+            ),
+            source_event="bus:quote.tick",
+            source_event_id=source_event_id,
+            dedupe_key=f"theme_rotation:{from_code}->{theme_code}",
+            theme_code=theme_code,
+            symbol=ev.leader.symbol,
+            symbols=[ev.leader.symbol, *([from_state.leader] if from_state.leader else [])],
+            payload=payload,
+        )]
 
     async def _persist_theme_eval(
         self,
@@ -1123,6 +1192,17 @@ def _theme_score(ev: _ThemeEval, current_state: str) -> float:
     elif current_state == "weakness":
         base -= 2.0
     return round(base, 4)
+
+
+def _theme_state_label(state: str) -> str:
+    return {
+        "launch": "启动",
+        "diffusion": "扩散",
+        "divergence": "分歧",
+        "fade": "强度回落",
+        "weakness": "转弱",
+        "neutral": "中性",
+    }.get(state, state)
 
 
 def _theme_reason(ev: _ThemeEval, current_state: str) -> str:

@@ -304,6 +304,54 @@ async def test_theme_state_machine_persists_diffusion(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_theme_rotation_message_when_new_theme_replaces_fading_theme(tmp_path: Path):
+    db = tmp_path / "state.db"
+    await StateRepo(str(db)).init()
+    theme_repo = ThemeRepo(str(db))
+    await theme_repo.seed_definitions(
+        [
+            ThemeDefinition("ashare", "theme:old", "旧题材", "theme", priority="P0", source="seed"),
+            ThemeDefinition("ashare", "theme:new", "新题材", "theme", priority="P0", source="seed"),
+        ],
+        [
+            ThemeConstituent("ashare", "theme:old", "000001.SZ", "旧核心A", "leader", 10, source="seed"),
+            ThemeConstituent("ashare", "theme:old", "000002.SZ", "旧核心B", "core", 9, source="seed"),
+            ThemeConstituent("ashare", "theme:old", "000003.SZ", "旧跟随C", "follower", 5, source="seed"),
+            ThemeConstituent("ashare", "theme:old", "000004.SZ", "旧跟随D", "follower", 4, source="seed"),
+            ThemeConstituent("ashare", "theme:old", "000005.SZ", "旧跟随E", "watch", 3, source="seed"),
+            ThemeConstituent("ashare", "theme:new", "000101.SZ", "新核心A", "leader", 10, source="seed"),
+            ThemeConstituent("ashare", "theme:new", "000102.SZ", "新核心B", "core", 9, source="seed"),
+            ThemeConstituent("ashare", "theme:new", "000103.SZ", "新跟随C", "follower", 5, source="seed"),
+            ThemeConstituent("ashare", "theme:new", "000104.SZ", "新跟随D", "follower", 4, source="seed"),
+            ThemeConstituent("ashare", "theme:new", "000105.SZ", "新跟随E", "watch", 3, source="seed"),
+        ],
+    )
+    watchlist = AsyncMock()
+    watchlist.dynamic_universe = AsyncMock(return_value=[])
+    svc = LiveMessageService(theme_repo, watchlist)
+    ts = datetime(2026, 6, 15, 1, 35, tzinfo=timezone.utc)
+
+    await _tick(svc, "000001.SZ", 2.0, ts)
+    await _tick(svc, "000002.SZ", 1.8, ts)
+    await _tick(svc, "000003.SZ", 1.6, ts)
+    await _tick(svc, "000004.SZ", 1.5, ts)
+    await _tick(svc, "000003.SZ", -0.2, ts)
+    assert [m.title for m in await _tick(svc, "000004.SZ", -0.3, ts)] == ["旧题材强度回落"]
+
+    await _tick(svc, "000101.SZ", 2.2, ts)
+    await _tick(svc, "000102.SZ", 2.0, ts)
+    messages = await _tick(svc, "000103.SZ", 1.8, ts)
+
+    titles = {m.title for m in messages}
+    assert "新题材启动" in titles
+    assert "题材轮动: 新题材接力旧题材" in titles
+    rotation = next(m for m in messages if m.title == "题材轮动: 新题材接力旧题材")
+    assert rotation.category == "theme"
+    assert rotation.payload["from_theme_code"] == "theme:old"
+    assert rotation.payload["from_state"] == "fade"
+
+
+@pytest.mark.asyncio
 async def test_index_pulse_weak_message_from_core_indices(tmp_path: Path):
     svc = await _service(tmp_path)
     ts = datetime(2026, 6, 15, 1, 35, tzinfo=timezone.utc)
