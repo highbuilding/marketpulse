@@ -72,3 +72,18 @@ async def test_live_message_window_asc_preserves_early_messages(tmp_path: Path):
     )
 
     assert [m.id for m in rows] == ["m1", "m2"]
+
+    next_rows = await repo.list_window_asc(
+        "ashare",
+        start=start - timedelta(minutes=1),
+        end=start + timedelta(minutes=10),
+        limit=2,
+        offset=2,
+    )
+
+    assert [m.id for m in next_rows] == ["m3"]
+    assert await repo.count_window(
+        "ashare",
+        start=start - timedelta(minutes=1),
+        end=start + timedelta(minutes=10),
+    ) == 3

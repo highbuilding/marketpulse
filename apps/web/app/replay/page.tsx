@@ -1,13 +1,13 @@
 'use client'
 
-import { type CSSProperties, useMemo, useState } from 'react'
+import { type CSSProperties, useEffect, useState } from 'react'
 import useSWR from 'swr'
 
 import { ReplayChart, type ReplayChartPoint } from '@/components/ReplayChart'
 import { useMarket } from '@/lib/market-context'
 import { fetchReplay } from '@/lib/replay_api'
 import { fetchBarsHistory } from '@/lib/symbol_api'
-import type { ReplayMessage, ThemeSeries } from '@/lib/types'
+import type { LiveMessageCategory, ReplayMessage, ThemeSeries } from '@/lib/types'
 
 const INDICES = [
   { symbol: '000001.SH', name: '上证指数' },
@@ -28,6 +28,8 @@ const CATEGORIES = [
   { id: 'signal', label: 'CD 信号' },
   { id: 'risk', label: '风险' },
 ]
+
+const MESSAGE_PAGE_SIZE = 200
 
 const LEVEL_COLOR: Record<string, string> = {
   info: 'var(--text3)', watch: '#e0a73e', warning: '#f59e0b', critical: '#ef4444',
@@ -79,10 +81,21 @@ export default function ReplayPage() {
   const [date, setDate] = useState(todayBjt())
   const [indexSymbol, setIndexSymbol] = useState(INDICES[0].symbol)
   const [catFilter, setCatFilter] = useState('all')
+  const [messagePage, setMessagePage] = useState(0)
+  const messageOffset = messagePage * MESSAGE_PAGE_SIZE
+  const category = catFilter === 'all' ? undefined : (catFilter as LiveMessageCategory)
+
+  useEffect(() => {
+    setMessagePage(0)
+  }, [date, catFilter])
 
   const { data, isLoading } = useSWR(
-    isAshare ? ['replay', market, date] : null,
-    () => fetchReplay(market, date),
+    isAshare ? ['replay', market, date, catFilter, messageOffset] : null,
+    () => fetchReplay(market, date, {
+      category,
+      msgLimit: MESSAGE_PAGE_SIZE,
+      msgOffset: messageOffset,
+    }),
     { revalidateOnFocus: false },
   )
 
@@ -94,10 +107,8 @@ export default function ReplayPage() {
 
   const messages = data?.messages ?? []
   const themeSeries = data?.theme_series ?? []
-  const filtered = useMemo(
-    () => (catFilter === 'all' ? messages : messages.filter((m) => m.category === catFilter)),
-    [messages, catFilter],
-  )
+  const messageTotal = data?.message_total ?? 0
+  const totalPages = Math.max(1, Math.ceil(messageTotal / MESSAGE_PAGE_SIZE))
 
   if (!isAshare) {
     return (
@@ -166,7 +177,14 @@ export default function ReplayPage() {
       {/* 泳道 3: 消息时间轴 */}
       <section style={styles.panel}>
         <div style={styles.panelHead}>
-          <h2 style={styles.panelTitle}>实盘消息时间轴</h2>
+          <div>
+            <h2 style={styles.panelTitle}>实盘消息时间轴</h2>
+            <p style={styles.panelDesc}>
+              {messageTotal > 0
+                ? `共 ${messageTotal} 条, 当前第 ${messagePage + 1}/${totalPages} 页`
+                : '按时间升序展示当日实盘消息'}
+            </p>
+          </div>
           <div style={styles.filterRow}>
             {CATEGORIES.map((c) => (
               <button key={c.id} onClick={() => setCatFilter(c.id)}
@@ -177,12 +195,41 @@ export default function ReplayPage() {
           </div>
         </div>
         {isLoading && messages.length === 0 && <div style={styles.emptyState}>加载中</div>}
-        {!isLoading && filtered.length === 0 && (
+        {!isLoading && messages.length === 0 && (
           <div style={styles.emptyState}>该交易日{catFilter === 'all' ? '' : '该分类'}暂无消息</div>
         )}
         <div style={styles.timeline}>
-          {filtered.map((m) => <MessageRow key={m.id} m={m} />)}
+          {messages.map((m) => <MessageRow key={m.id} m={m} />)}
         </div>
+        {messageTotal > MESSAGE_PAGE_SIZE && (
+          <div style={styles.pager}>
+            <button
+              type="button"
+              onClick={() => setMessagePage((p) => Math.max(0, p - 1))}
+              disabled={messagePage === 0 || isLoading}
+              style={{
+                ...styles.pageBtn,
+                ...((messagePage === 0 || isLoading) ? styles.pageBtnDisabled : {}),
+              }}
+            >
+              上一页
+            </button>
+            <span style={styles.pageMeta}>
+              {messageOffset + 1}-{Math.min(messageOffset + messages.length, messageTotal)} / {messageTotal}
+            </span>
+            <button
+              type="button"
+              onClick={() => setMessagePage((p) => p + 1)}
+              disabled={!data?.message_has_more || isLoading}
+              style={{
+                ...styles.pageBtn,
+                ...((!data?.message_has_more || isLoading) ? styles.pageBtnDisabled : {}),
+              }}
+            >
+              下一页
+            </button>
+          </div>
+        )}
       </section>
     </main>
   )
@@ -271,6 +318,10 @@ const styles: Record<string, CSSProperties> = {
   filterBtn: { background: 'transparent', color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: 12 },
   filterBtnActive: { background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' },
   timeline: { display: 'grid', gap: 8, marginTop: 4 },
+  pager: { display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, marginTop: 12, flexWrap: 'wrap' },
+  pageBtn: { background: 'var(--bg3)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', fontSize: 12 },
+  pageBtnDisabled: { opacity: 0.45, cursor: 'not-allowed' },
+  pageMeta: { color: 'var(--text3)', fontSize: 12 },
   msg: { display: 'flex', gap: 10, alignItems: 'stretch', border: '1px solid var(--border)', borderRadius: 8, padding: 10, background: 'var(--bg)' },
   msgTime: { fontFamily: 'monospace', fontSize: 12, color: 'var(--text3)', width: 44, flexShrink: 0, paddingTop: 1 },
   msgBar: { width: 3, borderRadius: 2, flexShrink: 0 },

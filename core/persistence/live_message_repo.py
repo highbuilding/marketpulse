@@ -157,20 +157,43 @@ class LiveMessageRepo:
         end: datetime,
         category: str | None = None,
         limit: int = 5000,
+        offset: int = 0,
     ) -> list[LiveMessage]:
         where = ["market = ?", "ts >= ?", "ts <= ?"]
         args: list[object] = [market, _iso(start), _iso(end)]
         if category:
             where.append("category = ?")
             args.append(category)
-        args.append(max(1, min(limit, 5000)))
+        args.extend([max(1, min(limit, 5000)), max(0, offset)])
         async with self._connect() as db:
             cur = await db.execute(
                 f"""SELECT * FROM live_messages
                     WHERE {' AND '.join(where)}
-                    ORDER BY ts ASC
-                    LIMIT ?""",
+                    ORDER BY ts ASC, id ASC
+                    LIMIT ? OFFSET ?""",
                 args,
             )
             rows = await cur.fetchall()
         return [self._row_to_message(r) for r in rows]
+
+    async def count_window(
+        self,
+        market: str,
+        *,
+        start: datetime,
+        end: datetime,
+        category: str | None = None,
+    ) -> int:
+        where = ["market = ?", "ts >= ?", "ts <= ?"]
+        args: list[object] = [market, _iso(start), _iso(end)]
+        if category:
+            where.append("category = ?")
+            args.append(category)
+        async with self._connect() as db:
+            cur = await db.execute(
+                f"""SELECT COUNT(1) AS cnt FROM live_messages
+                    WHERE {' AND '.join(where)}""",
+                args,
+            )
+            row = await cur.fetchone()
+        return int(row["cnt"] if row else 0)

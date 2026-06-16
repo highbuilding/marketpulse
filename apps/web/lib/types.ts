@@ -408,6 +408,10 @@ export interface ReplayResponse {
   start: string
   end: string
   messages: ReplayMessage[]
+  message_total: number
+  message_offset: number
+  message_limit: number
+  message_has_more: boolean
   theme_series: ThemeSeries[]
   degraded: string[]
 }

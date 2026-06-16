@@ -64,6 +64,10 @@ class ReplayResp(BaseModel):
     start: str
     end: str
     messages: list[ReplayMessageDTO]
+    message_total: int
+    message_offset: int
+    message_limit: int
+    message_has_more: bool
     theme_series: list[ThemeSeriesDTO]
     degraded: list[str]
 
@@ -92,7 +96,9 @@ def _day_window(date_str: str | None, market: str) -> tuple[str, datetime, datet
 async def replay(
     market: str = Query("ashare"),
     date: str | None = Query(None, description="BJT 自然日 YYYY-MM-DD, 缺省=今天"),
-    msg_limit: int = Query(5000, ge=1, le=5000),
+    category: str | None = Query(None, description="消息分类, 缺省=全部"),
+    msg_limit: int = Query(200, ge=1, le=500),
+    msg_offset: int = Query(0, ge=0),
     snapshot_limit: int = Query(2000, ge=1, le=5000),
     msg_repo: LiveMessageRepo = Depends(get_live_message_repo),
     theme_repo: ThemeRepo = Depends(get_theme_repo),
@@ -102,8 +108,14 @@ async def replay(
     degraded: list[str] = []
 
     messages: list[ReplayMessageDTO] = []
+    message_total = 0
     try:
-        rows = await msg_repo.list_window_asc(market, start=start, end=end, limit=msg_limit)
+        message_total = await msg_repo.count_window(
+            market, start=start, end=end, category=category,
+        )
+        rows = await msg_repo.list_window_asc(
+            market, start=start, end=end, category=category, limit=msg_limit, offset=msg_offset,
+        )
         for m in rows:
             messages.append(
                 ReplayMessageDTO(
@@ -165,6 +177,10 @@ async def replay(
         start=start.isoformat(),
         end=end.isoformat(),
         messages=messages,
+        message_total=message_total,
+        message_offset=msg_offset,
+        message_limit=msg_limit,
+        message_has_more=msg_offset + len(messages) < message_total,
         theme_series=theme_series,
         degraded=degraded,
     )
