@@ -154,8 +154,16 @@ async def search(
 ) -> SearchResponse:
     hits = await svc.search(q, limit, market=market)
     if core_only:
-        # watchlist/持仓 ⊆ 采集集: 只返回能加的标的(∈ 其市场 core_symbols)
-        hits = [(s, n, m) for s, n, m in hits if s in set(core_symbols(infer_market(s)))]
+        # 可加自选/持仓 = 实际采集池: core_symbols ∪ ashare collector_symbols(题材成分/手动)。
+        # 只用 core_symbols 会漏掉题材成分股(如兆易创新∈半导体但∉写死core) → 加自选失败。
+        allowed = set(core_symbols("ashare")) | set(core_symbols("us")) | \
+            set(core_symbols("hk")) | set(core_symbols("crypto"))
+        try:
+            from apps.api.deps import get_collector_symbol_repo
+            allowed |= set(await get_collector_symbol_repo().active_symbols("ashare", capability="5m"))
+        except Exception:  # noqa: BLE001
+            pass
+        hits = [(s, n, m) for s, n, m in hits if s in allowed]
     if hits:
         return SearchResponse(query=q, hits=[
             SearchHit(symbol=s, name=n, market=m) for s, n, m in hits
