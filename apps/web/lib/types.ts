@@ -416,3 +416,56 @@ export interface ReplayResponse {
   theme_series: ThemeSeries[]
   degraded: string[]
 }
+
+// ── 市场结论层 / 每日复盘 ──
+export interface ConclusionSection {
+  key: string
+  title: string
+  label: string
+  score: number
+  summary: string
+  evidence: Record<string, unknown>
+}
+
+export interface DailyReviewResponse {
+  market: Market
+  trade_date: string
+  generated_at: string
+  formula_version: string
+  summary: string
+  sections: ConclusionSection[]
+  next_watch: string[]
+  data_gaps: string[]
+}
+
+// 板块位置榜行 (sector_position section evidence)
+export interface SectorRow {
+  key: string
+  name: string
+  kind: string
+  day_change_pct: number | null
+  ytd_change_pct: number | null
+  momentum_20d_pct: number | null
+  position_ratio: number | null
+  from_high_pct: number | null
+  member_count?: number
+}
+
+// 个股分层项 (sector_leaders section evidence)
+export interface LeaderItem {
+  symbol: string
+  name: string | null
+  ytd_change_pct: number
+  momentum_20d_pct: number
+  from_high_pct: number
+  amount_share: number
+  score: number
+}
+
+export interface LeaderGroup {
+  theme_code: string
+  theme_name: string
+  leaders: LeaderItem[]
+  mid: LeaderItem[]
+  laggards: LeaderItem[]
+}

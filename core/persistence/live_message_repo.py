@@ -99,6 +99,26 @@ class LiveMessageRepo:
             await db.commit()
             return db.total_changes - before
 
+    async def delete_signal_messages(
+        self, market: str, symbol: str, interval: str, *, indicator: str = "CD",
+    ) -> int:
+        """删除某标的某周期的信号类 live_message (派生自 indicator_signals)。
+
+        CD 信号冲刷时同步调用: 信号事实源 (indicator_signals) 重扫后, 清掉由旧信号
+        派生的消息, 避免"信号表已删/已变, 消息表残留"的两表不一致。
+        按 dedupe_key 前缀 signal:{symbol}:{interval}: 匹配 (含新旧两种 key 格式)。
+        """
+        prefix = f"signal:{symbol}:{interval}:"
+        async with self._connect() as db:
+            cur = await db.execute(
+                """DELETE FROM live_messages
+                   WHERE market = ? AND category = 'signal'
+                     AND symbol = ? AND dedupe_key LIKE ?""",
+                (market, symbol, f"{prefix}%"),
+            )
+            await db.commit()
+            return cur.rowcount
+
     async def list_recent(
         self,
         market: str,

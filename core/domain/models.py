@@ -103,6 +103,68 @@ class FundFlowSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class LimitPoolItem:
+    """涨停/炸板/跌停池事实源。
+
+    pool_type:
+    - limit_up: 涨停股池
+    - broken_limit: 炸板股池
+    - down_limit: 跌停股池
+    """
+    market: str
+    trade_date: str
+    pool_type: Literal["limit_up", "broken_limit", "down_limit"]
+    symbol: str
+    name: str | None = None
+    change_pct: float | None = None
+    price: float | None = None
+    limit_price: float | None = None
+    amount: float | None = None
+    free_float_cap: float | None = None
+    total_cap: float | None = None
+    turnover_rate: float | None = None
+    seal_amount: float | None = None
+    first_seal_time: str | None = None
+    last_seal_time: str | None = None
+    break_count: int | None = None
+    ladder_count: int | None = None
+    industry: str | None = None
+    amplitude: float | None = None
+    raw: dict[str, Any] | None = None
+    pulled_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SwIndustryBar:
+    """申万一级行业指数日线 (index_hist_sw)。industry_code 形如 801010 (不带 .SI)。"""
+    industry_code: str
+    trade_date: str
+    industry_name: str | None = None
+    open: float | None = None
+    high: float | None = None
+    low: float | None = None
+    close: float | None = None
+    volume: float | None = None
+    amount: float | None = None
+    market: str = "ashare"
+    pulled_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SwIndustryInfo:
+    """申万一级行业最新元信息 (sw_index_first_info): 成份数 + 估值。"""
+    industry_code: str
+    industry_name: str
+    member_count: int | None = None
+    pe_static: float | None = None
+    pe_ttm: float | None = None
+    pb: float | None = None
+    dividend_yield: float | None = None
+    market: str = "ashare"
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class IndicatorSignal:
     """指标信号事件(目前 indicator='CD', 后续可扩展 TT/NX)。"""
     symbol: str

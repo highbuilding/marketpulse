@@ -26,7 +26,7 @@ from apps.api.deps import get_state_repo
 from apps.api.auth import AuthMiddleware, router as auth_router
 from apps.api.routes import (
     ai_market, cd_signals, collector_symbols, health, market_extras, north_flow,
-    live_messages, notifications, positions, replay, sse_bars, sse_intraday,
+    conclusions, live_messages, notifications, positions, replay, sse_bars, sse_intraday,
     sse_live_messages, sse_signals, symbols, themes, watchlists,
 )
 from apps.api.ws import ticks
@@ -114,6 +114,7 @@ app.include_router(notifications.router)
 app.include_router(positions.router)
 app.include_router(themes.router)
 app.include_router(collector_symbols.router)
+app.include_router(conclusions.router)
 app.include_router(live_messages.router)
 app.include_router(replay.router)
 app.include_router(sse_bars.router)

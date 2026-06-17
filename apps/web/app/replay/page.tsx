@@ -48,6 +48,16 @@ function fmtTime(iso: string): string {
   })
 }
 
+// 日线级周期 (1d/1wk/1mo) bar_ts 是自然日 00:00, 只显日期。
+const _DAY_INTERVALS = new Set(['1d', '1wk', '1mo'])
+function fmtMsgTime(m: ReplayMessage): string {
+  const iv = (m.payload as Record<string, unknown>)?.interval
+  if (typeof iv === 'string' && _DAY_INTERVALS.has(iv)) {
+    return new Date(m.ts).toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' })
+  }
+  return fmtTime(m.ts)
+}
+
 function pct(v: number | null | undefined): string {
   if (v == null) return '--'
   return `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`
@@ -277,7 +287,7 @@ function Sparkline({ values }: { values: number[] }) {
 function MessageRow({ m }: { m: ReplayMessage }) {
   return (
     <article style={styles.msg}>
-      <div style={styles.msgTime}>{fmtTime(m.ts)}</div>
+      <div style={styles.msgTime}>{fmtMsgTime(m)}</div>
       <div style={{ ...styles.msgBar, background: LEVEL_COLOR[m.level] ?? 'var(--text3)' }} />
       <div style={styles.msgBody}>
         <div style={styles.msgTop}>

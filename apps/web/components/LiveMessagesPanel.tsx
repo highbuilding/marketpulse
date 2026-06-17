@@ -36,6 +36,17 @@ function fmtTime(value: string): string {
   })
 }
 
+// 日线级周期 (1d/1wk/1mo) 的 bar_ts 是 BJT 自然日 00:00, 显示时间无意义 →
+// 只显日期; 其余 (盘中信号/事件) 显示时分秒。
+const _DAY_INTERVALS = new Set(['1d', '1wk', '1mo'])
+
+function fmtMessageTime(iso: string, interval: unknown): string {
+  if (typeof interval === 'string' && _DAY_INTERVALS.has(interval)) {
+    return new Date(iso).toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' })
+  }
+  return fmtTime(iso)
+}
+
 function levelStyle(level: LiveMessageLevel): CSSProperties {
   if (level === 'critical') return { color: '#dc2626', borderColor: 'rgba(220,38,38,0.35)', background: 'rgba(220,38,38,0.08)' }
   if (level === 'warning') return { color: '#d97706', borderColor: 'rgba(217,119,6,0.35)', background: 'rgba(217,119,6,0.08)' }
@@ -103,7 +114,7 @@ function MessageRow({ message }: { message: LiveMessage }) {
   return (
     <article style={st.row}>
       <div style={st.rowTop}>
-        <span style={st.time}>{fmtTime(message.ts)}</span>
+        <span style={st.time}>{fmtMessageTime(message.ts, message.payload?.interval)}</span>
         <span style={{ ...st.badge, ...levelStyle(message.level) }}>{levelLabel[message.level]}</span>
         <span style={st.category}>{categoryLabel[message.category]}</span>
       </div>

@@ -62,6 +62,38 @@ CREATE TABLE IF NOT EXISTS fund_flow_north (
   total_net REAL
 );
 
+-- A 股涨停/炸板/跌停池事实源。
+-- pool_type: limit_up / broken_limit / down_limit。
+-- trade_date 用 BJT 交易日 YYYY-MM-DD; pulled_at 是采集 UTC ISO。
+CREATE TABLE IF NOT EXISTS limit_pool_daily (
+  market TEXT NOT NULL,
+  trade_date TEXT NOT NULL,
+  pool_type TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  name TEXT,
+  change_pct REAL,
+  price REAL,
+  limit_price REAL,
+  amount REAL,
+  free_float_cap REAL,
+  total_cap REAL,
+  turnover_rate REAL,
+  seal_amount REAL,
+  first_seal_time TEXT,
+  last_seal_time TEXT,
+  break_count INTEGER,
+  ladder_count INTEGER,
+  industry TEXT,
+  amplitude REAL,
+  raw_json TEXT NOT NULL DEFAULT '{}',
+  pulled_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (market, trade_date, pool_type, symbol)
+);
+CREATE INDEX IF NOT EXISTS idx_limit_pool_date_type
+  ON limit_pool_daily(market, trade_date, pool_type);
+CREATE INDEX IF NOT EXISTS idx_limit_pool_symbol_date
+  ON limit_pool_daily(market, symbol, trade_date DESC);
+
 -- Plan 2.1: symbol directory (code + name)
 CREATE TABLE IF NOT EXISTS symbol_directory (
   symbol TEXT PRIMARY KEY,
@@ -367,6 +399,58 @@ CREATE TABLE IF NOT EXISTS trade_candidates (
 );
 CREATE INDEX IF NOT EXISTS idx_trade_candidates_market_status
   ON trade_candidates(market, status, score DESC, generated_at DESC);
+
+-- 申万一级行业指数日线 (index_hist_sw, 经 collector ak_call 拉取)。
+-- 行业指数仅 31×~1600 天, 量小, 存 SQLite 让 api 可直读 (不碰雷区6 DuckDB 互斥)。
+-- trade_date 用自然日 YYYY-MM-DD; industry_code 形如 801010 (不带 .SI 后缀)。
+CREATE TABLE IF NOT EXISTS sw_industry_index (
+  market TEXT NOT NULL DEFAULT 'ashare',
+  industry_code TEXT NOT NULL,
+  industry_name TEXT,
+  trade_date TEXT NOT NULL,
+  open REAL,
+  high REAL,
+  low REAL,
+  close REAL,
+  volume REAL,
+  amount REAL,
+  pulled_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (market, industry_code, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_sw_industry_index_date
+  ON sw_industry_index(market, trade_date);
+
+-- 申万一级行业最新元信息 (sw_index_first_info): 成份数 / 估值。
+CREATE TABLE IF NOT EXISTS sw_industry_info (
+  market TEXT NOT NULL DEFAULT 'ashare',
+  industry_code TEXT NOT NULL,
+  industry_name TEXT NOT NULL,
+  member_count INTEGER,
+  pe_static REAL,
+  pe_ttm REAL,
+  pb REAL,
+  dividend_yield REAL,
+  updated_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (market, industry_code)
+);
+
+-- 每日复盘结论快照: collector 收盘后生成 (日线分析在 collector 持 BarRepo 算),
+-- 落 SQLite 供 api 只读 + 前端翻历史, 历史日由 backfill 脚本批量灌。
+-- sections_json 是结论 section 列表序列化; 日线层 (走势/板块位置/龙头分层)
+-- 全年每个交易日可算, 消息层仅近期有 (历史标 data_gaps)。
+CREATE TABLE IF NOT EXISTS daily_reviews (
+  market TEXT NOT NULL,
+  trade_date TEXT NOT NULL,
+  formula_version TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  sections_json TEXT NOT NULL DEFAULT '[]',
+  next_watch_json TEXT NOT NULL DEFAULT '[]',
+  data_gaps_json TEXT NOT NULL DEFAULT '[]',
+  generated_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (market, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_daily_reviews_market_date
+  ON daily_reviews(market, trade_date DESC);
 
 -- AI 交易观察结论。不是下单指令, 只提供结论和证据。
 CREATE TABLE IF NOT EXISTS ai_trade_opinions (

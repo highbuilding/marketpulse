@@ -105,9 +105,38 @@ _FUNC_TO_SOURCE = {
     "stock_board_industry_name_em": "em",
     "stock_board_concept_name_em": "em",
     "stock_hk_index_daily_em": "em",
+    # 东财涨停池/盘口异动/龙虎榜:用于结论层短线结构事实源。
+    "stock_zt_pool_em": "em",
+    "stock_zt_pool_previous_em": "em",
+    "stock_zt_pool_strong_em": "em",
+    "stock_zt_pool_sub_new_em": "em",
+    "stock_zt_pool_zbgc_em": "em",
+    "stock_zt_pool_dtgc_em": "em",
+    "stock_changes_em": "em",
+    "stock_board_change_em": "em",
+    "stock_lhb_detail_em": "em",
+    "stock_lhb_stock_statistic_em": "em",
+    "stock_lhb_jgmmtj_em": "em",
+    "stock_lhb_yyb_detail_em": "em",
+    "stock_lh_yyb_most": "em",
+    "stock_lh_yyb_capital": "em",
+    "stock_notice_report": "em",
+    "stock_individual_notice_report": "em",
+    # 申万行业指数 (申万/新浪站): 行业指数回填 + 每日增量。归 em 桶与 A 股 sina
+    # quote/日线主链路限频隔离, 避免行业回填 burst 误开 sina breaker 拖垮主源。
+    "sw_index_first_info": "em",
+    "sw_index_second_info": "em",
+    "sw_index_third_info": "em",
+    "index_hist_sw": "em",
+    "index_component_sw": "em",
+    "sw_index_third_cons": "em",
+    "stock_industry_clf_hist_sw": "em",
     # ths 系
     "stock_board_industry_cons_ths": "ths",
     "stock_board_concept_cons_ths": "ths",
+    "stock_fund_flow_individual": "ths",
+    "stock_fund_flow_concept": "ths",
+    "stock_fund_flow_industry": "ths",
     # 其他 → sina
 }
 

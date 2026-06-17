@@ -111,6 +111,30 @@ class BarRepo:
                 finally:
                     c.unregister("_incoming_bars")
 
+    def delete_bars(
+        self, market: str, symbol: str, interval: str,
+        *, start: datetime | None = None, end: datetime | None = None,
+    ) -> int:
+        """删除指定标的/周期的 bar (可选时间窗)。数据冲刷用: 先删脏数据再重拉。
+
+        start/end 均 None = 删该标的该周期全部。返回删除行数。
+        """
+        with self._lock:
+            conds = ["market = ?", "symbol = ?", "interval = ?"]
+            args: list = [market, symbol, interval]
+            if start is not None:
+                conds.append("ts >= ?")
+                args.append(start.astimezone(timezone.utc).replace(tzinfo=None))
+            if end is not None:
+                conds.append("ts <= ?")
+                args.append(end.astimezone(timezone.utc).replace(tzinfo=None))
+            with self._conn() as c:
+                before = c.execute(
+                    f"SELECT COUNT(*) FROM bars WHERE {' AND '.join(conds)}", args,
+                ).fetchone()[0]
+                c.execute(f"DELETE FROM bars WHERE {' AND '.join(conds)}", args)
+            return int(before)
+
     def fetch_history(
         self, market: str, symbol: str,
         start: datetime, end: datetime, interval: str = "1d",

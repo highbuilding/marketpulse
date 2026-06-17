@@ -60,6 +60,30 @@ class SignalRepo:
             await db.commit()
             return cur.rowcount
 
+    async def delete_for(
+        self, symbol: str, interval: str,
+        *, indicator: str = "CD", start_iso: str | None = None, end_iso: str | None = None,
+    ) -> int:
+        """删除 (symbol, interval, indicator) 的信号 (可选 bar_ts 窗口)。
+
+        CD 信号冲刷用: 历史信号基于错误 K 线算出 / 时间戳错, 删后基于干净 bar 重扫。
+        start/end 均 None = 删该标的该周期全部该指标信号。返回删除行数。
+        """
+        conds = ["symbol = ?", "interval = ?", "indicator = ?"]
+        args: list = [symbol, interval, indicator]
+        if start_iso is not None:
+            conds.append("bar_ts >= ?")
+            args.append(start_iso)
+        if end_iso is not None:
+            conds.append("bar_ts <= ?")
+            args.append(end_iso)
+        async with self._connect() as db:
+            cur = await db.execute(
+                f"DELETE FROM indicator_signals WHERE {' AND '.join(conds)}", args,
+            )
+            await db.commit()
+            return cur.rowcount
+
     async def existing_bar_ts(self, symbol: str, interval: str) -> set[str]:
         """该 (symbol, interval, CD) 已存信号的 bar_ts 集合(ISO 字符串)。
         用于发 bus:signal.new 前 diff 出真新增, 避免重发已存信号。"""

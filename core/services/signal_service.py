@@ -18,10 +18,15 @@ log = structlog.get_logger(__name__)
 
 
 class SignalScanService:
-    def __init__(self, kline: KLineService, repo: SignalRepo, *, redis=None) -> None:
+    def __init__(
+        self, kline: KLineService, repo: SignalRepo, *, redis=None,
+        live_message_repo=None, live_message_service=None,
+    ) -> None:
         self.kline = kline
         self.repo = repo
         self.redis = redis  # raw redis(AsyncRedis); 非空时新信号发 bus:signal.new
+        self.live_message_repo = live_message_repo  # 非空时 rescan_clean 同步清派生消息
+        self.live_message_service = live_message_service  # 非空时 rescan_clean 重建消息(带名字)
 
     async def scan_symbol_readonly(self, symbol: str, interval: Interval) -> int:
         """事件驱动: 只读已存 bar 算信号, 不 fetch/aggregate/persist。
@@ -84,6 +89,70 @@ class SignalScanService:
                                 interval=interval, error=str(e))
         return n
         return n
+
+    async def rescan_clean(self, symbol: str, interval: Interval) -> tuple[int, int]:
+        """冲刷重扫: 删除该标的该周期已存 CD 信号, 基于当前 (已冲刷的) 干净 bar
+        重新计算并写入。返回 (删除数, 写入数)。
+
+        用于历史 CD 信号有问题 (基于错误 K 线算出 / 时间戳错) 时, 删旧重生成准确信号。
+        只读已入库收线 bar (closed_only), bar_ts 即信号真实 K 线时刻, 时间不会错。
+        """
+        if getattr(self.kline, "repo", None) is None:
+            return 0, 0
+        market = infer_market(symbol)
+        end = datetime.now(timezone.utc)
+        lookback = LOOKBACK_BARS.get(interval, 200)
+        days = max(lookback // BARS_PER_DAY.get(interval, 1) * 2, 30)
+        start = end - timedelta(days=days)
+        bars = self.kline.repo.fetch_history(
+            market, symbol, start, end, interval=interval, closed_only=True,
+        )
+        deleted = await self.repo.delete_for(symbol, interval, indicator="CD")
+        # 同步清派生消息: 信号表重扫后, 清掉由旧信号派生的 live_message, 保证两表一致
+        if self.live_message_repo is not None:
+            try:
+                m = await self.live_message_repo.delete_signal_messages(market, symbol, interval)
+                if m:
+                    log.info("signal.rescan_clean_messages", symbol=symbol, interval=interval, deleted_messages=m)
+            except Exception as e:  # noqa: BLE001
+                log.warning("signal.rescan_clean_messages_failed", symbol=symbol, interval=interval, error=str(e))
+        if not bars:
+            log.info("signal.rescan_clean", symbol=symbol, interval=interval,
+                     deleted=deleted, written=0, note="no_bars")
+            return deleted, 0
+        cd_signals = compute_cd_signals(bars)
+        detected_at = datetime.now(timezone.utc)
+        records = [
+            IndicatorSignal(
+                symbol=symbol, interval=interval, indicator="CD",
+                signal_type=s.signal_type, bar_ts=s.bar_ts,
+                detected_at=detected_at, price=s.price, d_value=s.d_value,
+            )
+            for s in cd_signals
+        ]
+        written = await self.repo.upsert_many(records)
+        # 重建派生消息 (带名字): 用与 live 链路同一 handle_signal_new 转换, 保证
+        # CD信号页(indicator_signals) 与 实盘消息页(live_messages) 内容完全一致。
+        rebuilt = 0
+        if self.live_message_service is not None and self.live_message_repo is not None:
+            try:
+                msgs = []
+                for s in cd_signals:
+                    payload = {
+                        "market": market, "symbol": symbol, "interval": interval,
+                        "signal_type": s.signal_type, "bar_ts": s.bar_ts.isoformat(),
+                        "price": float(s.price) if s.price is not None else None,
+                        "detected_at": detected_at.isoformat(),
+                    }
+                    msgs.extend(await self.live_message_service.handle_signal_new(payload))
+                if msgs:
+                    rebuilt = await self.live_message_repo.insert_many(msgs)
+            except Exception as e:  # noqa: BLE001
+                log.warning("signal.rescan_rebuild_messages_failed",
+                            symbol=symbol, interval=interval, error=str(e))
+        log.info("signal.rescan_clean", symbol=symbol, interval=interval,
+                 deleted=deleted, written=written, rebuilt_messages=rebuilt)
+        return deleted, written
 
     async def scan_symbol(self, symbol: str, interval: Interval) -> int:
         """对单个 symbol/interval 扫一次 CD 信号, 入库, 返回新增条数。"""

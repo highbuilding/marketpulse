@@ -12,6 +12,7 @@ import structlog
 from core.domain.models import LiveMessage, ThemeConstituent, ThemeDefinition, ThemeSnapshot, ThemeState
 from core.persistence.duckdb_repo import BarRepo
 from core.persistence.fund_flow_repo import FundFlowRepo
+from core.persistence.symbol_directory_repo import SymbolDirectoryRepo
 from core.persistence.theme_repo import ThemeRepo
 from core.services.watchlist_service import WatchlistService
 
@@ -20,6 +21,8 @@ log = structlog.get_logger(__name__)
 RULE_VERSION = "v3"
 _CTX_TTL = timedelta(seconds=60)
 _DEDUP_TTL = timedelta(minutes=5)
+# 持续型状态/质量类消息日内去重窗 (整日成立的状态一天至多发一次)。
+_PERSIST_DEDUP_TTL = timedelta(hours=6)
 _VOLUME_HISTORY_MAX = 24
 _VOLUME_SPIKE_MIN_HISTORY = 4
 _VOLUME_SPIKE_RATIO = 2.5
@@ -129,14 +132,17 @@ class LiveMessageService:
         watchlist: WatchlistService,
         fund_flow_repo: FundFlowRepo | None = None,
         bar_repo: BarRepo | None = None,
+        directory_repo: "SymbolDirectoryRepo | None" = None,
     ) -> None:
         self.theme_repo = theme_repo
         self.watchlist = watchlist
         self.fund_flow_repo = fund_flow_repo
         self.bar_repo = bar_repo
+        self.directory_repo = directory_repo
         self._ctx_loaded_at: datetime | None = None
         self._themes: dict[str, _ThemeContext] = {}
         self._symbol_themes: dict[str, list[str]] = {}
+        self._symbol_names: dict[str, str] = {}
         self._watch_symbols: set[str] = set()
         self._quotes: dict[str, _QuoteState] = {}
         self._last_emit: dict[str, datetime] = {}
@@ -310,43 +316,47 @@ class LiveMessageService:
                 "small_vs_large_pct": small_vs_large,
                 "growth_vs_large_pct": growth_vs_large,
             }
+            prev_style = self._market_pulse.style_state
             if large.change_pct >= 0.3 and small.change_pct <= -0.5:
                 style_state = "large_defense"
                 title = "权重护盘但小票走弱"
                 body = f"上证50 {large.change_pct:.2f}%,中证1000 {small.change_pct:.2f}%,风格分化扩大。"
-                messages.append(self._message(
-                    market=market, ts=quote.ts, level="warning", category="risk",
-                    title=title, body=body,
-                    source_event="bus:quote.tick", source_event_id=source_event_id,
-                    dedupe_key="index:style:large_defense",
-                    symbol=small.symbol,
-                    symbols=[large.symbol, small.symbol, *([growth.symbol] if growth else [])],
-                    payload=style_payload | {"state": style_state},
-                ))
+                if prev_style != style_state:
+                    messages.append(self._message(
+                        market=market, ts=quote.ts, level="warning", category="risk",
+                        title=title, body=body,
+                        source_event="bus:quote.tick", source_event_id=source_event_id,
+                        dedupe_key="index:style:large_defense",
+                        symbol=small.symbol,
+                        symbols=[large.symbol, small.symbol, *([growth.symbol] if growth else [])],
+                        payload=style_payload | {"state": style_state},
+                    ))
             elif small_vs_large >= 0.8 and (growth_vs_large is None or growth_vs_large >= 0.3):
                 style_state = "small_growth_stronger"
-                messages.append(self._message(
-                    market=market, ts=quote.ts, level="watch", category="index",
-                    title="小票成长强于权重",
-                    body=f"中证1000相对上证50强 {small_vs_large:.2f} 个百分点。",
-                    source_event="bus:quote.tick", source_event_id=source_event_id,
-                    dedupe_key="index:style:small_growth_stronger",
-                    symbol=small.symbol,
-                    symbols=[large.symbol, small.symbol, *([growth.symbol] if growth else [])],
-                    payload=style_payload | {"state": style_state},
-                ))
+                if prev_style != style_state:
+                    messages.append(self._message(
+                        market=market, ts=quote.ts, level="watch", category="index",
+                        title="小票成长强于权重",
+                        body=f"中证1000相对上证50强 {small_vs_large:.2f} 个百分点。",
+                        source_event="bus:quote.tick", source_event_id=source_event_id,
+                        dedupe_key="index:style:small_growth_stronger",
+                        symbol=small.symbol,
+                        symbols=[large.symbol, small.symbol, *([growth.symbol] if growth else [])],
+                        payload=style_payload | {"state": style_state},
+                    ))
             elif small_vs_large <= -0.8:
                 style_state = "large_stronger"
-                messages.append(self._message(
-                    market=market, ts=quote.ts, level="watch", category="index",
-                    title="权重强于小票",
-                    body=f"上证50相对中证1000强 {abs(small_vs_large):.2f} 个百分点。",
-                    source_event="bus:quote.tick", source_event_id=source_event_id,
-                    dedupe_key="index:style:large_stronger",
-                    symbol=large.symbol,
-                    symbols=[large.symbol, small.symbol, *([growth.symbol] if growth else [])],
-                    payload=style_payload | {"state": style_state},
-                ))
+                if prev_style != style_state:
+                    messages.append(self._message(
+                        market=market, ts=quote.ts, level="watch", category="index",
+                        title="权重强于小票",
+                        body=f"上证50相对中证1000强 {abs(small_vs_large):.2f} 个百分点。",
+                        source_event="bus:quote.tick", source_event_id=source_event_id,
+                        dedupe_key="index:style:large_stronger",
+                        symbol=large.symbol,
+                        symbols=[large.symbol, small.symbol, *([growth.symbol] if growth else [])],
+                        payload=style_payload | {"state": style_state},
+                    ))
 
         self._market_pulse = _MarketPulseRuntimeState(
             breadth_state=breadth_state,
@@ -590,9 +600,23 @@ class LiveMessageService:
         symbol = str(payload.get("symbol") or "").upper()
         interval = str(payload.get("interval") or "")
         signal_type = str(payload.get("signal_type") or "")
-        ts = _parse_dt(payload.get("detected_at") or payload.get("bar_ts"))
+        # ts 用信号所属 K 线时刻 (bar_ts), 不是检测时刻 (detected_at):
+        # 补扫历史信号时 detected_at 是"今天扫到的", 用它会把历史信号标成当前时间
+        # (例: 4月的 15m 信号被标成今晚 21:30)。bar_ts 才是信号真实发生时刻。
+        bar_ts = payload.get("bar_ts")
+        ts = _parse_dt(bar_ts or payload.get("detected_at"))
+        name = self._symbol_names.get(symbol)
+        if name is None and self.directory_repo is not None:
+            # 信号标的可能∉采集池名字缓存 (如非题材成分), 直接查 directory 兜底
+            try:
+                name = await self.directory_repo.get_name(symbol)
+                if name:
+                    self._symbol_names[symbol] = name
+            except Exception:  # noqa: BLE001
+                name = None
+        label = f"{name}({symbol})" if name else symbol
         direction = "买入" if signal_type == "buy" else "卖出"
-        title = f"{symbol} 触发 {interval} CD {direction}信号"
+        title = f"{label} 触发 {interval} CD {direction}信号"
         body = f"CD {direction}信号出现在 {interval} 周期,价格 {payload.get('price') or '--'}。"
         msg = self._message(
             market=market,
@@ -603,7 +627,8 @@ class LiveMessageService:
             body=body,
             source_event="bus:signal.new",
             source_event_id=source_event_id,
-            dedupe_key=f"signal:{symbol}:{interval}:{signal_type}",
+            # dedupe_key 含 bar_ts: 同标的同周期不同 K 线的信号视为不同事件, 不互相覆盖。
+            dedupe_key=f"signal:{symbol}:{interval}:{signal_type}:{bar_ts or ts.isoformat()}",
             symbol=symbol,
             symbols=[symbol],
             payload=payload,
@@ -662,6 +687,7 @@ class LiveMessageService:
             definitions = await self.theme_repo.list_definitions(market, include_disabled=False)
             themes: dict[str, _ThemeContext] = {}
             symbol_themes: dict[str, list[str]] = {}
+            symbol_names: dict[str, str] = {}
             for d in definitions:
                 rows = await self.theme_repo.list_static_constituents(
                     market, d.theme_code, include_disabled=False)
@@ -669,12 +695,25 @@ class LiveMessageService:
                 themes[d.theme_code] = ctx
                 for c in rows:
                     symbol_themes.setdefault(c.symbol, []).append(d.theme_code)
+                    if c.name:
+                        symbol_names[c.symbol] = c.name
             watch_symbols = {
                 s for s in await self.watchlist.dynamic_universe()
                 if s.endswith(".SH") or s.endswith(".SZ")
             }
+            # 名字权威源是 symbol_directory (全市场7000+), 题材成分名兜底。
+            # 信号消息标的可能∉题材成分 (如指数权重股平安银行), 必须查 directory 补全。
+            if self.directory_repo is not None:
+                try:
+                    want = sorted(set(symbol_themes) | watch_symbols)
+                    dir_names = await self.directory_repo.get_names(want)
+                    # directory 优先 (权威), 题材成分名仅作 directory 缺失时兜底
+                    symbol_names = {**symbol_names, **{k: v for k, v in dir_names.items() if v}}
+                except Exception as e:  # noqa: BLE001
+                    log.warning("live_message.directory_names_failed", error=str(e))
             self._themes = themes
             self._symbol_themes = symbol_themes
+            self._symbol_names = {**symbol_names, **_INDEX_NAMES}
             self._watch_symbols = watch_symbols
             self._ctx_loaded_at = now
         except Exception as e:  # noqa: BLE001
@@ -743,7 +782,10 @@ class LiveMessageService:
             limit_evidence = await self._limit_structure_evidence(ev, quote.ts)
             evidence = flow_evidence | limit_evidence
             await self._persist_theme_eval(market, quote.ts, ev, current_state, prev, evidence)
-            if current_state == "launch":
+            # 状态去重: 题材状态消息仅在状态跃迁时发 (current != prev), 不再每 5min
+            # 重复发同一持续状态 (根治"白酒转弱"一天刷 48 条 + risk_pressure 虚高)。
+            state_changed = current_state != prev.state
+            if current_state == "launch" and state_changed:
                 messages.append(self._message(
                     market=market,
                     ts=quote.ts,
@@ -762,7 +804,7 @@ class LiveMessageService:
                     symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
                     payload=_theme_payload(ev) | evidence | {"state": current_state, "prev_state": prev.state},
                 ))
-            if current_state == "diffusion":
+            if current_state == "diffusion" and state_changed:
                 messages.append(self._message(
                     market=market,
                     ts=quote.ts,
@@ -781,7 +823,7 @@ class LiveMessageService:
                     symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
                     payload=_theme_payload(ev) | evidence | {"state": current_state, "prev_state": prev.state},
                 ))
-            if current_state == "divergence":
+            if current_state == "divergence" and state_changed:
                 messages.append(self._message(
                     market=market,
                     ts=quote.ts,
@@ -797,7 +839,7 @@ class LiveMessageService:
                     symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct, reverse=True)[:5]],
                     payload=_theme_payload(ev) | evidence | {"state": current_state, "prev_state": prev.state},
                 ))
-            if current_state == "weakness":
+            if current_state == "weakness" and state_changed:
                 messages.append(self._message(
                     market=market,
                     ts=quote.ts,
@@ -816,7 +858,7 @@ class LiveMessageService:
                     symbols=[s.symbol for s in sorted(ev.known, key=lambda x: x.change_pct)[:5]],
                     payload=_theme_payload(ev) | evidence | {"state": current_state, "prev_state": prev.state},
                 ))
-            if current_state == "fade":
+            if current_state == "fade" and state_changed:
                 peak_up_count = max(prev.peak_up_count, prev.up_count)
                 messages.append(self._message(
                     market=market,
@@ -1444,8 +1486,13 @@ class LiveMessageService:
     def _dedupe(self, messages: list[LiveMessage], *, now: datetime) -> list[LiveMessage]:
         result: list[LiveMessage] = []
         for msg in messages:
+            # 持续型状态/质量类消息 (题材状态/风格/质量/逆题材风险) 用日内长窗去重:
+            # 这些条件常整日成立, 5min 窗会刷几十条 → 用 _PERSIST_DEDUP_TTL 收口,
+            # 同一持续状态一天至多发一次。瞬时型 (翻红/翻绿/放量) 仍用 5min 短窗。
+            window = (_PERSIST_DEDUP_TTL if _is_persisting_key(msg.dedupe_key)
+                      else _DEDUP_TTL)
             last = self._last_emit.get(msg.dedupe_key)
-            if last is not None and now - last < _DEDUP_TTL:
+            if last is not None and now - last < window:
                 continue
             self._last_emit[msg.dedupe_key] = now
             result.append(msg)
@@ -1500,6 +1547,25 @@ def _parse_dt(value: Any) -> datetime:
         except ValueError:
             pass
     return datetime.now(timezone.utc)
+
+
+# 持续型 dedupe_key 前缀: 这些状态/质量条件常整日成立, 用日内长窗去重。
+# 瞬时型 (watchlist 翻红翻绿/波动、volume_spike、signal) 不在此列, 仍用 5min 短窗。
+_PERSISTING_PREFIXES = (
+    "theme:",            # 题材状态机 (launch/diffusion/weakness/...) + 质量 (leader_switch/weak_quality)
+    "risk:theme:",       # 题材风险 (divergence/single_leader)
+    "risk:index_weight:",  # 指数权重题材风险
+    "risk:industry:",    # 行业题材风险
+    "index:style:",      # 大盘风格 (large_defense/small_growth_stronger/...)
+    "index:resonance:",  # 核心指数共振
+    "index:pulse:",      # 大盘脉搏强弱
+    "index:breadth",     # 采集样本宽度
+    "risk:watchlist:",   # 自选逆题材走弱 (题材强但自选弱, 整日成立)
+)
+
+
+def _is_persisting_key(dedupe_key: str) -> bool:
+    return any(dedupe_key.startswith(p) for p in _PERSISTING_PREFIXES)
 
 
 def _bucket_5m(ts: datetime) -> datetime:

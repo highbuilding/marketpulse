@@ -12,12 +12,15 @@ from core.persistence.chip_repo import ChipRepo
 from core.persistence.collector_symbol_repo import CollectorSymbolRepo
 from core.persistence.fund_flow_repo import FundFlowRepo
 from core.persistence.live_message_repo import LiveMessageRepo
+from core.persistence.limit_pool_repo import LimitPoolRepo
 from core.persistence.notification_repo import NotificationRepo
 from core.persistence.position_repo import PositionRepo
 from core.persistence.signal_repo import SignalRepo
 from core.persistence.sqlite_repo import StateRepo
+from core.persistence.sw_industry_repo import SwIndustryRepo
 from core.persistence.symbol_directory_repo import SymbolDirectoryRepo
 from core.persistence.theme_repo import ThemeRepo
+from core.persistence.daily_review_repo import DailyReviewRepo
 from core.persistence.watchlist_repo import WatchlistRepo
 from core.positions.service import PositionService
 from core.services.fund_flow_service import FundFlowService
@@ -25,7 +28,10 @@ from core.services.chip_service import ChipService
 from core.services.ai_market_service import AIMarketService
 from core.services.kline_service import KLineService
 from core.services.live_message_service import LiveMessageService
+from core.services.limit_pool_service import LimitPoolService
 from core.services.market_query import MarketQueryService
+from core.services.market_conclusion_service import MarketConclusionService
+from core.services.sw_industry_service import SwIndustryService
 from core.services.notification_service import NotificationService
 from core.services.signal_service import SignalScanService
 from core.services.symbol_directory_service import SymbolDirectoryService
@@ -164,12 +170,23 @@ def get_live_message_repo() -> LiveMessageRepo:
 
 
 @lru_cache(maxsize=1)
+def get_limit_pool_repo() -> LimitPoolRepo:
+    return LimitPoolRepo(str(_DATA / "state.db"))
+
+
+@lru_cache(maxsize=1)
+def get_limit_pool_service() -> LimitPoolService:
+    return LimitPoolService(get_limit_pool_repo())
+
+
+@lru_cache(maxsize=1)
 def get_live_message_service() -> LiveMessageService:
     return LiveMessageService(
         get_theme_repo(),
         get_watchlist_service(),
         get_fund_flow_repo(),
         get_bar_repo(),
+        get_symbol_directory_repo(),
     )
 
 
@@ -201,6 +218,31 @@ def get_volume_indicator_service() -> VolumeIndicatorService:
 @lru_cache(maxsize=1)
 def get_market_query_service() -> MarketQueryService:
     return MarketQueryService()
+
+
+@lru_cache(maxsize=1)
+def get_market_conclusion_service() -> MarketConclusionService:
+    return MarketConclusionService(
+        get_live_message_repo(),
+        get_theme_repo(),
+        get_limit_pool_repo(),
+        daily_review_repo=get_daily_review_repo(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_sw_industry_repo() -> SwIndustryRepo:
+    return SwIndustryRepo(str(_DATA / "state.db"))
+
+
+@lru_cache(maxsize=1)
+def get_sw_industry_service() -> SwIndustryService:
+    return SwIndustryService(get_sw_industry_repo())
+
+
+@lru_cache(maxsize=1)
+def get_daily_review_repo() -> DailyReviewRepo:
+    return DailyReviewRepo(str(_DATA / "state.db"))
 
 
 @lru_cache(maxsize=1)

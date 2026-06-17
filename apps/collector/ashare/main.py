@@ -171,7 +171,7 @@ async def lifespan(app: FastAPI):
     )
     from apps.api.deps import (
         get_chip_service, get_fund_flow_service,
-        get_notification_service, get_signal_scan_service,
+        get_limit_pool_service, get_notification_service, get_signal_scan_service,
     )
     sched = build_scheduler(
         registry, cache, bar_repo, get_watchlist_service(),
@@ -228,6 +228,17 @@ async def lifespan(app: FastAPI):
     attach_chip_preload_job(sched,
                             chip_service=get_chip_service(),
                             watchlist=get_watchlist_service())
+    from apscheduler.triggers.cron import CronTrigger
+    from apps.collector.jobs.limit_pool import refresh_ashare_limit_pool
+    from core.scheduler.scheduler import _leader_gated as _leader_gated_job
+    sched.add_job(
+        _leader_gated_job(lambda: refresh_ashare_limit_pool(get_limit_pool_service())),
+        CronTrigger(day_of_week="mon-fri", hour="9-15", minute="5,15,25,35,45,55",
+                    timezone="Asia/Shanghai"),
+        id="ashare:limit_pool_refresh",
+        max_instances=1,
+        coalesce=True,
+    )
     sched.start()
 
     # === A 股 K 线轮询 (collector_symbols 驱动) ===
@@ -303,9 +314,46 @@ async def lifespan(app: FastAPI):
         name="ashare.daily_settlement",
     )
 
-    # === 分时数据 90 天 purge (每日 02:30 UTC) ===
-    from apscheduler.triggers.cron import CronTrigger
+    # === 申万行业指数回填 (板块位置榜数据底盘): 启动后台跑一次缺口回填 ===
+    from apps.api.deps import get_sw_industry_service
+    from core.services.daily_review_builder import DailyReviewBuilder
+    from core.persistence.daily_review_repo import DailyReviewRepo as _DailyReviewRepo
+    from core.services.market_conclusion_service import MarketConclusionService as _MCS
+    _sw_service = get_sw_industry_service()
 
+    async def _sw_backfill() -> None:
+        try:
+            await _sw_service.backfill_all(only_missing=False)
+        except Exception as e:  # noqa: BLE001
+            log.warning("sw_industry.startup_backfill_failed", error=str(e))
+
+    _sw_backfill_task = asyncio.create_task(_sw_backfill(), name="ashare.sw_industry_backfill")
+
+    # 每日收盘后申万行业增量 (仅补当日缺口)
+    from apps.api.deps import get_sw_industry_repo
+    sched.add_job(
+        _leader_gated_job(lambda: _sw_service.backfill_all(only_missing=True)),
+        CronTrigger(day_of_week="mon-fri", hour=15, minute=40, timezone="Asia/Shanghai"),
+        id="ashare:sw_industry_daily", max_instances=1, coalesce=True,
+    )
+
+    # === 每日复盘生成 (收盘后, 日线层 + 消息层 → daily_reviews) ===
+    # collector 持 BarRepo, 经 DailyReviewBuilder 算走势/板块位置/龙头分层。
+    from apps.collector.jobs.daily_review import refresh_ashare_daily_review
+    from apps.api.deps import get_live_message_repo as _glmr, get_theme_repo as _gtr
+    _daily_review_repo = _DailyReviewRepo(str(_DATA / "state.db"))
+    _review_builder = DailyReviewBuilder(bar_repo, get_sw_industry_repo(), _gtr())
+    _review_service = _MCS(
+        _glmr(), _gtr(), get_limit_pool_service().repo,
+        daily_review_repo=_daily_review_repo, daily_review_builder=_review_builder,
+    )
+    sched.add_job(
+        _leader_gated_job(lambda: refresh_ashare_daily_review(_review_service, _daily_review_repo)),
+        CronTrigger(day_of_week="mon-fri", hour=15, minute=50, timezone="Asia/Shanghai"),
+        id="ashare:daily_review", max_instances=1, coalesce=True,
+    )
+
+    # === 分时数据 90 天 purge (每日 02:30 UTC) ===
     async def _purge_intraday() -> None:
         from datetime import datetime, timezone, timedelta
         repo = _intraday_repo_holder["repo"]
@@ -420,6 +468,11 @@ async def lifespan(app: FastAPI):
         _settlement_task.cancel()
         try:
             await _settlement_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        _sw_backfill_task.cancel()
+        try:
+            await _sw_backfill_task
         except (asyncio.CancelledError, Exception):
             pass
         sched.shutdown(wait=False)
