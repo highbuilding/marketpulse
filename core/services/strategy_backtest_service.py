@@ -200,6 +200,8 @@ class StrategyBacktestService:
         broad_ret20 = close.mean(axis=1).pct_change(20, fill_method=None)
         rs20 = close.pct_change(20, fill_method=None).sub(broad_ret20, axis=0)
         volatility20 = ((high - low) / close.replace(0, np.nan)).rolling(20, min_periods=10).mean()
+        # 新增因子: 不追高(偏离 ma5 不超 8%), 可从日线反推覆盖全历史
+        not_extended = close <= ma5 * 1.08
         low_position = (
             (position <= 0.35)
             & (amount_ma20 >= 30_000_000)
@@ -211,6 +213,7 @@ class StrategyBacktestService:
             & (close >= ma5 * 0.97)
             & (rs20 >= -0.10)
             & (volatility20 <= 0.12)
+            & not_extended                                  # 新增: 不追高
         )
         breakout = (
             (close > close.rolling(20, min_periods=10).max().shift(1))
@@ -218,6 +221,13 @@ class StrategyBacktestService:
             & quality_low_position.rolling(20, min_periods=1).max().astype(bool)
         )
         sell_risk = (close < ma10) | (close.pct_change(fill_method=None) <= -0.06)
+        # 大盘趋势: 宽基均价 > 其 ma20 才做多(A股择时关键, 砍掉熊市做多)
+        _broad = close.mean(axis=1)
+        _broad_up = (_broad > _broad.rolling(20, min_periods=10).mean()).fillna(False)
+        market_uptrend = pd.DataFrame(
+            np.repeat(_broad_up.to_numpy()[:, None], len(close.columns), axis=1),
+            index=close.index, columns=close.columns,
+        )
 
         cd_buy = pd.DataFrame(False, index=close.index, columns=close.columns)
         cd_sell = pd.DataFrame(False, index=close.index, columns=close.columns)
@@ -350,6 +360,7 @@ class StrategyBacktestService:
             "low_position": low_position.fillna(False),
             "quality_low_position": quality_low_position.fillna(False),
             "breakout": breakout.fillna(False),
+            "market_uptrend": market_uptrend,
             "relative_strength20": rs20,
             "theme_hot": theme_hot.reindex_like(close).fillna(False),
             "cd_buy": cd_buy,
@@ -583,11 +594,12 @@ class StrategyBacktestService:
             np.repeat(strong_ecology.to_numpy()[:, None], len(close.columns), axis=1),
             index=close.index, columns=close.columns,
         )
+        uptrend = data["market_uptrend"]
         if strategy_id == "low_position_cd":
-            entries = candidate & data["cd_buy"] & trend_ok & risk_ok
+            entries = candidate & data["cd_buy"] & trend_ok & risk_ok & uptrend
             exits = sell_risk | (~risk_ok)
         elif strategy_id == "low_position_breakout":
-            entries = candidate & data["breakout"] & trend_ok & risk_ok
+            entries = candidate & data["breakout"] & trend_ok & risk_ok & uptrend
             exits = sell_risk | (~risk_ok)
         elif strategy_id == "low_position_theme":
             entries = candidate & data["theme_hot"] & trend_ok & risk_onish
@@ -600,7 +612,7 @@ class StrategyBacktestService:
             exits = (~short_ok) | (~risk_on)
         else:
             raw = candidate & (data["cd_buy"] | data["breakout"])
-            entries = raw & risk_ok
+            entries = raw & risk_ok & uptrend
             exits = sell_risk | (~risk_ok)
         return entries.fillna(False), exits.fillna(False), []
 
