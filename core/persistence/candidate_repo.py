@@ -108,17 +108,29 @@ class CandidateRepo:
             row = await cur.fetchone()
         return int(row["id"])
 
-    async def list_active(self, market: str, *, limit: int = 50) -> list[TradeCandidate]:
+    async def list_active(
+        self,
+        market: str,
+        *,
+        limit: int = 50,
+        candidate_type: str | None = None,
+    ) -> list[TradeCandidate]:
+        where = ["market = ?", "status = 'active'"]
+        args: list[object] = [market]
+        if candidate_type is not None:
+            where.append("candidate_type = ?")
+            args.append(candidate_type)
+        args.append(limit)
         async with self._connect() as db:
             cur = await db.execute(
                 """SELECT id, market, candidate_key, symbol, name, theme_code, theme_name,
                           candidate_type, decision, score, reasons_json, risks_json,
                           evidence_json, status, generated_at, updated_at
                    FROM trade_candidates
-                   WHERE market = ? AND status = 'active'
+                   WHERE """ + " AND ".join(where) + """
                    ORDER BY score DESC, generated_at DESC
                    LIMIT ?""",
-                (market, limit),
+                args,
             )
             rows = await cur.fetchall()
         return [self._row_to_candidate(r) for r in rows]

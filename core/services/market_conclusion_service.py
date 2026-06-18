@@ -15,6 +15,7 @@ from core.persistence.theme_repo import ThemeRepo
 
 if TYPE_CHECKING:
     from core.persistence.daily_review_repo import DailyReviewRepo
+    from core.services.lowfreq_fact_service import LowFreqFactService
     from core.services.daily_review_builder import DailyReviewBuilder
 
 log = structlog.get_logger(__name__)
@@ -84,6 +85,7 @@ class MarketConclusionService:
         *,
         daily_review_repo: "DailyReviewRepo | None" = None,
         daily_review_builder: "DailyReviewBuilder | None" = None,
+        lowfreq: "LowFreqFactService | None" = None,
     ) -> None:
         self.live_messages = live_messages
         self.themes = themes
@@ -91,6 +93,7 @@ class MarketConclusionService:
         # api 进程注入 repo (只读已生成复盘); collector 注入 builder (持 DuckDB 算日线)。
         self.daily_review_repo = daily_review_repo
         self.daily_review_builder = daily_review_builder
+        self.lowfreq = lowfreq
 
     async def intraday(self, market: str, *, minutes: int = 60) -> IntradayConclusion:
         now = datetime.now(timezone.utc)
@@ -136,11 +139,13 @@ class MarketConclusionService:
         trade_date = end.astimezone(
             ZoneInfo(MARKET_TZ.get(market, "Asia/Shanghai"))).date().isoformat()
         limit_summary = await self._limit_summary(market, trade_date, data_gaps)
+        previous_summary = await self._previous_limit_summary(market, trade_date, data_gaps)
 
         sections = [
             self._market_section(messages),
             self._theme_section(snapshots, messages),
             self._limit_section(limit_summary),
+            self._previous_limit_section(previous_summary),
             self._risk_section(messages),
             self._signal_section(messages),
         ]
@@ -243,9 +248,10 @@ class MarketConclusionService:
             data_gaps.append("当日暂无实盘消息(盘中事实流水)")
         if not snapshots:
             data_gaps.append("当日暂无题材快照")
-        data_gaps.append("龙虎榜/公告/低频资金性质尚未接入每日复盘")
-
         limit_summary = await self._limit_summary(market, day.isoformat(), data_gaps)
+        previous_summary = await self._previous_limit_summary(
+            market, day.isoformat(), data_gaps)
+        lowfreq_summary = await self._lowfreq_summary(market, day.isoformat(), data_gaps)
 
         # 从日线走势 section 取基准指数当日涨跌, 作为市场风险基调的硬约束:
         # 避免"上涨日却报风险主导"(题材盘中瞬时转弱不代表全天风险)。
@@ -254,15 +260,21 @@ class MarketConclusionService:
         market_section = self._daily_market_section(messages, bench_day_change)
         theme_section = self._daily_theme_section(snapshots, messages)
         limit_section = self._limit_section(limit_summary)
+        previous_section = self._previous_limit_section(previous_summary)
+        lowfreq_section = self._lowfreq_section(lowfreq_summary)
         risk_section = self._daily_risk_section(messages, bench_day_change)
         signal_section = self._signal_section(messages)
         # 日线层 section 排在消息层前 (走势/板块位置/龙头分层是复盘主结论)
         sections = [
             *(day_sections or []),
-            market_section, theme_section, limit_section, risk_section, signal_section,
+            market_section, theme_section, limit_section, previous_section,
+            lowfreq_section, risk_section, signal_section,
         ]
 
-        summary = self._daily_summary(market_section, theme_section, limit_section, risk_section, signal_section)
+        summary = self._daily_summary(
+            market_section, theme_section, limit_section, previous_section,
+            lowfreq_section, risk_section, signal_section,
+        )
         if day_headline:
             summary = f"{day_headline} {summary}"
         next_watch = self._next_watch(theme_section, limit_section, risk_section, signal_section)
@@ -360,7 +372,7 @@ class MarketConclusionService:
                 score=0.0,
                 summary="真实涨停/炸板/跌停池暂无数据,暂用采集清单代理判断。",
                 evidence={
-                    "formula": "limit_mood_score = 30*limit_up/80 - 35*break_rate/0.45 - 20*down_limit/30 + 15*max_ladder/7",
+                    "formula": "limit_mood_score = 25*limit_up/80 - 30*break_rate/0.45 - 20*down_limit/30 + 25*ladder_strength/100",
                 },
             )
 
@@ -369,17 +381,22 @@ class MarketConclusionService:
         down_limit_count = int(summary.get("down_limit_count") or 0)
         break_rate = float(summary.get("break_rate") or 0.0)
         max_ladder = int(summary.get("max_ladder_height") or 0)
+        second_plus = int(summary.get("second_plus_count") or 0)
+        ladder_strength = float(summary.get("ladder_strength_score") or 0.0)
+        ladder_continuity = float(summary.get("ladder_continuity") or 0.0)
         score = round(
-            30 * _clamp(limit_up_count / 80, 0, 1)
-            - 35 * _clamp(break_rate / 0.45, 0, 1)
+            25 * _clamp(limit_up_count / 80, 0, 1)
+            - 30 * _clamp(break_rate / 0.45, 0, 1)
             - 20 * _clamp(down_limit_count / 30, 0, 1)
-            + 15 * _clamp(max_ladder / 7, 0, 1),
+            + 25 * _clamp(ladder_strength / 100, 0, 1),
             2,
         )
         if break_rate >= 0.45 or down_limit_count >= 30:
             label = "退潮风险"
-        elif max_ladder >= 5 and break_rate < 0.25:
+        elif ladder_strength >= 65 and break_rate < 0.25:
             label = "连板生态较强"
+        elif max_ladder >= 5 and second_plus >= 8 and ladder_continuity >= 0.75:
+            label = "连板梯队完整"
         elif limit_up_count >= 50 and break_rate < 0.35:
             label = "涨停结构活跃"
         elif limit_up_count > 0:
@@ -393,11 +410,116 @@ class MarketConclusionService:
             score=score,
             summary=(
                 f"涨停 {limit_up_count} 只,炸板 {broken_count} 只,"
-                f"跌停 {down_limit_count} 只,炸板率 {break_rate:.1%},最高 {max_ladder} 连板。"
+                f"跌停 {down_limit_count} 只,炸板率 {break_rate:.1%},"
+                f"最高 {max_ladder} 连板,二板以上 {second_plus} 只,"
+                f"连板强度 {ladder_strength:.1f}。"
             ),
             evidence={
                 **summary,
-                "formula": "30*limit_up/80 - 35*break_rate/0.45 - 20*down_limit/30 + 15*max_ladder/7",
+                "formula": "25*limit_up/80 - 30*break_rate/0.45 - 20*down_limit/30 + 25*ladder_strength/100",
+            },
+        )
+
+    @staticmethod
+    def _previous_limit_section(summary: dict[str, Any] | None) -> ConclusionSection:
+        if summary is None:
+            return ConclusionSection(
+                key="previous_limit_performance",
+                title="昨日涨停表现",
+                label="数据缺失",
+                score=0.0,
+                summary="昨日涨停今日表现暂无数据,无法计算晋级率和淘汰惩罚。",
+                evidence={
+                    "formula": (
+                        "promotion_rate=count(previous∩today_limit)/count(previous); "
+                        "current_edge=mean(previous.change_pct); "
+                        "loser_penalty=mean(change_pct of previous not promoted)"
+                    ),
+                },
+            )
+
+        count = int(summary.get("previous_count") or 0)
+        promotion = float(summary.get("promotion_rate") or 0.0)
+        current_edge = summary.get("current_edge_pct")
+        loser_penalty = summary.get("loser_penalty_pct")
+        red_rate = summary.get("red_rate")
+        high_promotion = summary.get("high_promotion_rate")
+        high_loser_penalty = summary.get("high_loser_penalty_pct")
+        edge = float(current_edge) if current_edge is not None else 0.0
+        penalty = float(loser_penalty) if loser_penalty is not None else 0.0
+        red = float(red_rate) if red_rate is not None else 0.0
+        high = float(high_promotion) if high_promotion is not None else promotion
+        high_penalty = float(high_loser_penalty) if high_loser_penalty is not None else penalty
+        score = round(40 * promotion + 25 * red + 20 * high + 2 * edge + 1.2 * penalty + 1.2 * high_penalty, 2)
+        if count == 0:
+            label = "数据缺失"
+        elif promotion >= 0.30 and high >= 0.25 and edge >= 2:
+            label = "晋级溢价强"
+        elif high_penalty <= -6:
+            label = "高位淘汰重"
+        elif edge >= 0:
+            label = "溢价尚可"
+        elif penalty <= -5:
+            label = "淘汰惩罚重"
+        else:
+            label = "溢价偏弱"
+        summary_text = (
+            f"昨日涨停 {count} 只,今日晋级 {int(summary.get('promoted_count') or 0)} 只,"
+            f"晋级率 {promotion:.1%},平均表现 {edge:+.2f}%,"
+            f"红盘率 {red:.1%},淘汰惩罚 {penalty:+.2f}%,"
+            f"高位晋级 {high:.1%}。"
+        )
+        return ConclusionSection(
+            key="previous_limit_performance",
+            title="昨日涨停表现",
+            label=label,
+            score=score,
+            summary=summary_text,
+            evidence={
+                **summary,
+                "formula": (
+                    "score=40*promotion_rate + 25*red_rate + 20*high_promotion_rate + "
+                    "2*current_edge_pct + 1.2*loser_penalty_pct + 1.2*high_loser_penalty_pct"
+                ),
+            },
+        )
+
+    @staticmethod
+    def _lowfreq_section(summary: dict[str, Any] | None) -> ConclusionSection:
+        if summary is None:
+            return ConclusionSection(
+                key="lowfreq_facts",
+                title="低频资金与公告",
+                label="数据缺失",
+                score=0.0,
+                summary="龙虎榜、公告、同花顺低频资金流暂无入库数据。",
+                evidence={
+                    "formula": "lowfreq_score = min(lhb_count,10)*2 + min(fund_flow_count,20)*0.5",
+                },
+            )
+        lhb_count = int(summary.get("lhb_count") or 0)
+        notice_count = int(summary.get("notice_count") or 0)
+        fund_flow_count = int(summary.get("fund_flow_count") or 0)
+        score = round(min(lhb_count, 10) * 2 + min(fund_flow_count, 20) * 0.5, 2)
+        if lhb_count >= 20 or fund_flow_count >= 20:
+            label = "低频确认充分"
+        elif lhb_count > 0 or notice_count > 0 or fund_flow_count > 0:
+            label = "低频事实可用"
+        else:
+            label = "数据缺失"
+        summary_text = (
+            f"龙虎榜 {lhb_count} 条,公告 {notice_count} 条,"
+            f"低频资金流 {fund_flow_count} 条。"
+        )
+        return ConclusionSection(
+            key="lowfreq_facts",
+            title="低频资金与公告",
+            label=label,
+            score=score,
+            summary=summary_text,
+            evidence={
+                **summary,
+                "formula": "min(lhb_count,10)*2 + min(fund_flow_count,20)*0.5",
             },
         )
 
@@ -618,6 +740,12 @@ class MarketConclusionService:
         limit = by_key.get("limit_structure")
         if limit:
             parts.append(f"涨停:{limit.label}")
+        previous = by_key.get("previous_limit_performance")
+        if previous:
+            parts.append(f"昨板:{previous.label}")
+        lowfreq = by_key.get("lowfreq_facts")
+        if lowfreq:
+            parts.append(f"低频:{lowfreq.label}")
         if risk:
             parts.append(f"风险:{risk.label}")
         if signal:
@@ -671,6 +799,50 @@ class MarketConclusionService:
             and int(summary.get("down_limit_count") or 0) == 0
         ):
             data_gaps.append("当日暂无真实涨停/炸板/跌停池数据")
+            return None
+        return summary
+
+    async def _previous_limit_summary(
+        self,
+        market: str,
+        trade_date: str,
+        data_gaps: list[str],
+    ) -> dict[str, Any] | None:
+        if self.limit_pool is None:
+            data_gaps.append("昨日涨停表现池尚未接入结论层")
+            return None
+        try:
+            summary = await self.limit_pool.previous_performance_by_date(market, trade_date)
+        except Exception as e:  # noqa: BLE001
+            data_gaps.append(f"昨日涨停表现读取失败:{e}")
+            return None
+        if summary is None:
+            data_gaps.append("当日暂无昨日涨停今日表现数据")
+            return None
+        if summary.get("open_edge_pct") is None:
+            data_gaps.append("昨日涨停开盘溢价缺少开盘价源,暂仅统计当前表现")
+        return summary
+
+    async def _lowfreq_summary(
+        self,
+        market: str,
+        trade_date: str,
+        data_gaps: list[str],
+    ) -> dict[str, Any] | None:
+        if self.lowfreq is None:
+            data_gaps.append("龙虎榜/公告/低频资金性质尚未接入每日复盘")
+            return None
+        try:
+            summary = await self.lowfreq.summary_by_date(market, trade_date)
+        except Exception as e:  # noqa: BLE001
+            data_gaps.append(f"低频事实读取失败:{e}")
+            return None
+        if (
+            int(summary.get("lhb_count") or 0) == 0
+            and int(summary.get("notice_count") or 0) == 0
+            and int(summary.get("fund_flow_count") or 0) == 0
+        ):
+            data_gaps.append("当日暂无龙虎榜/公告/低频资金流入库数据")
             return None
         return summary
 

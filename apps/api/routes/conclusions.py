@@ -10,13 +10,19 @@ from pydantic import BaseModel
 from apps.api.deps import (
     get_daily_review_repo,
     get_market_conclusion_service,
+    get_watch_candidate_service,
 )
 from core.persistence.daily_review_repo import DailyReviewRepo
+from core.domain.models import TradeCandidate
 from core.services.market_conclusion_service import (
     ConclusionSection,
     DailyReviewConclusion,
     IntradayConclusion,
     MarketConclusionService,
+)
+from core.services.watch_candidate_service import (
+    CANDIDATE_TYPE_LOW_POSITION,
+    WatchCandidateService,
 )
 
 router = APIRouter(prefix="/api/conclusions", tags=["conclusions"])
@@ -81,6 +87,30 @@ class DailyReviewConclusionDTO(BaseModel):
     data_gaps: list[str]
 
 
+class CandidateDTO(BaseModel):
+    id: int | None = None
+    market: str
+    candidate_key: str
+    symbol: str
+    name: str | None = None
+    theme_code: str | None = None
+    theme_name: str | None = None
+    candidate_type: str
+    decision: str
+    score: float
+    reasons: list[str]
+    risks: list[str]
+    evidence: dict[str, Any]
+    generated_at: str | None = None
+
+
+class CandidatesResponse(BaseModel):
+    market: str
+    candidate_type: str
+    items: list[CandidateDTO]
+    meta: dict[str, Any] = {}
+
+
 def _section_dto(section: ConclusionSection) -> ConclusionSectionDTO:
     return ConclusionSectionDTO(
         key=section.key,
@@ -116,6 +146,25 @@ def _daily_review_dto(conclusion: DailyReviewConclusion) -> DailyReviewConclusio
     )
 
 
+def _candidate_dto(item: TradeCandidate) -> CandidateDTO:
+    return CandidateDTO(
+        id=item.id,
+        market=item.market,
+        candidate_key=item.candidate_key,
+        symbol=item.symbol,
+        name=item.name,
+        theme_code=item.theme_code,
+        theme_name=item.theme_name,
+        candidate_type=item.candidate_type,
+        decision=item.decision,
+        score=item.score,
+        reasons=item.reasons or [],
+        risks=item.risks or [],
+        evidence=item.evidence or {},
+        generated_at=item.generated_at.isoformat() if item.generated_at else None,
+    )
+
+
 @router.get("/intraday", response_model=IntradayConclusionDTO)
 async def intraday_conclusion(
     market: str = Query("ashare"),
@@ -145,6 +194,29 @@ async def daily_review_dates(
 ) -> dict[str, list[str]]:
     """已生成复盘的交易日列表(降序),供前端日期下拉。"""
     return {"dates": await repo.list_dates(market, limit=limit)}
+
+
+@router.get("/candidates", response_model=CandidatesResponse)
+async def conclusion_candidates(
+    market: str = Query("ashare"),
+    candidate_type: str = Query(CANDIDATE_TYPE_LOW_POSITION),
+    limit: int = Query(50, ge=1, le=200),
+    service: WatchCandidateService = Depends(get_watch_candidate_service),
+) -> CandidatesResponse:
+    """观察候选池:API 只读 collector 已生成候选,不触发 DuckDB/外部数据源。"""
+    if market != "ashare":
+        return CandidatesResponse(
+            market=market, candidate_type=candidate_type, items=[],
+            meta={"stale": True, "reason": "ashare_only"},
+        )
+    items = await service.list_candidates(
+        market, limit=limit, candidate_type=candidate_type)
+    return CandidatesResponse(
+        market=market,
+        candidate_type=candidate_type,
+        items=[_candidate_dto(i) for i in items],
+        meta={"stale": not bool(items), "reason": None if items else "no_data"},
+    )
 
 
 @router.get("/intraday-rounds", response_model=IntradayRoundsResponse)

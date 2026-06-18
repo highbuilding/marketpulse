@@ -178,6 +178,10 @@ async def test_intraday_conclusion_uses_limit_pool_summary():
             "max_ladder_height": 6,
             "ladder_counts": {1: 35, 2: 12, 3: 6, 4: 3, 5: 1, 6: 1},
             "ladder_break_count": 0,
+            "second_plus_count": 23,
+            "third_plus_count": 11,
+            "ladder_continuity": 1.0,
+            "ladder_strength_score": 85.0,
             "sample_symbols": {
                 "limit_up": ["600110.SH"],
                 "broken_limit": ["000777.SZ"],

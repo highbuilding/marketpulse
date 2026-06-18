@@ -50,6 +50,10 @@ async def test_save_query_and_summary(repo):
     assert summary["break_rate"] == pytest.approx(1 / 3)
     assert summary["max_ladder_height"] == 3
     assert summary["ladder_break_count"] == 1
+    assert summary["second_plus_count"] == 1
+    assert summary["third_plus_count"] == 1
+    assert summary["first_board_rate"] == pytest.approx(0.5)
+    assert summary["ladder_strength_score"] > 0
 
 
 @pytest.mark.asyncio
@@ -61,3 +65,34 @@ async def test_save_items_is_idempotent(repo):
     rows = await repo.list_by_date("ashare", "2026-06-17")
     assert len(rows) == 1
     assert rows[0].ladder_count == 2
+
+
+@pytest.mark.asyncio
+async def test_previous_performance_summary(repo):
+    p1 = _item("600110.SH", "previous", ladder=2)
+    p2 = _item("002222.SZ", "previous", ladder=3)
+    p3 = _item("000811.SZ", "previous", ladder=1)
+    await repo.save_items([
+        p1,
+        p2,
+        p3,
+        _item("600110.SH", "limit_up", ladder=3),
+    ])
+    # 更新 previous 今日涨跌幅
+    await repo.save_items([
+        replace(p1, change_pct=5.0),
+        replace(p2, change_pct=-6.0),
+        replace(p3, change_pct=-3.0),
+    ])
+
+    summary = await repo.previous_performance_by_date("ashare", "2026-06-17")
+    assert summary is not None
+    assert summary["previous_count"] == 3
+    assert summary["promoted_count"] == 1
+    assert summary["promotion_rate"] == pytest.approx(1 / 3)
+    assert summary["current_edge_pct"] == pytest.approx(-4 / 3)
+    assert summary["loser_penalty_pct"] == pytest.approx(-4.5)
+    assert summary["red_rate"] == pytest.approx(1 / 3)
+    assert summary["high_previous_count"] == 2
+    assert summary["high_promotion_rate"] == pytest.approx(0.5)
+    assert summary["high_loser_penalty_pct"] == pytest.approx(-6.0)

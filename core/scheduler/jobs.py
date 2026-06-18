@@ -8,6 +8,7 @@ from core.adapters.registry import AdapterRegistry
 from core.cache.quote_cache import QuoteCache
 from core.cache.redis_client import RedisCache
 from core.cache import keys as cache_keys
+from core.domain.core_symbols import core_symbols
 from core.domain.markets import infer_market
 from core.domain.models import Bar
 from core.persistence.collector_symbol_repo import CollectorSymbolRepo
@@ -80,9 +81,14 @@ async def tick_snapshot_once(
             log.warning("tick.collector_symbols_load_failed", market=market, error=str(e))
             base = set(registry.universe(market)) | set(registry.index_symbols(market))
     else:
-        base = set(registry.universe(market)) | set(registry.index_symbols(market))
+        base = (
+            set(registry.universe(market))
+            | set(registry.index_symbols(market))
+            | set(core_symbols(market))
+        )
     _ = watchlist
-    base = {s for s in base if infer_market(s) == market}
+    filtered = {s for s in base if infer_market(s) == market}
+    base = filtered or base
     symbols = list(base)
     if not symbols:
         return

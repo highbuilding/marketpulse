@@ -27,7 +27,7 @@ from apps.api.auth import AuthMiddleware, router as auth_router
 from apps.api.routes import (
     ai_market, cd_signals, collector_symbols, health, market_changes, market_extras,
     north_flow, conclusions, live_messages, notifications, positions, replay, sse_bars,
-    sse_intraday, sse_live_messages, sse_signals, symbols, themes, watchlists,
+    sse_intraday, sse_live_messages, sse_signals, strategy, symbols, themes, watchlists,
 )
 from apps.api.ws import ticks
 
@@ -118,6 +118,7 @@ app.include_router(collector_symbols.router)
 app.include_router(conclusions.router)
 app.include_router(live_messages.router)
 app.include_router(replay.router)
+app.include_router(strategy.router)
 app.include_router(sse_bars.router)
 app.include_router(sse_signals.router)
 app.include_router(sse_intraday.router)

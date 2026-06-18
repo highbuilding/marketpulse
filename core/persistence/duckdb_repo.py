@@ -157,6 +157,42 @@ class BarRepo:
             rows = cur.fetchall()
         return self._rows_to_bars(market, symbol, rows)
 
+    def fetch_history_frame(
+        self,
+        market: str,
+        symbols: list[str],
+        start: datetime,
+        end: datetime,
+        interval: str = "1d",
+        *,
+        closed_only: bool = True,
+    ) -> pd.DataFrame:
+        """批量读取历史 bar 为 DataFrame,供回测/统计任务使用。
+
+        collector/offline 进程调用; api 进程不要经此路径直连 DuckDB。
+        """
+        if not symbols:
+            return pd.DataFrame()
+        placeholders = ",".join(["?"] * len(symbols))
+        args: list = [
+            market,
+            interval,
+            start.astimezone(timezone.utc).replace(tzinfo=None),
+            end.astimezone(timezone.utc).replace(tzinfo=None),
+            *symbols,
+        ]
+        with self._conn() as c:
+            return c.execute(f"""
+                SELECT market, symbol, ts, interval, open, high, low, close,
+                       volume, amount, turnover, outstanding_share, final
+                FROM bars
+                WHERE market = ? AND interval = ?
+                  AND ts BETWEEN ? AND ?
+                  AND symbol IN ({placeholders})
+                  {"AND final = TRUE" if closed_only else ""}
+                ORDER BY ts ASC, symbol ASC
+            """, args).fetchdf()
+
     def fetch_history_paged(
         self, market: str, symbol: str, interval: str,
         *, before: datetime | None, limit: int, closed_only: bool = False,

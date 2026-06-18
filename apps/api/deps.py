@@ -9,10 +9,12 @@ from core.cache.quote_cache import QuoteCache
 from core.notifications import EmailChannel, WeChatChannel
 from core.persistence.duckdb_repo import BarRepo
 from core.persistence.chip_repo import ChipRepo
+from core.persistence.candidate_repo import CandidateRepo
 from core.persistence.collector_symbol_repo import CollectorSymbolRepo
 from core.persistence.fund_flow_repo import FundFlowRepo
 from core.persistence.live_message_repo import LiveMessageRepo
 from core.persistence.limit_pool_repo import LimitPoolRepo
+from core.persistence.lowfreq_fact_repo import LowFreqFactRepo
 from core.persistence.stock_changes_repo import StockChangesRepo
 from core.persistence.notification_repo import NotificationRepo
 from core.persistence.position_repo import PositionRepo
@@ -20,6 +22,7 @@ from core.persistence.signal_repo import SignalRepo
 from core.persistence.sqlite_repo import StateRepo
 from core.persistence.sw_industry_repo import SwIndustryRepo
 from core.persistence.symbol_directory_repo import SymbolDirectoryRepo
+from core.persistence.strategy_backtest_repo import StrategyBacktestRepo
 from core.persistence.theme_repo import ThemeRepo
 from core.persistence.daily_review_repo import DailyReviewRepo
 from core.persistence.watchlist_repo import WatchlistRepo
@@ -30,12 +33,15 @@ from core.services.ai_market_service import AIMarketService
 from core.services.kline_service import KLineService
 from core.services.live_message_service import LiveMessageService
 from core.services.limit_pool_service import LimitPoolService
+from core.services.lowfreq_fact_service import LowFreqFactService
 from core.services.market_changes_service import MarketChangesService
 from core.services.market_query import MarketQueryService
 from core.services.market_conclusion_service import MarketConclusionService
 from core.services.sw_industry_service import SwIndustryService
+from core.services.watch_candidate_service import WatchCandidateService
 from core.services.notification_service import NotificationService
 from core.services.signal_service import SignalScanService
+from core.services.strategy_backtest_service import StrategyBacktestService
 from core.services.symbol_directory_service import SymbolDirectoryService
 from core.services.watchlist_service import WatchlistService
 from core.services.volume_indicator_service import VolumeIndicatorService
@@ -72,6 +78,7 @@ def set_bar_repo_override(repo: BarRepo | None) -> None:
     get_bar_repo.cache_clear()
     get_kline_service.cache_clear()
     get_signal_scan_service.cache_clear()
+    get_strategy_backtest_service.cache_clear()
 
 
 @lru_cache(maxsize=1)
@@ -182,6 +189,40 @@ def get_limit_pool_service() -> LimitPoolService:
 
 
 @lru_cache(maxsize=1)
+def get_candidate_repo() -> CandidateRepo:
+    return CandidateRepo(str(_DATA / "state.db"))
+
+
+@lru_cache(maxsize=1)
+def get_strategy_backtest_repo() -> StrategyBacktestRepo:
+    return StrategyBacktestRepo(str(_DATA / "state.db"))
+
+
+@lru_cache(maxsize=1)
+def get_strategy_backtest_service() -> StrategyBacktestService:
+    return StrategyBacktestService(
+        get_strategy_backtest_repo(),
+        bar_repo=get_bar_repo(),
+        signals=get_signal_repo(),
+        candidates=get_candidate_repo(),
+        collector_symbols=get_collector_symbol_repo(),
+        limit_pool=get_limit_pool_repo(),
+        themes=get_theme_repo(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_watch_candidate_service() -> WatchCandidateService:
+    return WatchCandidateService(
+        get_candidate_repo(),
+        themes=get_theme_repo(),
+        bar_repo=get_bar_repo(),
+        fund_flow=get_fund_flow_repo(),
+        limit_pool=get_limit_pool_repo(),
+    )
+
+
+@lru_cache(maxsize=1)
 def get_stock_changes_repo() -> StockChangesRepo:
     return StockChangesRepo(str(_DATA / "state.db"))
 
@@ -239,7 +280,18 @@ def get_market_conclusion_service() -> MarketConclusionService:
         get_theme_repo(),
         get_limit_pool_repo(),
         daily_review_repo=get_daily_review_repo(),
+        lowfreq=get_lowfreq_fact_service(),
     )
+
+
+@lru_cache(maxsize=1)
+def get_lowfreq_fact_repo() -> LowFreqFactRepo:
+    return LowFreqFactRepo(str(_DATA / "state.db"))
+
+
+@lru_cache(maxsize=1)
+def get_lowfreq_fact_service() -> LowFreqFactService:
+    return LowFreqFactService(get_lowfreq_fact_repo())
 
 
 @lru_cache(maxsize=1)

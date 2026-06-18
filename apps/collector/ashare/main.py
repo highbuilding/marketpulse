@@ -345,6 +345,17 @@ async def lifespan(app: FastAPI):
         id="ashare:sw_industry_daily", max_instances=1, coalesce=True,
     )
 
+    # === 盘后低频事实 (龙虎榜/公告/同花顺资金流), 只增强复盘 ===
+    # 龙虎榜一般 18:00 后更稳定, 因此低频采集放晚间; 随后再补生成一次复盘存档。
+    from apps.collector.jobs.lowfreq_facts import refresh_ashare_lowfreq_facts
+    from apps.api.deps import get_lowfreq_fact_service
+    _lowfreq_service = get_lowfreq_fact_service()
+    sched.add_job(
+        _leader_gated_job(lambda: refresh_ashare_lowfreq_facts(_lowfreq_service)),
+        CronTrigger(day_of_week="mon-fri", hour=18, minute=10, timezone="Asia/Shanghai"),
+        id="ashare:lowfreq_facts", max_instances=1, coalesce=True,
+    )
+
     # === 每日复盘生成 (收盘后, 日线层 + 消息层 → daily_reviews) ===
     # collector 持 BarRepo, 经 DailyReviewBuilder 算走势/板块位置/龙头分层。
     from apps.collector.jobs.daily_review import refresh_ashare_daily_review
@@ -353,12 +364,60 @@ async def lifespan(app: FastAPI):
     _review_builder = DailyReviewBuilder(bar_repo, get_sw_industry_repo(), _gtr())
     _review_service = _MCS(
         _glmr(), _gtr(), get_limit_pool_service().repo,
-        daily_review_repo=_daily_review_repo, daily_review_builder=_review_builder,
+        daily_review_repo=_daily_review_repo,
+        daily_review_builder=_review_builder,
+        lowfreq=_lowfreq_service,
     )
     sched.add_job(
         _leader_gated_job(lambda: refresh_ashare_daily_review(_review_service, _daily_review_repo)),
         CronTrigger(day_of_week="mon-fri", hour=15, minute=50, timezone="Asia/Shanghai"),
         id="ashare:daily_review", max_instances=1, coalesce=True,
+    )
+    sched.add_job(
+        _leader_gated_job(lambda: refresh_ashare_daily_review(_review_service, _daily_review_repo)),
+        CronTrigger(day_of_week="mon-fri", hour=18, minute=20, timezone="Asia/Shanghai"),
+        id="ashare:daily_review_lowfreq_refresh", max_instances=1, coalesce=True,
+    )
+
+    # === 低位容量趋势观察池 (收盘后, 本地日线+题材+涨停风险 → trade_candidates) ===
+    from apps.collector.jobs.watch_candidates import refresh_ashare_watch_candidates
+    from apps.api.deps import get_candidate_repo, get_fund_flow_repo
+    from core.services.watch_candidate_service import WatchCandidateService
+    _watch_candidate_service = WatchCandidateService(
+        get_candidate_repo(),
+        themes=_gtr(),
+        bar_repo=bar_repo,
+        fund_flow=get_fund_flow_repo(),
+        limit_pool=get_limit_pool_service().repo,
+    )
+    sched.add_job(
+        _leader_gated_job(lambda: refresh_ashare_watch_candidates(_watch_candidate_service)),
+        CronTrigger(day_of_week="mon-fri", hour=15, minute=55, timezone="Asia/Shanghai"),
+        id="ashare:watch_candidates", max_instances=1, coalesce=True,
+    )
+
+    # === 策略回测 + 纸面指令 (收盘后, 本地日线+复盘条件 → strategy_backtest_runs) ===
+    from apps.collector.jobs.strategy_backtests import refresh_ashare_strategy_backtests
+    from core.persistence.strategy_backtest_repo import StrategyBacktestRepo
+    from core.services.strategy_backtest_service import StrategyBacktestService
+    _strategy_backtest_service = StrategyBacktestService(
+        StrategyBacktestRepo(str(_DATA / "state.db")),
+        bar_repo=bar_repo,
+        signals=get_signal_repo(),
+        candidates=get_candidate_repo(),
+        collector_symbols=get_collector_symbol_repo(),
+        limit_pool=get_limit_pool_service().repo,
+        themes=_gtr(),
+    )
+    sched.add_job(
+        _leader_gated_job(lambda: refresh_ashare_strategy_backtests(_strategy_backtest_service)),
+        CronTrigger(day_of_week="mon-fri", hour=16, minute=5, timezone="Asia/Shanghai"),
+        id="ashare:strategy_backtests", max_instances=1, coalesce=True,
+    )
+    sched.add_job(
+        _leader_gated_job(lambda: refresh_ashare_strategy_backtests(_strategy_backtest_service)),
+        CronTrigger(day_of_week="mon-fri", hour=18, minute=30, timezone="Asia/Shanghai"),
+        id="ashare:strategy_backtests_lowfreq_refresh", max_instances=1, coalesce=True,
     )
 
     # 注: 30min 结论轮不再 cron 落档 —— 改由 api /conclusions/intraday-rounds 读时按窗切片

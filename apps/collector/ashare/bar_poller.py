@@ -25,6 +25,7 @@ from core.domain.market_calendar import is_trading_day
 from core.domain.market_sessions import is_market_session_open
 from core.domain.models import Bar
 from core.domain.runtime_env import tiered_int
+from core.domain.core_symbols import CORE_SYMBOLS
 from core.persistence.collector_symbol_repo import CollectorSymbolRepo
 from core.persistence.duckdb_repo import BarRepo
 
@@ -46,6 +47,11 @@ MAX_CONCURRENCY = tiered_int("BAR_POLLER_MAX_CONCURRENCY", test=3, prod=3)
 INTERVAL_TO_PERIOD = {"5m": "5", "15m": "15", "30m": "30"}
 
 _CN_TZ = ZoneInfo("Asia/Shanghai")
+
+
+def _build_core_active() -> set[str]:
+    """兼容旧审计测试: A 股 CORE 标的默认只启用 5m 轮询 key。"""
+    return {f"{s}:5m" for s in CORE_SYMBOLS["ashare"]}
 
 
 def _slot_for_symbol(symbol: str) -> int:

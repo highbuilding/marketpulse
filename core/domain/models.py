@@ -414,6 +414,89 @@ class TradeCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class TradeInstruction:
+    """规则生成的交易指令建议。
+
+    这是可执行交易计划, 不是自动下单执行。action 由规则引擎给出:
+    BUY_SETUP / BUY_TRIGGER / HOLD / SELL_RISK / AVOID / WAIT_CONFIRM。
+    """
+    market: str
+    instruction_key: str
+    action: str
+    target_type: str
+    target_id: str
+    title: str
+    summary: str
+    confidence: float
+    severity: str
+    status: str = "active"
+    target_name: str | None = None
+    candidate_key: str | None = None
+    reasons: list[str] | None = None
+    risks: list[str] | None = None
+    entry_conditions: list[str] | None = None
+    invalidation_conditions: list[str] | None = None
+    evidence: dict[str, Any] | None = None
+    generated_at: datetime | None = None
+    expires_at: datetime | None = None
+    id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyBacktestTrade:
+    """单笔回测交易明细。return_pct 使用百分数,例如 3.2 表示 +3.2%。"""
+    market: str
+    strategy_id: str
+    symbol: str
+    entry_date: str
+    exit_date: str
+    entry_price: float
+    exit_price: float
+    return_pct: float
+    holding_days: int
+    exit_reason: str
+    name: str | None = None
+    evidence: dict[str, Any] | None = None
+    run_id: int | None = None
+    id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyBacktestRun:
+    """策略回测摘要。由 collector/offline 生成,API 只读展示。"""
+    market: str
+    strategy_id: str
+    strategy_name: str
+    description: str
+    horizon: str
+    status: str
+    engine: str
+    sample_start: str | None = None
+    sample_end: str | None = None
+    symbol_count: int = 0
+    trade_count: int = 0
+    win_rate: float | None = None
+    avg_return_pct: float | None = None
+    median_return_pct: float | None = None
+    max_drawdown_pct: float | None = None
+    worst_trade_pct: float | None = None
+    avg_holding_days: float | None = None
+    annual_return_pct: float | None = None
+    total_return_pct: float | None = None
+    sandbox_eligible: bool = False
+    metrics: dict[str, Any] | None = None
+    returns: dict[str, Any] | None = None
+    yearly: list[dict[str, Any]] | None = None
+    market_state: list[dict[str, Any]] | None = None
+    theme_state: list[dict[str, Any]] | None = None
+    exit_comparison: list[dict[str, Any]] | None = None
+    equity_curve: list[dict[str, Any]] | None = None
+    data_gaps: list[str] | None = None
+    generated_at: datetime | None = None
+    id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class AITradeOpinion:
     """AI 基于候选和证据生成的交易观察结论。"""
     market: str

@@ -131,6 +131,55 @@ CREATE TABLE IF NOT EXISTS board_changes (
 CREATE INDEX IF NOT EXISTS idx_board_changes_date
   ON board_changes(market, trade_date, change_total DESC);
 
+-- 盘后低频事实: 龙虎榜详情 (stock_lhb_detail_em)。
+CREATE TABLE IF NOT EXISTS lhb_daily (
+  market TEXT NOT NULL,
+  trade_date TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  name TEXT,
+  reason TEXT,
+  net_buy REAL,
+  buy_amount REAL,
+  sell_amount REAL,
+  turnover_rate REAL,
+  total_amount REAL,
+  raw_json TEXT NOT NULL DEFAULT '{}',
+  pulled_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (market, trade_date, symbol, reason)
+);
+CREATE INDEX IF NOT EXISTS idx_lhb_daily_date
+  ON lhb_daily(market, trade_date, net_buy DESC);
+
+-- 盘后低频事实: 公告摘要 (stock_notice_report)。
+CREATE TABLE IF NOT EXISTS stock_notices_daily (
+  market TEXT NOT NULL,
+  trade_date TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  name TEXT,
+  title TEXT NOT NULL,
+  notice_type TEXT,
+  raw_json TEXT NOT NULL DEFAULT '{}',
+  pulled_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (market, trade_date, symbol, title)
+);
+CREATE INDEX IF NOT EXISTS idx_stock_notices_daily_date
+  ON stock_notices_daily(market, trade_date);
+
+-- 盘后低频事实: 同花顺个股/概念/行业资金流快照。
+CREATE TABLE IF NOT EXISTS lowfreq_fund_flow_daily (
+  market TEXT NOT NULL,
+  trade_date TEXT NOT NULL,
+  flow_type TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  change_pct REAL,
+  net_inflow REAL,
+  raw_json TEXT NOT NULL DEFAULT '{}',
+  pulled_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (market, trade_date, flow_type, subject)
+);
+CREATE INDEX IF NOT EXISTS idx_lowfreq_fund_flow_daily_date
+  ON lowfreq_fund_flow_daily(market, trade_date, flow_type, net_inflow DESC);
+
 -- Plan 2.1: symbol directory (code + name)
 CREATE TABLE IF NOT EXISTS symbol_directory (
   symbol TEXT PRIMARY KEY,
@@ -436,6 +485,91 @@ CREATE TABLE IF NOT EXISTS trade_candidates (
 );
 CREATE INDEX IF NOT EXISTS idx_trade_candidates_market_status
   ON trade_candidates(market, status, score DESC, generated_at DESC);
+
+-- 规则策略回测结果。由 collector/offline 持 BarRepo 计算后落库; API/Web 只读。
+CREATE TABLE IF NOT EXISTS strategy_backtest_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  market TEXT NOT NULL,
+  strategy_id TEXT NOT NULL,
+  strategy_name TEXT NOT NULL,
+  description TEXT NOT NULL,
+  horizon TEXT NOT NULL,
+  status TEXT NOT NULL,
+  engine TEXT NOT NULL,
+  sample_start TEXT,
+  sample_end TEXT,
+  symbol_count INTEGER NOT NULL DEFAULT 0,
+  trade_count INTEGER NOT NULL DEFAULT 0,
+  win_rate REAL,
+  avg_return_pct REAL,
+  median_return_pct REAL,
+  max_drawdown_pct REAL,
+  worst_trade_pct REAL,
+  avg_holding_days REAL,
+  annual_return_pct REAL,
+  total_return_pct REAL,
+  sandbox_eligible INTEGER NOT NULL DEFAULT 0,
+  metrics_json TEXT NOT NULL DEFAULT '{}',
+  returns_json TEXT NOT NULL DEFAULT '{}',
+  yearly_json TEXT NOT NULL DEFAULT '[]',
+  market_state_json TEXT NOT NULL DEFAULT '[]',
+  theme_state_json TEXT NOT NULL DEFAULT '[]',
+  exit_comparison_json TEXT NOT NULL DEFAULT '[]',
+  equity_curve_json TEXT NOT NULL DEFAULT '[]',
+  data_gaps_json TEXT NOT NULL DEFAULT '[]',
+  generated_at TIMESTAMP NOT NULL,
+  UNIQUE(market, strategy_id)
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_backtest_market
+  ON strategy_backtest_runs(market, generated_at DESC);
+
+CREATE TABLE IF NOT EXISTS strategy_backtest_trades (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL,
+  market TEXT NOT NULL,
+  strategy_id TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  name TEXT,
+  entry_date TEXT NOT NULL,
+  exit_date TEXT NOT NULL,
+  entry_price REAL NOT NULL,
+  exit_price REAL NOT NULL,
+  return_pct REAL NOT NULL,
+  holding_days INTEGER NOT NULL,
+  exit_reason TEXT NOT NULL,
+  evidence_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_backtest_trades_run
+  ON strategy_backtest_trades(run_id, entry_date DESC);
+
+-- 规则交易大脑生成的纸面指令。不是自动下单。
+CREATE TABLE IF NOT EXISTS trade_instructions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  market TEXT NOT NULL,
+  instruction_key TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  target_name TEXT,
+  strategy_id TEXT,
+  strategy_name TEXT,
+  candidate_key TEXT,
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  severity TEXT NOT NULL,
+  reasons_json TEXT NOT NULL DEFAULT '[]',
+  risks_json TEXT NOT NULL DEFAULT '[]',
+  entry_conditions_json TEXT NOT NULL DEFAULT '[]',
+  invalidation_conditions_json TEXT NOT NULL DEFAULT '[]',
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  generated_at TIMESTAMP NOT NULL,
+  expires_at TIMESTAMP,
+  status TEXT NOT NULL DEFAULT 'active',
+  UNIQUE(market, instruction_key)
+);
+CREATE INDEX IF NOT EXISTS idx_trade_instructions_market_status
+  ON trade_instructions(market, status, generated_at DESC);
 
 -- 申万一级行业指数日线 (index_hist_sw, 经 collector ak_call 拉取)。
 -- 行业指数仅 31×~1600 天, 量小, 存 SQLite 让 api 可直读 (不碰雷区6 DuckDB 互斥)。

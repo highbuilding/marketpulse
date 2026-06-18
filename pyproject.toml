@@ -25,6 +25,7 @@ dependencies = [
     "ormsgpack>=1.4",
     "honcho>=1.1",
     "exchange-calendars>=4.5",
+    "vectorbt>=1.0.0",
 ]
 
 [project.optional-dependencies]

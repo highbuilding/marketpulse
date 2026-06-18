@@ -125,6 +125,99 @@ export interface Position {
   updated_at: string | null
 }
 
+export interface StrategyRun {
+  id: number | null
+  market: Market
+  strategy_id: string
+  strategy_name: string
+  description: string
+  horizon: string
+  status: string
+  engine: string
+  sample_start: string | null
+  sample_end: string | null
+  symbol_count: number
+  trade_count: number
+  win_rate: number | null
+  avg_return_pct: number | null
+  median_return_pct: number | null
+  max_drawdown_pct: number | null
+  worst_trade_pct: number | null
+  avg_holding_days: number | null
+  annual_return_pct: number | null
+  total_return_pct: number | null
+  sandbox_eligible: boolean
+  metrics: Record<string, unknown>
+  returns: Record<string, {
+    count: number
+    avg_return_pct: number | null
+    median_return_pct: number | null
+    win_rate: number | null
+  }>
+  yearly: Array<Record<string, unknown>>
+  market_state: Array<Record<string, unknown>>
+  theme_state: Array<Record<string, unknown>>
+  exit_comparison: Array<Record<string, unknown>>
+  equity_curve: Array<{ date: string; value: number }>
+  data_gaps: string[]
+  generated_at: string | null
+}
+
+export interface StrategyTrade {
+  id: number | null
+  symbol: string
+  name: string | null
+  entry_date: string
+  exit_date: string
+  entry_price: number
+  exit_price: number
+  return_pct: number
+  holding_days: number
+  exit_reason: string
+  evidence: Record<string, unknown>
+}
+
+export interface StrategyListResponse {
+  market: Market
+  items: StrategyRun[]
+  meta: ResponseMeta
+}
+
+export interface StrategyReportResponse {
+  market: Market
+  strategy: StrategyRun
+  trades: StrategyTrade[]
+}
+
+export interface TradeInstruction {
+  id: number | null
+  market: Market
+  instruction_key: string
+  action: 'BUY_SETUP' | 'BUY_TRIGGER' | 'HOLD' | 'SELL_RISK' | 'AVOID' | 'WAIT_CONFIRM' | string
+  target_type: string
+  target_id: string
+  target_name: string | null
+  candidate_key: string | null
+  title: string
+  summary: string
+  confidence: number
+  severity: string
+  reasons: string[]
+  risks: string[]
+  entry_conditions: string[]
+  invalidation_conditions: string[]
+  evidence: Record<string, unknown>
+  generated_at: string | null
+  expires_at: string | null
+  status: string
+}
+
+export interface TradeInstructionsResponse {
+  market: Market
+  items: TradeInstruction[]
+  meta: ResponseMeta
+}
+
 export type ThemePriority = 'P0' | 'P1' | 'P2' | 'P3'
 export type ThemeClassification = 'index_weight' | 'industry' | 'concept' | 'theme' | 'watch'
 
