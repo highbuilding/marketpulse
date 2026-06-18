@@ -145,6 +145,36 @@ export function marketPhase(market: Market, now: Date = new Date()): MarketPhase
   return 'lunch' // 在首末之间但不在任何 session 内 = 午休
 }
 
+// A 股盘面细分时段 (镜像后端 core/domain/market_sessions.py::ashare_phase)。
+// 驱动盘面面板模块显隐/高亮。比 marketPhase 更细 (拆出竞价/开盘/尾盘)。
+export type AshareBoardPhase =
+  | 'pre' | 'auction' | 'open' | 'intraday' | 'closing' | 'post' | 'closed'
+
+const ASHARE_PHASE_LABEL: Record<AshareBoardPhase, string> = {
+  pre: '盘前', auction: '集合竞价', open: '开盘', intraday: '盘中',
+  closing: '尾盘竞价', post: '盘后', closed: '休市',
+}
+export function ashareBoardPhaseLabel(p: AshareBoardPhase): string {
+  return ASHARE_PHASE_LABEL[p]
+}
+
+export function ashareBoardPhase(now: Date = new Date()): AshareBoardPhase {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai', weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(now)
+  const wd = parts.find((p) => p.type === 'weekday')?.value ?? ''
+  if (wd === 'Sat' || wd === 'Sun') return 'closed'
+  const hh = Number(parts.find((p) => p.type === 'hour')?.value ?? '0') % 24
+  const mm = Number(parts.find((p) => p.type === 'minute')?.value ?? '0')
+  const t = hh * 60 + mm
+  if (t < 9 * 60 + 15) return 'pre'
+  if (t < 9 * 60 + 30) return 'auction'
+  if (t < 9 * 60 + 40) return 'open'
+  if (t < 14 * 60 + 55) return 'intraday'
+  if (t <= 15 * 60) return 'closing'
+  return 'post'
+}
+
 // 美股 RTH 判定 (09:30-16:00 ET)。分时图仅 RTH; 非 RTH 详情页默认 K 线。
 export function isUsRegularSession(now: Date = new Date()): boolean {
   const parts = new Intl.DateTimeFormat('en-US', {
