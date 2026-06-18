@@ -113,7 +113,7 @@ class LimitPoolItem:
     """
     market: str
     trade_date: str
-    pool_type: Literal["limit_up", "broken_limit", "down_limit"]
+    pool_type: Literal["limit_up", "broken_limit", "down_limit", "previous"]
     symbol: str
     name: str | None = None
     change_pct: float | None = None
@@ -130,6 +130,41 @@ class LimitPoolItem:
     ladder_count: int | None = None
     industry: str | None = None
     amplitude: float | None = None
+    raw: dict[str, Any] | None = None
+    pulled_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StockChange:
+    """个股盘口异动事实源 (stock_changes_em)。
+
+    change_type 为东财异动类型中文名 (火箭发射/封涨停板/打开涨停板/竞价上涨/...)。
+    change_time 为 BJT 时分秒 HH:MM:SS。change_pct 已转百分数 (9.99 表示 +9.99%)。
+    """
+    market: str
+    trade_date: str
+    change_time: str
+    symbol: str
+    change_type: str
+    name: str | None = None
+    price: float | None = None
+    change_pct: float | None = None
+    raw: dict[str, Any] | None = None
+    pulled_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BoardChange:
+    """板块异动事实源 (stock_board_change_em)。快照型, 当日按 board_name 覆盖。"""
+    market: str
+    trade_date: str
+    board_name: str
+    change_pct: float | None = None
+    main_net_inflow: float | None = None
+    change_total: int | None = None
+    top_symbol: str | None = None
+    top_name: str | None = None
+    top_direction: str | None = None
     raw: dict[str, Any] | None = None
     pulled_at: datetime | None = None
 

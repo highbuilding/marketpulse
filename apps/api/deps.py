@@ -13,6 +13,7 @@ from core.persistence.collector_symbol_repo import CollectorSymbolRepo
 from core.persistence.fund_flow_repo import FundFlowRepo
 from core.persistence.live_message_repo import LiveMessageRepo
 from core.persistence.limit_pool_repo import LimitPoolRepo
+from core.persistence.stock_changes_repo import StockChangesRepo
 from core.persistence.notification_repo import NotificationRepo
 from core.persistence.position_repo import PositionRepo
 from core.persistence.signal_repo import SignalRepo
@@ -29,6 +30,7 @@ from core.services.ai_market_service import AIMarketService
 from core.services.kline_service import KLineService
 from core.services.live_message_service import LiveMessageService
 from core.services.limit_pool_service import LimitPoolService
+from core.services.market_changes_service import MarketChangesService
 from core.services.market_query import MarketQueryService
 from core.services.market_conclusion_service import MarketConclusionService
 from core.services.sw_industry_service import SwIndustryService
@@ -177,6 +179,16 @@ def get_limit_pool_repo() -> LimitPoolRepo:
 @lru_cache(maxsize=1)
 def get_limit_pool_service() -> LimitPoolService:
     return LimitPoolService(get_limit_pool_repo())
+
+
+@lru_cache(maxsize=1)
+def get_stock_changes_repo() -> StockChangesRepo:
+    return StockChangesRepo(str(_DATA / "state.db"))
+
+
+@lru_cache(maxsize=1)
+def get_market_changes_service() -> MarketChangesService:
+    return MarketChangesService(get_stock_changes_repo())
 
 
 @lru_cache(maxsize=1)

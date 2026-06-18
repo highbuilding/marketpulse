@@ -267,6 +267,14 @@ async def lifespan(app: FastAPI):
         name="ashare.intraday_line_writer",
     )
 
+    # === 盘口异动 / 板块异动常驻 worker (asyncio loop, 非 cron; 时段窗守卫在内) ===
+    from apps.collector.ashare.market_changes_worker import run_market_changes_worker
+    from apps.api.deps import get_market_changes_service
+    _changes_task = asyncio.create_task(
+        run_market_changes_worker(get_market_changes_service(), redis_cache),
+        name="ashare.market_changes_worker",
+    )
+
     # === 标的集 (collector_symbols): 供 startup_reconcile + daily_settlement 用 ===
     from datetime import datetime, timedelta, timezone
     from core.domain.markets import infer_market as _infer_market
@@ -352,6 +360,9 @@ async def lifespan(app: FastAPI):
         CronTrigger(day_of_week="mon-fri", hour=15, minute=50, timezone="Asia/Shanghai"),
         id="ashare:daily_review", max_instances=1, coalesce=True,
     )
+
+    # 注: 30min 结论轮不再 cron 落档 —— 改由 api /conclusions/intraday-rounds 读时按窗切片
+    # (数据本就在 live_messages/theme_snapshots, 重算很轻)。见 conclusions.py。
 
     # === 分时数据 90 天 purge (每日 02:30 UTC) ===
     async def _purge_intraday() -> None:
@@ -452,6 +463,11 @@ async def lifespan(app: FastAPI):
         _intraday_task.cancel()
         try:
             await _intraday_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        _changes_task.cancel()
+        try:
+            await _changes_task
         except (asyncio.CancelledError, Exception):
             pass
         _refill_task.cancel()

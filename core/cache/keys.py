@@ -51,6 +51,16 @@ def cache_live_messages(market: str) -> str:
     return f"cache:live_messages:{market}"
 
 
+def cache_market_changes(market: str) -> str:
+    """个股盘口异动快照 (collector market_changes job 写, api /changes 读)。TTL 180s。"""
+    return f"cache:market:{market}:changes"
+
+
+def cache_market_board_changes(market: str) -> str:
+    """板块异动快照。TTL 300s。"""
+    return f"cache:market:{market}:board_changes"
+
+
 def cache_chip_summary(symbol: str, *, days: int) -> str:
     return f"cache:chip:{symbol}:{days}d"
 

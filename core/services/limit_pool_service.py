@@ -12,12 +12,14 @@ from core.persistence.limit_pool_repo import LimitPoolRepo
 
 log = structlog.get_logger(__name__)
 
-PoolType = Literal["limit_up", "broken_limit", "down_limit"]
+PoolType = Literal["limit_up", "broken_limit", "down_limit", "previous"]
 
 _AK_FUNC_BY_POOL: dict[PoolType, str] = {
     "limit_up": "stock_zt_pool_em",
     "broken_limit": "stock_zt_pool_zbgc_em",
     "down_limit": "stock_zt_pool_dtgc_em",
+    # previous: 昨日涨停今日表现 (涨跌幅/最新价=今日, 连板数/封板时间=昨日)
+    "previous": "stock_zt_pool_previous_em",
 }
 
 
@@ -47,7 +49,7 @@ class LimitPoolService:
 
     async def pull_all(self, trade_date: str) -> dict[str, int]:
         out: dict[str, int] = {}
-        for pool_type in ("limit_up", "broken_limit", "down_limit"):
+        for pool_type in ("limit_up", "broken_limit", "down_limit", "previous"):
             out[pool_type] = await self.pull_pool(trade_date, pool_type)  # type: ignore[arg-type]
         return out
 
@@ -95,10 +97,12 @@ def parse_limit_pool_df(
                 total_cap=_num(row.get("总市值")),
                 turnover_rate=_num(row.get("换手率")),
                 seal_amount=_num(row.get("封板资金")) or _num(row.get("封单资金")),
-                first_seal_time=_str_or_none(row.get("首次封板时间")),
+                first_seal_time=_str_or_none(row.get("首次封板时间"))
+                or _str_or_none(row.get("昨日封板时间")),
                 last_seal_time=_str_or_none(row.get("最后封板时间")),
                 break_count=_int(row.get("炸板次数")) or _int(row.get("开板次数")),
-                ladder_count=_int(row.get("连板数")) or _int(row.get("连续跌停")),
+                ladder_count=_int(row.get("连板数")) or _int(row.get("连续跌停"))
+                or _int(row.get("昨日连板数")),
                 industry=_str_or_none(row.get("所属行业")),
                 amplitude=_num(row.get("振幅")),
                 raw=raw,
@@ -111,12 +115,13 @@ def parse_limit_pool_df(
 def _normalize_ashare_symbol(code: str) -> str:
     if code.endswith((".SH", ".SZ", ".BJ")):
         return code
+    # 北交所(920xxx / 8xx / 4xx)优先, 避免 920 被下面的 "9" 误判为上交所
+    if code.startswith(("4", "8", "920")):
+        return f"{code}.BJ"
     if code.startswith(("6", "9")):
         return f"{code}.SH"
     if code.startswith(("0", "3")):
         return f"{code}.SZ"
-    if code.startswith(("4", "8")):
-        return f"{code}.BJ"
     return code
 
 

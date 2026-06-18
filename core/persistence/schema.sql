@@ -94,6 +94,43 @@ CREATE INDEX IF NOT EXISTS idx_limit_pool_date_type
 CREATE INDEX IF NOT EXISTS idx_limit_pool_symbol_date
   ON limit_pool_daily(market, symbol, trade_date DESC);
 
+-- 个股盘口异动事实源 (stock_changes_em)。
+-- change_type: 火箭发射/快速反弹/加速下跌/高台跳水/封涨停板/打开涨停板/竞价上涨/竞价下跌...
+-- change_time: BJT HH:MM:SS; change_pct 已转百分数。同 (symbol,type,time) 幂等。
+CREATE TABLE IF NOT EXISTS stock_changes (
+  market TEXT NOT NULL,
+  trade_date TEXT NOT NULL,
+  change_time TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  change_type TEXT NOT NULL,
+  name TEXT,
+  price REAL,
+  change_pct REAL,
+  raw_json TEXT NOT NULL DEFAULT '{}',
+  pulled_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (market, trade_date, symbol, change_type, change_time)
+);
+CREATE INDEX IF NOT EXISTS idx_stock_changes_date_time
+  ON stock_changes(market, trade_date, change_time DESC);
+
+-- 板块异动事实源 (stock_board_change_em)。快照型, 当日按 board_name 覆盖最新。
+CREATE TABLE IF NOT EXISTS board_changes (
+  market TEXT NOT NULL,
+  trade_date TEXT NOT NULL,
+  board_name TEXT NOT NULL,
+  change_pct REAL,
+  main_net_inflow REAL,
+  change_total INTEGER,
+  top_symbol TEXT,
+  top_name TEXT,
+  top_direction TEXT,
+  raw_json TEXT NOT NULL DEFAULT '{}',
+  pulled_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (market, trade_date, board_name)
+);
+CREATE INDEX IF NOT EXISTS idx_board_changes_date
+  ON board_changes(market, trade_date, change_total DESC);
+
 -- Plan 2.1: symbol directory (code + name)
 CREATE TABLE IF NOT EXISTS symbol_directory (
   symbol TEXT PRIMARY KEY,
