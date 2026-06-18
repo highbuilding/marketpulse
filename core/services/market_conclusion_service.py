@@ -94,13 +94,28 @@ class MarketConclusionService:
 
     async def intraday(self, market: str, *, minutes: int = 60) -> IntradayConclusion:
         now = datetime.now(timezone.utc)
-        start = now - timedelta(minutes=minutes)
+        return await self.intraday_window(
+            market, start=now - timedelta(minutes=minutes), end=now,
+            window_minutes=minutes,
+        )
+
+    async def intraday_window(
+        self, market: str, *, start: datetime, end: datetime,
+        window_minutes: int | None = None,
+    ) -> IntradayConclusion:
+        """对任意 [start, end] 窗口算盘中结论 (读时按窗切片, 无落档)。
+
+        30min 结论轮 (/intraday-rounds) 用本方法对每个 30min 边界现算 —— 不再 cron 落库。
+        只读 live_messages/theme_snapshots/涨停池, 不触发外部数据源。
+        """
+        if window_minutes is None:
+            window_minutes = max(1, round((end - start).total_seconds() / 60))
         data_gaps: list[str] = []
 
         messages: list[LiveMessage] = []
         try:
             messages = await self.live_messages.list_window(
-                market, start=start, end=now, limit=300,
+                market, start=start, end=end, limit=300,
             )
         except Exception as e:  # noqa: BLE001
             data_gaps.append(f"实盘消息读取失败:{e}")
@@ -108,7 +123,7 @@ class MarketConclusionService:
         snapshots: list[ThemeSnapshot] = []
         try:
             snapshots = await self.themes.list_snapshots_window(
-                market, start=start, end=now, limit=2000,
+                market, start=start, end=end, limit=2000,
             )
         except Exception as e:  # noqa: BLE001
             data_gaps.append(f"题材快照读取失败:{e}")
@@ -118,7 +133,8 @@ class MarketConclusionService:
         if not snapshots:
             data_gaps.append("窗口内暂无题材快照")
 
-        trade_date = datetime.now(ZoneInfo(MARKET_TZ.get(market, "Asia/Shanghai"))).date().isoformat()
+        trade_date = end.astimezone(
+            ZoneInfo(MARKET_TZ.get(market, "Asia/Shanghai"))).date().isoformat()
         limit_summary = await self._limit_summary(market, trade_date, data_gaps)
 
         sections = [
@@ -130,8 +146,8 @@ class MarketConclusionService:
         ]
         return IntradayConclusion(
             market=market,
-            generated_at=now,
-            window_minutes=minutes,
+            generated_at=end,
+            window_minutes=window_minutes,
             formula_version=FORMULA_VERSION,
             sections=sections,
             data_gaps=data_gaps,

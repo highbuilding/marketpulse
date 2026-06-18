@@ -102,6 +102,28 @@ def is_market_session_open(market: Market, when: datetime | None = None) -> bool
     return False
 
 
+def ashare_phase(when: datetime | None = None) -> str:
+    """A 股盘面时段 (BJT), 驱动盘面面板模块显隐。前端 lib/market_phase.ts 镜像本逻辑。
+
+    pre(<09:15) / auction(09:15-09:30 集合竞价) / open(09:30-09:40 开盘表现) /
+    intraday(09:40-14:55 盘中, 含午休) / closing(14:55-15:00 尾盘竞价) / post(>=15:00)。
+    非交易日由调用方 is_trading_day 门控 → "closed"。
+    """
+    tz = ZoneInfo(MARKET_TZ["ashare"])
+    cur = (when or datetime.now(timezone.utc)).astimezone(tz).time()
+    if cur < time(9, 15):
+        return "pre"
+    if cur < time(9, 30):
+        return "auction"
+    if cur < time(9, 40):
+        return "open"
+    if cur < time(14, 55):
+        return "intraday"
+    if cur <= time(15, 0):
+        return "closing"
+    return "post"
+
+
 def is_after_market_close(market: Market, when: datetime | None = None) -> bool:
     """是否已过当日最后一个 session 的收盘时刻 (本市场时区)。
 

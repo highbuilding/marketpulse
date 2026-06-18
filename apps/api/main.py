@@ -25,9 +25,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from apps.api.deps import get_state_repo
 from apps.api.auth import AuthMiddleware, router as auth_router
 from apps.api.routes import (
-    ai_market, cd_signals, collector_symbols, health, market_extras, north_flow,
-    conclusions, live_messages, notifications, positions, replay, sse_bars, sse_intraday,
-    sse_live_messages, sse_signals, symbols, themes, watchlists,
+    ai_market, cd_signals, collector_symbols, health, market_changes, market_extras,
+    north_flow, conclusions, live_messages, notifications, positions, replay, sse_bars,
+    sse_intraday, sse_live_messages, sse_signals, symbols, themes, watchlists,
 )
 from apps.api.ws import ticks
 
@@ -106,6 +106,7 @@ app.include_router(auth_router)
 app.include_router(health.router)
 app.include_router(ai_market.router)
 app.include_router(market_extras.router)
+app.include_router(market_changes.router)
 app.include_router(symbols.router)
 app.include_router(watchlists.router)
 app.include_router(north_flow.router)
