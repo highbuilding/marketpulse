@@ -317,6 +317,11 @@ log.info("signal.scan_new", symbol=sym, interval=iv, new=n, total=len(records))
 | **K 线历史(分页)** | collector 写 DuckDB | api /symbols/{s}/bars/history → 转发 collector :{port}/internal/bars/history | 滑动翻页按需 | DuckDB(collector 同进程只读查,见雷区 6) |
 | **CD 信号** | collector cd:* cron(scan_cd_job) | api /cd-signals | 按交易日 cron | SQLite |
 | **筹码摘要** | collector chip:preload(BJT 15:35) | api /symbols/{s}/chip_summary(cache_only) | 日终预热 | DuckDB |
+| **个股盘口异动** | collector market_changes_worker(常驻 asyncio loop, 非 cron; stock_changes_em ×8类型, 盘中~2min, 时段窗守卫) | api /markets/ashare/changes | ~2min | SQLite + `cache:market:ashare:changes` |
+| **板块异动** | 同上 worker(每~6min 拉 stock_board_change_em) | api /markets/ashare/board-changes | ~6min | SQLite + `cache:market:ashare:board_changes` |
+| **昨日涨停今表现** | collector limit_pool_refresh 扩 previous 池(stock_zt_pool_previous_em) | api /markets/ashare/limit-pool?pool_type=previous | 盘中5/15/.../55 | SQLite |
+| **竞价快照** | (无 job, 读时组合) | api /markets/ashare/auction(竞价异动+一字板+昨涨停今竞价+尾盘抢板炸板) | 读时 | SQLite(changes+涨停池) |
+| **30min 结论轮** | (无 job/无落档) | api /conclusions/intraday-rounds **读时按窗切片**(每 30min 边界现算冷却态 + 当前窗进行态) | 读时 | live_messages/theme_snapshots(已有) |
 
 **所有 cron 都经 `_leader_gated` 包裹** — 单机永远 leader,多节点只 leader 跑。
 
