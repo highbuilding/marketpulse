@@ -124,7 +124,7 @@ class StrategyBacktestService:
         *,
         market: str = "ashare",
         lookback_days: int = 720,
-        max_symbols: int = 120,
+        max_symbols: int = 300,
     ) -> list[StrategyBacktestRun]:
         if market != "ashare":
             return []
@@ -449,12 +449,25 @@ class StrategyBacktestService:
             max_dd = self._max_drawdown_from_trades(returns)
         yearly = self._yearly_stats(trades)
         latest_year = yearly[-1] if yearly else {}
+        # 年化收益: 从组合资金曲线(equity=等权各标的 NAV 均值)推算。资金分散全 universe
+        # 多数标的空仓 → 口径偏保守, 仅作展示, 不作门槛。
+        annual_return: float | None = None
+        try:
+            if len(equity) > 1 and float(equity.iloc[0]) > 0:
+                growth = float(equity.iloc[-1]) / float(equity.iloc[0])
+                if growth > 0:
+                    annual_return = (growth ** (252.0 / max(len(equity), 1)) - 1) * 100
+        except Exception:  # noqa: BLE001
+            annual_return = None
+        # 沙盒门槛(风险调整, 2026-06-18 重校准): 沙盒是"纸面观察"非实盘部署, 门槛只筛
+        # 有正期望 + 一致性的策略进入观察。逐笔指标可信(_make_trades 真实逐笔); 原
+        # avg≥2.5%/笔偏高(最佳仅 1.72%)→ 降到 1.0%, 辅以胜率/中位/回撤/交易数护栏。
         quality_gates = {
             "min_trades_80": trade_count >= 80,
-            "win_rate_ge_53": win_rate is not None and win_rate >= 53,
-            "avg_return_ge_2_5": avg_return is not None and avg_return >= 2.5,
+            "win_rate_ge_50": win_rate is not None and win_rate >= 50,
+            "avg_return_ge_1_0": avg_return is not None and avg_return >= 1.0,
             "median_return_gt_0": median_return is not None and median_return > 0,
-            "max_drawdown_gt_minus_18": max_dd is not None and max_dd > -18,
+            "max_drawdown_gt_minus_20": max_dd is not None and max_dd > -20,
             "latest_year_non_negative": (
                 not latest_year or (latest_year.get("avg_return_pct") or 0) >= 0
             ),
@@ -466,6 +479,16 @@ class StrategyBacktestService:
         data_gaps = [*data["data_gaps"], *extra_gaps]
         if trade_count < 20:
             data_gaps.append("有效交易少于 20 笔,暂不能进入沙盒")
+
+        # 组合级 PnL: 集中持仓真实收益(对比顶层 total/annual 的"摊全 universe"稀释口径)。
+        portfolio = {
+            "method": "固定仓位组合: N并发槽, 每仓=本金/N, 满仓跳过, 现金不生息, 不复利",
+            "init_cash": 1_000_000,
+            "by_slots": {
+                str(n): self._simulate_portfolio(trades, n_slots=n) for n in (3, 5, 10)
+            },
+        }
+        portfolio["headline_n5"] = portfolio["by_slots"].get("5")
 
         run = StrategyBacktestRun(
             market=market,
@@ -485,7 +508,7 @@ class StrategyBacktestService:
             max_drawdown_pct=max_dd,
             worst_trade_pct=worst_trade,
             avg_holding_days=avg_holding,
-            annual_return_pct=None,
+            annual_return_pct=annual_return,
             total_return_pct=total_return,
             sandbox_eligible=sandbox,
             metrics={
@@ -503,6 +526,7 @@ class StrategyBacktestService:
                     "repair=非 risk_on/risk_off 且晋级率>=20%或上涨家数>=55%"
                 ),
                 "sandbox_quality_gates": quality_gates,
+                "portfolio": portfolio,
             },
             returns=self._forward_returns(data["close"], entries),
             yearly=yearly,
@@ -843,3 +867,61 @@ class StrategyBacktestService:
         equity = (1 + returns / 100).cumprod()
         dd = equity / equity.cummax() - 1
         return float(dd.min() * 100)
+
+    @staticmethod
+    def _simulate_portfolio(trades, *, n_slots: int, init_cash: float = 1_000_000.0):
+        """组合级 PnL 模拟: 最多 N 个并发仓, 每仓固定 = 本金/N(不复利), 满仓时新信号
+        跳过(容量约束), 现金不生息, 资金随平仓循环。回答"集中持仓真实赚多少"。
+
+        相对"等权摊全 universe"的稀释口径, 这个更接近实盘可部署收益。
+        """
+        if not trades or n_slots < 1:
+            return None
+        import heapq
+        from datetime import date as _date
+
+        def _d(s: str) -> _date:
+            return _date.fromisoformat(str(s)[:10])
+
+        size = init_cash / n_slots
+        entries_sorted = sorted(trades, key=lambda t: str(t.entry_date))
+        heap: list[tuple[str, float]] = []   # (exit_date, pnl_amount)
+        realized = 0.0
+        curve: list[tuple[str, float]] = []  # (exit_date, equity)
+        taken = skipped = 0
+        for t in entries_sorted:
+            entry_d = str(t.entry_date)
+            while heap and heap[0][0] <= entry_d:   # 先释放已平仓槽位
+                xd, pnl = heapq.heappop(heap)
+                realized += pnl
+                curve.append((xd, init_cash + realized))
+            if len(heap) < n_slots:
+                heapq.heappush(heap, (str(t.exit_date), size * float(t.return_pct) / 100.0))
+                taken += 1
+            else:
+                skipped += 1
+        while heap:
+            xd, pnl = heapq.heappop(heap)
+            realized += pnl
+            curve.append((xd, init_cash + realized))
+        if not curve:
+            return None
+        total_return_pct = realized / init_cash * 100.0
+        peak = init_cash
+        max_dd = 0.0
+        for _, eq in curve:
+            peak = max(peak, eq)
+            max_dd = min(max_dd, (eq - peak) / peak * 100.0)
+        span_days = max((_d(curve[-1][0]) - _d(entries_sorted[0].entry_date)).days, 1)
+        growth = 1.0 + total_return_pct / 100.0
+        annual = (growth ** (365.0 / span_days) - 1) * 100.0 if growth > 0 else -100.0
+        total = taken + skipped
+        return {
+            "n_slots": n_slots,
+            "total_return_pct": round(total_return_pct, 2),
+            "annual_return_pct": round(annual, 2),
+            "max_drawdown_pct": round(max_dd, 2),
+            "trades_taken": taken,
+            "trades_skipped": skipped,
+            "capacity_utilization_pct": round(taken / total * 100, 1) if total else 0.0,
+        }

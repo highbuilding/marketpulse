@@ -9,7 +9,7 @@ log = structlog.get_logger(__name__)
 
 async def refresh_ashare_strategy_backtests(service: StrategyBacktestService) -> None:
     try:
-        runs = await service.run_all(market="ashare", lookback_days=720, max_symbols=120)
+        runs = await service.run_all(market="ashare", lookback_days=720, max_symbols=300)
         log.info(
             "strategy_backtests.refresh_done",
             market="ashare",
