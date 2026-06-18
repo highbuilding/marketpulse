@@ -6,6 +6,10 @@
 
 当前版本只覆盖 A 股。不自动下单,不使用 AI 生成交易建议。系统输出的交易建议只允许作为纸面指令进入沙盒观察。
 
+系统级总览、接口地图、K 线周期和数据流入口见:
+
+- [system_architecture_overview.md](/Users/xiangrong/stock/marketpulse/docs/system_architecture_overview.md)
+
 ## 1. 总体链路
 
 ```text
